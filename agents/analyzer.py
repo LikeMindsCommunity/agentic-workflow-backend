@@ -4,10 +4,13 @@ Analyzer Agent
 Reads artifacts, documentation, and scope, then produces a comprehensive
 markdown knowledge base document. Outputs markdown directly, not JSON.
 """
-from anthropic import Anthropic
+from anthropic import AnthropicFoundry
 import config
 
-client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = AnthropicFoundry(
+    base_url=config.AZURE_AI_FOUNDRY_ENDPOINT,
+    api_key=config.AZURE_AI_FOUNDRY_API_KEY,
+)
 
 
 KB_STRUCTURE_GUIDE = """

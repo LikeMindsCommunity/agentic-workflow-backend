@@ -6,10 +6,13 @@ reasoning about whether a system could generate valid artifacts using
 only this document as reference. Generates targeted questions.
 """
 import json
-from anthropic import Anthropic
+from anthropic import AnthropicFoundry
 import config
 
-client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
+client = AnthropicFoundry(
+    base_url=config.AZURE_AI_FOUNDRY_ENDPOINT,
+    api_key=config.AZURE_AI_FOUNDRY_API_KEY,
+)
 
 
 BASE_SYSTEM_PROMPT = """You are reviewing a knowledge base document written for a client's platform. Your job is to determine whether this document is complete enough for an AI system to generate valid artifacts using ONLY this document as reference.

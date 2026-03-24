@@ -1,9 +1,10 @@
 # ============================================================
 # LikeMinds Layer 1 - Input Configuration
 # ============================================================
-# Define what inputs you have for this platform onboarding.
-# You can provide any combination of the sections below.
-# At minimum, provide EITHER artifacts OR doc_urls + scope.
+# TEST RUN: artifacts_only mode
+# Providing only the nodeflow JSON artifact — no docs, no URLs.
+# Goal: verify the system can reverse-engineer a knowledge base
+# that matches the reference docs in llm_docs/.
 # ============================================================
 
 # Platform name (required)
@@ -12,48 +13,32 @@ platform_name: "Exotel IVR"
 # ------------------------------------------------------------
 # SCOPE / REQUIREMENTS
 # ------------------------------------------------------------
-# What exactly are we trying to automate?
-# This helps the agents focus on the right parts of the platform.
-# Provide this especially when you're giving doc URLs without artifacts.
 scope: |
-  We want to automate the creation of IVR workflows on the Exotel platform.
-  The final artifact is a JSON file that represents a complete IVR call flow
-  with nodes (playback, menu, transfer), connections between nodes, and
-  configuration for each node (audio files, timeouts, routing rules).
-  The system should be able to generate these JSON files given a natural
+  We want to automate the creation of IVR nodeflow JSON files on the Exotel platform.
+  The final artifact is a JSON file that defines a complete IVR call flow using a
+  node-based structure. Each node represents a step in the call (e.g., play audio,
+  collect DTMF input, transfer call, run a sub-flow), and nodes are connected via
+  transitions that define routing logic based on user input or conditions.
+  The system should be able to generate valid nodeflow JSON files given a natural
   language description of what the IVR should do.
 
 # ------------------------------------------------------------
 # ARTIFACTS (local files)
 # ------------------------------------------------------------
-# Drop sample artifacts into inputs/sample_artifacts/
-# These are real examples of the output we want to generate.
-# Supported: .json, .yaml, .xml, .csv, .txt, .conf, any text-based format
-# Leave empty or remove if you only have doc URLs.
+# Only the nodeflow JSON is provided for this test run.
 artifacts_dir: "sample_artifacts"
 
 # ------------------------------------------------------------
-# DOCUMENTATION (local files)
+# DOCUMENTATION — intentionally omitted for this test run
 # ------------------------------------------------------------
-# Drop documentation files into inputs/docs/
-# These are platform guides, API docs, schema references, etc.
-# Supported: .md, .txt, .json, .yaml, .xml, .html
-# Leave empty or remove if you only have doc URLs.
-docs_dir: "docs"
+# docs_dir: "docs"
+
+# doc_urls:
+#   - "https://developer.exotel.com/api/nodeflows"
+#   - "https://developer.exotel.com/api/nodes"
 
 # ------------------------------------------------------------
-# DOCUMENTATION URLS
+# SCRAPER SETTINGS
 # ------------------------------------------------------------
-# Links to online documentation. The scraper will crawl these
-# and extract content. Provide the most relevant pages.
-# You can mix local docs and URLs - both will be used.
-doc_urls:
-  # - "https://developer.exotel.com/api/ivr-workflows"
-  # - "https://developer.exotel.com/api/call-flows"
-  # - "https://developer.exotel.com/guides/ivr-setup"
-
-# ------------------------------------------------------------
-# SCRAPER SETTINGS (optional, overrides config.py defaults)
-# ------------------------------------------------------------
-# follow_links: true       # follow internal links on doc pages
-# max_pages: 15            # max pages to scrape per URL
+# follow_links: true
+# max_pages: 15

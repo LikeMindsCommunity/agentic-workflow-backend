@@ -2,7 +2,15 @@
   "permissions": {
     "allow": [
       "Bash(python -c \":*)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(find /Users/mac/Desktop/agentic-workflow-backend -not -path */.* -not -path */__pycache__* -type f)",
+      "Bash(wc -l /Users/mac/Desktop/agentic-workflow-backend/llm_docs/*.json /Users/mac/Desktop/agentic-workflow-backend/llm_docs/*.md)",
+      "Bash(python3 -c \"import json; f=open\\(''/Users/mac/Desktop/agentic-workflow-backend/llm_docs/nodeflow.json''\\); data=json.load\\(f\\); print\\(f\"\"Keys: {list\\(data.keys\\(\\)\\)}\\\\nNodes count: {len\\(data.get\\(''nodeflowInfo'',{}\\).get\\(''nodes'',[]\\)\\)}\"\"\\)\")",
+      "Bash(pip show:*)",
+      "Bash(python3 -c \"import anthropic, httpx, bs4, markdownify, yaml, rich; print\\(''all deps ok''\\)\")",
+      "Bash(python3 -m pip list)",
+      "Skill(claude-api)",
+      "Skill(claude-api:*)"
     ]
   }
 }

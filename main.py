@@ -140,9 +140,13 @@ def interactive_qa(questions_data: dict) -> str:
 def main():
     print_header()
 
-    if not config.ANTHROPIC_API_KEY:
-        print("\n  [ERROR] ANTHROPIC_API_KEY not set.")
-        print("  Run: export ANTHROPIC_API_KEY=your-key-here\n")
+    if not config.AZURE_AI_FOUNDRY_ENDPOINT:
+        print("\n  [ERROR] AZURE_AI_FOUNDRY_ENDPOINT not set.")
+        print("  Run: export AZURE_AI_FOUNDRY_ENDPOINT=https://<your-resource>.services.ai.azure.com/models\n")
+        sys.exit(1)
+    if not config.AZURE_AI_FOUNDRY_API_KEY:
+        print("\n  [ERROR] AZURE_AI_FOUNDRY_API_KEY not set.")
+        print("  Run: export AZURE_AI_FOUNDRY_API_KEY=your-key-here\n")
         sys.exit(1)
 
     # Step 1: Load inputs
