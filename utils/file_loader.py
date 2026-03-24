@@ -1,139 +1,47 @@
 """
-Utility to load and categorize input files from the inputs directory.
-
-Supports three input modes:
-  1. Local files in inputs/docs/          - full doc content
-  2. URL list in inputs/docs/urls.txt     - fetches docs from the web
-  3. inputs/requirements.md              - scope/requirements definition
+Input loading, mode detection, and YAML config parsing.
 """
 import os
 import json
-import re
-from urllib.request import urlopen, Request
-from urllib.error import URLError
-from html.parser import HTMLParser
+import yaml
+import config
 
 
-# ---------------------------------------------------------------------------
-# HTML → plain text helper
-# ---------------------------------------------------------------------------
+def load_input_config(config_path: str = None) -> dict:
+    if config_path is None:
+        config_path = config.INPUT_CONFIG_PATH
 
-class _TextExtractor(HTMLParser):
-    """Minimal HTML parser that strips tags and decodes entities."""
+    if not os.path.exists(config_path):
+        return {
+            "platform_name": "Unknown Platform",
+            "scope": "",
+            "artifacts_dir": "sample_artifacts",
+            "docs_dir": "docs",
+            "doc_urls": [],
+            "follow_links": False,
+            "max_pages": config.MAX_PAGES_PER_URL
+        }
 
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self._parts: list[str] = []
-        self._skip_tags = {"script", "style", "nav", "footer", "header"}
-        self._skip_depth = 0
-
-    def handle_starttag(self, tag, attrs):
-        if tag in self._skip_tags:
-            self._skip_depth += 1
-
-    def handle_endtag(self, tag):
-        if tag in self._skip_tags and self._skip_depth > 0:
-            self._skip_depth -= 1
-
-    def handle_data(self, data):
-        if self._skip_depth == 0:
-            text = data.strip()
-            if text:
-                self._parts.append(text)
-
-    def get_text(self) -> str:
-        return "\n".join(self._parts)
-
-
-def _html_to_text(html: str) -> str:
-    extractor = _TextExtractor()
-    extractor.feed(html)
-    return extractor.get_text()
-
-
-def _is_url(s: str) -> bool:
-    return s.startswith("http://") or s.startswith("https://")
-
-
-# ---------------------------------------------------------------------------
-# URL fetching
-# ---------------------------------------------------------------------------
-
-def fetch_url_as_doc(url: str) -> dict | None:
-    """
-    Fetch a URL and return a doc dict, or None on failure.
-    Handles HTML pages (strips tags) and plain text/markdown.
-    """
-    headers = {"User-Agent": "Mozilla/5.0 (compatible; LikeMinds-Layer1/1.0)"}
-    try:
-        req = Request(url, headers=headers)
-        with urlopen(req, timeout=15) as resp:
-            content_type = resp.headers.get("Content-Type", "").lower()
-            raw = resp.read().decode("utf-8", errors="replace")
-    except URLError as e:
-        print(f"  [WARNING] Could not fetch {url}: {e}")
-        return None
-
-    if "html" in content_type:
-        text = _html_to_text(raw)
-        # Collapse excessive blank lines
-        text = re.sub(r"\n{3,}", "\n\n", text)
-    else:
-        text = raw
-
-    if not text.strip():
-        print(f"  [WARNING] Fetched empty content from {url}")
-        return None
-
-    # Use last path segment as a pseudo-filename
-    slug = url.rstrip("/").split("/")[-1] or "index"
-    slug = re.sub(r"[^a-zA-Z0-9._-]", "_", slug)
+    with open(config_path, "r") as f:
+        data = yaml.safe_load(f) or {}
 
     return {
-        "filename": f"[URL] {slug}",
-        "content": text,
-        "file_type": "url",
-        "source_url": url,
+        "platform_name": data.get("platform_name", "Unknown Platform"),
+        "scope": data.get("scope", "").strip(),
+        "artifacts_dir": data.get("artifacts_dir", "sample_artifacts"),
+        "docs_dir": data.get("docs_dir", "docs"),
+        "doc_urls": data.get("doc_urls") or [],
+        "follow_links": data.get("follow_links", False),
+        "max_pages": data.get("max_pages", config.MAX_PAGES_PER_URL)
     }
 
 
-def load_docs_from_url_list(urls_file: str) -> list[dict]:
-    """
-    Read a file containing one URL per line and fetch each as a doc.
-    Lines starting with '#' or empty lines are ignored.
-    """
-    if not os.path.exists(urls_file):
-        return []
+def load_artifacts(artifacts_dir: str = None) -> list[dict]:
+    if artifacts_dir is None:
+        artifacts_dir = config.ARTIFACTS_DIR
+    elif not os.path.isabs(artifacts_dir):
+        artifacts_dir = os.path.join(config.INPUT_DIR, artifacts_dir)
 
-    with open(urls_file, "r", encoding="utf-8") as f:
-        lines = f.readlines()
-
-    urls = [ln.strip() for ln in lines if ln.strip() and not ln.strip().startswith("#")]
-    urls = [u for u in urls if _is_url(u)]
-
-    if not urls:
-        return []
-
-    print(f"  Fetching {len(urls)} URL(s) from {os.path.basename(urls_file)}...")
-    docs = []
-    for url in urls:
-        doc = fetch_url_as_doc(url)
-        if doc:
-            docs.append(doc)
-            print(f"    OK  {url}")
-
-    return docs
-
-
-# ---------------------------------------------------------------------------
-# Artifacts
-# ---------------------------------------------------------------------------
-
-def load_artifacts(artifacts_dir: str) -> list[dict]:
-    """
-    Load all sample artifacts from the artifacts directory.
-    Returns a list of dicts with filename, content (raw string), and parsed content if JSON.
-    """
     artifacts = []
     if not os.path.exists(artifacts_dir):
         return artifacts
@@ -150,7 +58,7 @@ def load_artifacts(artifacts_dir: str) -> list[dict]:
             "filename": fname,
             "raw_content": raw_content,
             "file_type": os.path.splitext(fname)[1].lstrip("."),
-            "parsed": None,
+            "parsed": None
         }
 
         if fname.endswith((".json", ".jsonl")):
@@ -164,38 +72,25 @@ def load_artifacts(artifacts_dir: str) -> list[dict]:
     return artifacts
 
 
-# ---------------------------------------------------------------------------
-# Docs (local files + URLs)
-# ---------------------------------------------------------------------------
+def load_docs(docs_dir: str = None) -> list[dict]:
+    if docs_dir is None:
+        docs_dir = config.DOCS_DIR
+    elif not os.path.isabs(docs_dir):
+        docs_dir = os.path.join(config.INPUT_DIR, docs_dir)
 
-def load_docs(docs_dir: str) -> list[dict]:
-    """
-    Load documentation from the docs directory.
-
-    Two sources are combined:
-      1. Local files with a supported extension (not urls.txt)
-      2. URLs listed in urls.txt (one per line)
-
-    Returns a list of doc dicts with: filename, content, file_type,
-    and optionally source_url for URL-fetched docs.
-    """
     docs = []
     if not os.path.exists(docs_dir):
         return docs
 
-    supported_extensions = {".md", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".html"}
+    supported = {".md", ".txt", ".json", ".yaml", ".yml", ".xml", ".csv", ".html"}
 
     for fname in sorted(os.listdir(docs_dir)):
         fpath = os.path.join(docs_dir, fname)
         if not os.path.isfile(fpath):
             continue
 
-        # urls.txt is handled separately below
-        if fname.lower() == "urls.txt":
-            continue
-
         ext = os.path.splitext(fname)[1].lower()
-        if ext not in supported_extensions:
+        if ext not in supported:
             continue
 
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:
@@ -204,74 +99,55 @@ def load_docs(docs_dir: str) -> list[dict]:
         docs.append({
             "filename": fname,
             "content": content,
-            "file_type": ext.lstrip("."),
+            "file_type": ext.lstrip(".")
         })
-
-    # Fetch URL-based docs
-    urls_file = os.path.join(docs_dir, "urls.txt")
-    url_docs = load_docs_from_url_list(urls_file)
-    docs.extend(url_docs)
 
     return docs
 
 
-# ---------------------------------------------------------------------------
-# Requirements
-# ---------------------------------------------------------------------------
+def detect_input_mode(artifacts, docs, doc_urls, scope):
+    has_artifacts = len(artifacts) > 0
+    has_docs = len(docs) > 0 or len(doc_urls) > 0
+    has_scope = len(scope.strip()) > 0
 
-def load_requirements(requirements_path: str) -> str | None:
-    """
-    Load the optional scope/requirements file.
-    Returns the file content as a string, or None if it doesn't exist.
-    """
-    if not os.path.exists(requirements_path):
-        return None
-
-    with open(requirements_path, "r", encoding="utf-8", errors="replace") as f:
-        content = f.read().strip()
-
-    return content if content else None
+    if has_artifacts and has_docs:
+        return "full"
+    elif has_artifacts:
+        return "artifacts_only"
+    elif has_docs:
+        return "urls_only"
+    elif has_scope:
+        return "scope_only"
+    else:
+        return "empty"
 
 
-# ---------------------------------------------------------------------------
-# Summary
-# ---------------------------------------------------------------------------
+def summarize_inputs(artifacts, local_docs, scraped_docs, scope, mode):
+    lines = [f"  Input mode: {mode.upper().replace('_', ' ')}", ""]
 
-def summarize_inputs(
-    artifacts: list[dict],
-    docs: list[dict],
-    requirements: str | None = None,
-) -> str:
-    lines = []
-
-    if requirements:
-        lines.append("Requirements / Scope: LOADED")
-        # Show first 2 lines as a preview
-        preview = "\n".join(requirements.splitlines()[:2])
-        lines.append(f"  {preview}")
+    if scope:
+        preview = scope[:150] + "..." if len(scope) > 150 else scope
+        lines.append(f"  Scope: {preview}")
         lines.append("")
 
-    lines.append(f"Loaded {len(artifacts)} artifact(s):")
-    for a in artifacts:
-        size = len(a["raw_content"])
-        parsed_status = "parsed" if a["parsed"] else "raw"
-        lines.append(f"  - {a['filename']} ({a['file_type']}, {size} chars, {parsed_status})")
+    if artifacts:
+        lines.append(f"  Artifacts ({len(artifacts)}):")
+        for a in artifacts:
+            size = len(a["raw_content"])
+            parsed_status = "parsed" if a["parsed"] else "raw"
+            lines.append(f"    - {a['filename']} ({a['file_type']}, {size} chars, {parsed_status})")
+    else:
+        lines.append("  Artifacts: None")
+    lines.append("")
 
-    local_docs = [d for d in docs if d.get("file_type") != "url"]
-    url_docs = [d for d in docs if d.get("file_type") == "url"]
-
-    lines.append(f"\nLoaded {len(local_docs)} local documentation file(s):")
-    for d in local_docs:
-        size = len(d["content"])
-        lines.append(f"  - {d['filename']} ({d['file_type']}, {size} chars)")
-
-    if url_docs:
-        lines.append(f"\nFetched {len(url_docs)} URL-based documentation source(s):")
-        for d in url_docs:
-            size = len(d["content"])
-            lines.append(f"  - {d['source_url']} ({size} chars)")
-
-    if not docs:
-        lines.append("\n  (No documentation provided - artifacts-only mode)")
+    all_docs = local_docs + scraped_docs
+    if all_docs:
+        lines.append(f"  Documentation ({len(all_docs)} sources):")
+        for d in local_docs:
+            lines.append(f"    - [local] {d['filename']} ({len(d['content'])} chars)")
+        for d in scraped_docs:
+            lines.append(f"    - [web]   {d['filename'][:60]} ({len(d['content'])} chars)")
+    else:
+        lines.append("  Documentation: None")
 
     return "\n".join(lines)

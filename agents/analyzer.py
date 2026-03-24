@@ -1,224 +1,258 @@
 """
 Analyzer Agent
 
-Takes sample artifacts and documentation, produces a structured knowledge base
-with confidence scores. This agent:
-1. Decomposes the artifact structure (schema, fields, types, nesting)
-2. Maps each element against provided documentation
-3. Assigns confidence scores based on how well each element is understood
+Reads artifacts, documentation, and scope, then produces a comprehensive
+markdown knowledge base document. Outputs markdown directly, not JSON.
 """
-import json
 from anthropic import Anthropic
 import config
 
 client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-ANALYZER_SYSTEM_PROMPT = """You are an expert platform analyst working for LikeMinds. Your job is to reverse-engineer artifacts (JSON files, config files, etc.) that clients provide, and build a structured knowledge base that would allow an AI system to generate similar artifacts in the future.
 
-You will receive:
-1. One or more SAMPLE ARTIFACTS - these are real outputs from the client's platform
-2. DOCUMENTATION - any docs the client has provided about their platform
+KB_STRUCTURE_GUIDE = """
+The knowledge base document MUST follow this structure. Every section should be
+thorough, with annotated examples pulled from the artifacts wherever possible.
 
-Your task is to analyze these inputs and produce a structured knowledge base in JSON format.
+```
+# <Platform Name> - <Artifact Type> Knowledge Base
 
-IMPORTANT RULES:
-- Be exhaustive. Every field, every nested object, every array element in the artifact must be accounted for.
-- For each field, determine: data type, whether it's required, what valid values look like, and any constraints.
-- If you find something in the artifact that is NOT explained by the docs, mark it with low confidence (0.3-0.5) and note what's unclear.
-- If the docs explain something well, mark it with high confidence (0.8-1.0).
-- If the docs partially explain it, mark it medium confidence (0.5-0.8).
-- Look for PATTERNS across multiple artifacts if provided. What varies vs what stays constant?
-- Identify dependencies: what objects reference other objects? What order must things be created in?
-- Identify validation rules: what combinations are invalid? What constraints exist?
+## Overview
+What this platform is, what artifact we are generating, how it is used in practice.
 
-OUTPUT FORMAT - respond with ONLY valid JSON, no markdown fences, no preamble:
-{
-  "platform_name": "string",
-  "artifact_type": "string - what kind of artifact this is",
-  "artifact_description": "string - one paragraph describing what this artifact represents",
-  "objects": [
-    {
-      "name": "string - object/entity name",
-      "description": "string",
-      "confidence": 0.0-1.0,
-      "relationships": ["references to other object names"],
-      "fields": [
-        {
-          "field_path": "dot.notation.path - e.g. workflow.nodes[].type",
-          "data_type": "string|number|boolean|array|object|enum",
-          "required": true/false,
-          "description": "what this field represents",
-          "valid_values": ["for enums, list all known values"],
-          "default_value": "if known, null otherwise",
-          "depends_on": "field_path of dependency, null if none",
-          "constraints": ["list of rules/constraints as strings"],
-          "confidence": 0.0-1.0,
-          "source": "artifact_analysis|documentation|inferred"
-        }
-      ]
-    }
-  ],
-  "dependencies": [
-    {
-      "source_object": "string",
-      "target_object": "string",
-      "relationship": "must_exist_before|references|contains",
-      "description": "string"
-    }
-  ],
-  "validation_rules": [
-    {
-      "rule_id": "string",
-      "description": "string",
-      "scope": ["which objects/fields"],
-      "severity": "error|warning",
-      "confidence": 0.0-1.0
-    }
-  ],
-  "common_patterns": [
-    {
-      "pattern_name": "string",
-      "description": "string",
-      "example_summary": "string"
-    }
-  ],
-  "gaps": [
-    {
-      "area": "string - which part of the artifact",
-      "description": "string - what's unclear",
-      "severity": "blocking|important|nice_to_have"
-    }
-  ]
-}"""
+## Core Concepts
+Key terminology and entity relationships. Define every major concept
+before diving into structure. Use subsections (###) per concept.
+
+## Artifact Structure
+Top-level walkthrough of the artifact format. Show the full high-level
+shape with an annotated example. Explain what each major section contains.
+
+## <Object/Section Name> (one section per major object or component)
+For each distinct object type or major section in the artifact:
+- What it represents and when it is used
+- All fields: name, type, required/optional, valid values, defaults
+- Annotated JSON/config examples showing real values from the sample artifacts
+- Behavioral notes: what happens when a field is set to a specific value
+- Edge cases or special rules
+
+(Repeat for each object type. Use ### for sub-sections within each object.)
+
+## Validation Rules and Constraints
+All rules that must hold for a generated artifact to be valid.
+Group by scope: per-field rules, cross-field rules, cross-object rules.
+For each rule, explain what breaks if it is violated.
+
+## Dependencies and Ordering
+What must exist before what. Creation sequence.
+Bidirectional references if applicable (parent/child patterns).
+Show the exact fields that establish references between objects.
+
+## Common Patterns
+Recurring configurations with complete annotated examples.
+Explain when and why each pattern is used.
+Include copy-paste-ready templates that can be adapted.
+
+## Integration Checklist
+Step-by-step process for assembling a complete artifact.
+Number each step. Note which locations in the artifact need updating.
+
+## Troubleshooting
+Common issues in the format: "Issue: <problem>" / "Check: <what to verify>"
+
+## Known Gaps
+Areas where the knowledge base is still incomplete.
+What specific information is needed to fill each gap.
+```
+
+WRITING RULES:
+- Be exhaustive. Every field in the artifact must be documented somewhere.
+- Use annotated JSON/config blocks with inline comments explaining each element.
+- When you infer something from the artifact without doc confirmation, add:
+  > **Needs Verification:** <what is unclear and what we assumed>
+- Show real values from the sample artifacts, not placeholder values.
+- Validation rules should describe both the rule AND what breaks when violated.
+- Common patterns should include complete, copy-paste-ready examples.
+- Use ### subsections liberally to keep content scannable.
+- Do NOT use confidence scores, numeric ratings, or structured metadata.
+- Write in clear, direct prose. This document will be read by both humans and AI.
+"""
 
 
-def build_analysis_prompt(
-    artifacts: list[dict],
-    docs: list[dict],
-    requirements: str | None = None,
-) -> str:
-    """Construct the user prompt with all artifacts, docs, and optional requirements."""
+MODE_INSTRUCTIONS = {
+    "full": """
+You have SAMPLE ARTIFACTS (real outputs from the platform) and DOCUMENTATION.
+
+Your approach:
+- Walk through every element in the artifacts and explain it using the documentation.
+- Pull real values from the artifacts into your annotated examples.
+- Where the docs clearly explain something, write with authority.
+- Where the docs are vague or silent on something visible in the artifact, document
+  what you observe and add a "Needs Verification" callout.
+- Cross-reference multiple artifacts (if provided) to identify what varies per
+  deployment vs what is structurally constant.""",
+
+    "artifacts_only": """
+You have ONLY sample artifacts. No documentation was provided.
+
+Your approach:
+- Reverse-engineer the complete structure from what you can observe.
+- Document every field, its apparent type, and what the value suggests about its purpose.
+- Be liberal with "Needs Verification" callouts since nothing is doc-confirmed.
+- Infer relationships from field names and ID references.
+- When you see numeric codes or abbreviated values (e.g. routingStrategy: 3),
+  document exactly what you see but flag that the meaning is unknown.
+- The "Known Gaps" section should be extensive since we have no documentation.
+- Focus on capturing the COMPLETE structure even if meaning is uncertain.""",
+
+    "urls_only": """
+You have DOCUMENTATION (from websites or files) and a SCOPE description, but NO sample artifacts.
+
+Your approach:
+- Extract all schema, field, and rule information from the docs.
+- Use the scope to understand what artifact type we are targeting.
+- Where docs include examples, use those as your annotated examples.
+- The "Known Gaps" section should note that no real artifact has been validated.
+- Add a "Needs Verification" callout asking for sample artifacts to validate the schema.""",
+
+    "scope_only": """
+You have ONLY a scope/requirements description. No artifacts, no documentation.
+
+Your approach:
+- Write a skeleton document based on what you can infer from the scope.
+- Every section should contain a "Needs Verification" callout explaining what
+  information is needed to fill it in.
+- The "Known Gaps" section should be the longest section, listing everything
+  we need to learn.
+- Focus on establishing the right structure so the Q&A process can fill it in."""
+}
+
+
+def _build_system_prompt(mode: str) -> str:
+    return f"""You are an expert platform analyst working for LikeMinds. Your job is to write a comprehensive knowledge base document for a client's platform. This document will be used by another AI system (and by human consultants) to generate valid artifacts for this platform in the future.
+
+You must output a well-structured MARKDOWN document. No JSON. No preamble or closing remarks outside the document. Start directly with the markdown heading.
+
+{KB_STRUCTURE_GUIDE}
+
+{MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["full"])}"""
+
+
+def _build_user_prompt(artifacts: list[dict], docs: list[dict],
+                       scope: str, mode: str) -> str:
     parts = []
 
-    # Requirements / scope section (if provided)
-    if requirements:
-        parts.append("=== REQUIREMENTS / SCOPE ===\n")
-        parts.append("The client has defined the following scope and requirements for this knowledge base:")
-        parts.append(requirements)
-        parts.append("\nUse these requirements to focus your analysis and prioritize which fields and behaviors matter most.")
+    if scope:
+        parts.append("=== SCOPE / REQUIREMENTS ===\n")
+        parts.append(scope)
         parts.append("")
 
-    parts.append("=== SAMPLE ARTIFACTS ===\n")
-    for i, artifact in enumerate(artifacts, 1):
-        parts.append(f"--- Artifact {i}: {artifact['filename']} (type: {artifact['file_type']}) ---")
-        content = artifact["raw_content"]
-        if len(content) > 15000:
-            content = content[:15000] + "\n... [TRUNCATED - artifact continues] ..."
-        parts.append(content)
-        parts.append("")
-
-    parts.append("\n=== DOCUMENTATION ===\n")
-    if docs:
-        for i, doc in enumerate(docs, 1):
-            source_label = doc.get("source_url", doc["filename"])
-            parts.append(f"--- Document {i}: {source_label} (type: {doc['file_type']}) ---")
-            content = doc["content"]
+    if artifacts:
+        parts.append("\n=== SAMPLE ARTIFACTS ===\n")
+        for i, artifact in enumerate(artifacts, 1):
+            parts.append(f"--- Artifact {i}: {artifact['filename']} ({artifact['file_type']}) ---")
+            content = artifact["raw_content"]
             if len(content) > 15000:
-                content = content[:15000] + "\n... [TRUNCATED - document continues] ..."
+                content = content[:15000] + "\n... [TRUNCATED] ..."
             parts.append(content)
             parts.append("")
-    else:
-        parts.append(
-            "No documentation was provided. Analyze the artifacts based on their structure alone. "
-            "Mark all fields with lower confidence (0.3-0.5) since there is no documentation to validate against. "
-            "The Interrogator will ask the client comprehensive questions to fill all gaps."
-        )
 
-    parts.append("\nAnalyze the above and produce the structured knowledge base JSON.")
+    if docs:
+        parts.append("\n=== DOCUMENTATION ===\n")
+        for i, doc in enumerate(docs, 1):
+            source = doc.get("source_url", doc["filename"])
+            parts.append(f"--- Document {i}: {source} ---")
+            content = doc["content"]
+            if len(content) > 15000:
+                content = content[:15000] + "\n... [TRUNCATED] ..."
+            parts.append(content)
+            parts.append("")
 
+    if not artifacts and not docs:
+        parts.append("\nNo artifacts or documentation provided. Build from scope alone.\n")
+
+    parts.append("\nWrite the complete knowledge base document now.")
     return "\n".join(parts)
 
 
-def run_analyzer(
-    artifacts: list[dict],
-    docs: list[dict],
-    requirements: str | None = None,
-) -> dict:
+def run_analyzer(artifacts: list[dict], docs: list[dict],
+                 scope: str = "", mode: str = "full") -> str:
     """
-    Run the analyzer agent on the provided artifacts and docs.
-    Returns the parsed knowledge base dict.
+    Run the Analyzer agent. Returns the knowledge base as a markdown string.
     """
-    prompt = build_analysis_prompt(artifacts, docs, requirements=requirements)
+    response = client.messages.create(
+        model=config.MODEL,
+        max_tokens=config.MAX_TOKENS,
+        system=_build_system_prompt(mode),
+        messages=[{
+            "role": "user",
+            "content": _build_user_prompt(artifacts, docs, scope, mode)
+        }]
+    )
+
+    kb_markdown = response.content[0].text.strip()
+
+    # Strip markdown fences if the model wrapped the whole thing
+    if kb_markdown.startswith("```markdown"):
+        kb_markdown = kb_markdown[len("```markdown"):].strip()
+    if kb_markdown.startswith("```md"):
+        kb_markdown = kb_markdown[len("```md"):].strip()
+    if kb_markdown.startswith("```"):
+        kb_markdown = kb_markdown[3:].strip()
+    if kb_markdown.endswith("```"):
+        kb_markdown = kb_markdown[:-3].strip()
+
+    return kb_markdown
+
+
+def run_enrichment(existing_kb: str, qa_context: str,
+                   scope: str = "", mode: str = "full") -> str:
+    """
+    Rewrite the knowledge base incorporating new information from Q&A.
+    Returns the updated markdown string.
+    """
+    system_prompt = _build_system_prompt(mode)
+
+    user_prompt = f"""Here is the current knowledge base document:
+
+---BEGIN KNOWLEDGE BASE---
+{existing_kb}
+---END KNOWLEDGE BASE---
+
+The client has provided the following answers to our questions:
+
+---BEGIN ANSWERS---
+{qa_context}
+---END ANSWERS---
+
+{"SCOPE: " + scope if scope else ""}
+
+Rewrite the knowledge base incorporating this new information:
+- Update the specific sections that the answers relate to
+- Remove "Needs Verification" callouts where answers confirm details
+- Add new subsections if the answers reveal areas not previously covered
+- Preserve everything that was not affected by the new answers
+- Where an answer confirms something, write with authority (no hedging)
+- Update the "Known Gaps" section: remove resolved gaps, keep unresolved ones
+
+Return the COMPLETE updated markdown document. Start directly with the heading."""
 
     response = client.messages.create(
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
-        system=ANALYZER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
     )
 
-    response_text = response.content[0].text.strip()
+    updated_kb = response.content[0].text.strip()
 
-    # Clean potential markdown fences
-    if response_text.startswith("```"):
-        lines = response_text.split("\n")
-        # Remove first and last lines if they are fences
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        response_text = "\n".join(lines)
+    if updated_kb.startswith("```markdown"):
+        updated_kb = updated_kb[len("```markdown"):].strip()
+    if updated_kb.startswith("```md"):
+        updated_kb = updated_kb[len("```md"):].strip()
+    if updated_kb.startswith("```"):
+        updated_kb = updated_kb[3:].strip()
+    if updated_kb.endswith("```"):
+        updated_kb = updated_kb[:-3].strip()
 
-    try:
-        kb_data = json.loads(response_text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Analyzer returned invalid JSON: {e}\nRaw response:\n{response_text[:500]}")
-
-    return kb_data
-
-
-def run_enrichment(kb_data: dict, additional_context: str) -> dict:
-    """
-    Re-run analysis with additional context (e.g. client answers to questions).
-    Updates confidence scores and fills gaps.
-    """
-    prompt = f"""You previously analyzed a platform and produced this knowledge base:
-
-{json.dumps(kb_data, indent=2)}
-
-The client has now provided additional context:
-
-{additional_context}
-
-Update the knowledge base with this new information:
-1. Update field descriptions and valid_values where the new info is relevant
-2. Increase confidence scores for fields that are now better understood
-3. Remove gaps that have been resolved
-4. Add any new validation rules or constraints revealed by the new info
-5. If the new info reveals NEW gaps or questions, add those
-
-Return the complete updated knowledge base in the same JSON format. Return ONLY valid JSON."""
-
-    response = client.messages.create(
-        model=config.MODEL,
-        max_tokens=config.MAX_TOKENS,
-        system=ANALYZER_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
-    )
-
-    response_text = response.content[0].text.strip()
-
-    if response_text.startswith("```"):
-        lines = response_text.split("\n")
-        if lines[0].startswith("```"):
-            lines = lines[1:]
-        if lines and lines[-1].strip() == "```":
-            lines = lines[:-1]
-        response_text = "\n".join(lines)
-
-    try:
-        updated_data = json.loads(response_text)
-    except json.JSONDecodeError as e:
-        raise ValueError(f"Enrichment returned invalid JSON: {e}\nRaw response:\n{response_text[:500]}")
-
-    return updated_data
+    return updated_kb

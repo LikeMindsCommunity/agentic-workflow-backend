@@ -1,11 +1,9 @@
 """
 Interrogator Agent
 
-Takes the knowledge base produced by the Analyzer and:
-1. Identifies all low-confidence areas and explicit gaps
-2. Generates targeted, specific questions for the client
-3. Prioritizes questions by severity (blocking > important > nice-to-have)
-4. Batches questions to avoid overwhelming the client
+Reads the knowledge base markdown document and identifies gaps by
+reasoning about whether a system could generate valid artifacts using
+only this document as reference. Generates targeted questions.
 """
 import json
 from anthropic import Anthropic
@@ -13,99 +11,125 @@ import config
 
 client = Anthropic(api_key=config.ANTHROPIC_API_KEY)
 
-INTERROGATOR_SYSTEM_PROMPT = """You are an expert technical interviewer working for LikeMinds. Your job is to review a knowledge base that was built by analyzing a client's platform artifacts and documentation, identify gaps in understanding, and generate precise questions that will fill those gaps.
 
-You will receive a knowledge base JSON that includes confidence scores and identified gaps.
+BASE_SYSTEM_PROMPT = """You are reviewing a knowledge base document written for a client's platform. Your job is to determine whether this document is complete enough for an AI system to generate valid artifacts using ONLY this document as reference.
 
-Your task is to generate a prioritized list of questions that, when answered, will raise the overall confidence of the knowledge base.
+HOW TO FIND GAPS:
+Read the document and ask yourself: "If I were given a requirement and this document, could I generate a valid artifact? Where would I get stuck?" Specifically look for:
+- Fields mentioned but never explained (what does this value mean?)
+- Values shown without context (what are ALL valid values, not just the ones in the sample?)
+- Rules that seem incomplete (the doc says X is required, but when exactly?)
+- Missing behavioral descriptions (what happens on error, timeout, invalid input?)
+- Dependencies that are implied but not documented (does object A need to exist before B?)
+- "Needs Verification" callouts that indicate the Analyzer was guessing
+- Sections that are too thin compared to the complexity of what they describe
 
-QUESTION QUALITY RULES:
-- Questions must be SPECIFIC and ACTIONABLE. Not "tell me more about workflows" but "the field 'routingStrategy' accepts numeric values. We found value 3 in your sample. What are ALL valid values and what does each one mean?"
-- Questions should reference the exact field path or object they're about
-- Each question should explain WHY we need this info (what breaks without it)
-- Group related questions together when possible
-- Order by priority: blocking gaps first (we cannot generate artifacts without this), then important (affects correctness), then nice-to-have (edge cases)
+QUESTION QUALITY:
+- Be SPECIFIC. Reference exact field names, values, and sections from the KB.
+  BAD: "Tell me more about node configuration"
+  GOOD: "The PlayNode has a 'timeout' attribute set to '60000' in the example. Is this in milliseconds? What is the valid range? What happens when timeout is reached?"
+- Explain WHY you need this (what cannot be generated correctly without it)
+- Each question should directly fill a gap that blocks or degrades artifact generation
+
+PRIORITY LEVELS:
+- blocking: Generation is impossible or will produce invalid artifacts without this
+- important: Generation is possible but artifacts may be incorrect in some scenarios
+- nice_to_have: Edge cases, optimizations, or completeness improvements
 
 OUTPUT FORMAT - respond with ONLY valid JSON, no markdown fences:
 {
-  "summary": "Brief summary of the knowledge base state and key gaps",
-  "overall_confidence": 0.0-1.0,
-  "ready_for_generation": true/false,
+  "summary": "2-3 sentence assessment of the KB's current state",
+  "ready_for_generation": true or false,
   "questions": [
     {
       "id": "q1",
-      "priority": "blocking|important|nice_to_have",
-      "category": "schema|validation|dependency|values|behavior",
-      "field_reference": "dot.path.to.field or object name",
-      "question": "The precise question to ask the client",
-      "context": "Why we need this - what we currently know and what's missing",
-      "example_from_artifact": "Quote the specific value or structure from the artifact that prompted this question"
+      "priority": "blocking",
+      "section_reference": "which section of the KB this relates to",
+      "question": "the precise question",
+      "context": "why we need this and what the KB currently says or is missing"
     }
   ]
-}"""
+}
+
+READY FOR GENERATION CRITERIA:
+Return true ONLY when there are no blocking gaps AND no more than 1-2 minor
+important gaps that are explicitly acknowledged in the KB's Known Gaps section.
+When in doubt, return false."""
 
 
-def generate_questions(
-    kb_data: dict,
-    max_questions: int = None,
-    has_docs: bool = True,
-) -> dict:
+MODE_ADDITIONS = {
+    "artifacts_only": """
+
+SPECIAL CONTEXT: This KB was built from artifacts alone with no documentation.
+Most content is inferred. Be thorough - your questions are the primary way we
+build real understanding. Ask more questions than usual (up to the max).
+
+Focus especially on:
+- Meaning of every numeric code, enum value, and abbreviation
+- Complete list of valid values for every field (not just what appeared in samples)
+- All validation rules (the KB likely has very few since they were inferred)
+- Platform-specific behaviors that cannot be guessed from structure alone""",
+
+    "urls_only": """
+
+SPECIAL CONTEXT: This KB was built from documentation only, with no sample artifacts.
+The schema may be theoretically correct but unvalidated against real output.
+
+Focus especially on:
+- Requesting sample artifacts to validate the documented structure
+- Real-world usage patterns and defaults
+- Which documented features are commonly used vs rarely touched
+- Edge cases the documentation might not cover""",
+
+    "scope_only": """
+
+SPECIAL CONTEXT: This KB was built from a scope description only. Almost
+everything is a placeholder. Your questions need to establish fundamentals.
+
+Focus on:
+- What platform is this? What are its APIs?
+- Can you provide sample output files?
+- Is there documentation available (URLs or files)?
+- What are the core objects/entities in the system?""",
+
+    "full": ""
+}
+
+
+def run_interrogator(kb_markdown: str, mode: str = "full",
+                     max_questions: int = None) -> dict:
     """
-    Analyze the knowledge base and generate prioritized questions.
-
-    Args:
-        kb_data: The current knowledge base dict.
-        max_questions: Max number of questions to generate this round.
-        has_docs: Whether any documentation was provided. When False,
-                  the interrogator switches to a comprehensive "build from
-                  scratch" mode and asks foundational questions in addition
-                  to gap-filling ones.
-
-    Returns a dict with summary, confidence assessment, and questions.
+    Read the KB and generate prioritized questions.
+    Returns dict with summary, ready_for_generation, and questions.
     """
     if max_questions is None:
-        max_questions = config.QUESTIONS_PER_BATCH
+        max_questions = {
+            "artifacts_only": config.QUESTIONS_PER_BATCH + 3,
+            "scope_only": config.QUESTIONS_PER_BATCH + 5,
+            "urls_only": config.QUESTIONS_PER_BATCH + 2,
+            "full": config.QUESTIONS_PER_BATCH
+        }.get(mode, config.QUESTIONS_PER_BATCH)
 
-    if has_docs:
-        focus_instructions = f"""Focus on:
-1. Fields with confidence below {config.CONFIDENCE_THRESHOLD}
-2. Explicit gaps listed in the "gaps" section
-3. Any validation rules or dependencies that seem incomplete
-4. Enum fields where we might be missing valid values
-5. Cross-field dependencies that are not yet captured"""
-    else:
-        focus_instructions = f"""IMPORTANT: No documentation was provided for this platform. The knowledge base was built from artifacts alone and is incomplete. You must generate comprehensive, foundational questions that will allow us to fully understand this platform from scratch.
+    system_prompt = BASE_SYSTEM_PROMPT + MODE_ADDITIONS.get(mode, "")
 
-Focus on ALL of the following (not just gaps):
-1. Platform fundamentals - what is this artifact? what system/product does it configure?
-2. Every field with confidence below {config.CONFIDENCE_THRESHOLD} - what does it mean, what are ALL valid values?
-3. Every enum or numeric value seen in the artifacts - what do all possible values mean?
-4. Required vs optional fields - what happens if optional fields are omitted?
-5. Business rules and validation - what combinations are invalid? what constraints exist?
-6. Deployment/creation flow - what order must objects be created in? what IDs must be pre-existing?
-7. Any field whose purpose is not immediately obvious from its name alone
-8. Edge cases - what are the limits (min/max lengths, value ranges, list size limits)?
+    user_prompt = f"""Review this knowledge base and generate up to {max_questions} prioritized questions to fill the gaps.
 
-Treat this as a full discovery interview, not just gap-filling."""
-
-    prompt = f"""Review this knowledge base and generate up to {max_questions} prioritized questions.
-
-Knowledge Base:
-{json.dumps(kb_data, indent=2)}
-
-{focus_instructions}
+---BEGIN KNOWLEDGE BASE---
+{kb_markdown}
+---END KNOWLEDGE BASE---
 
 Generate your questions as JSON."""
 
     response = client.messages.create(
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
-        system=INTERROGATOR_SYSTEM_PROMPT,
-        messages=[{"role": "user", "content": prompt}]
+        system=system_prompt,
+        messages=[{"role": "user", "content": user_prompt}]
     )
 
     response_text = response.content[0].text.strip()
 
+    # Clean markdown fences
     if response_text.startswith("```"):
         lines = response_text.split("\n")
         if lines[0].startswith("```"):
@@ -115,50 +139,44 @@ Generate your questions as JSON."""
         response_text = "\n".join(lines)
 
     try:
-        result = json.loads(response_text)
+        return json.loads(response_text)
     except json.JSONDecodeError as e:
-        raise ValueError(f"Interrogator returned invalid JSON: {e}\nRaw response:\n{response_text[:500]}")
-
-    return result
+        raise ValueError(
+            f"Interrogator returned invalid JSON: {e}\n"
+            f"Raw response:\n{response_text[:500]}"
+        )
 
 
 def format_questions_for_display(questions_data: dict) -> str:
-    """Format the questions nicely for CLI display."""
+    """Format questions for CLI display."""
     lines = []
     lines.append(f"\n{'='*60}")
-    lines.append(f"KNOWLEDGE BASE ASSESSMENT")
+    lines.append(f"  KNOWLEDGE BASE ASSESSMENT")
     lines.append(f"{'='*60}")
-    lines.append(f"\n{questions_data.get('summary', 'No summary available.')}")
-    lines.append(f"\nOverall Confidence: {questions_data.get('overall_confidence', 'N/A')}")
-    lines.append(f"Ready for Generation: {'Yes' if questions_data.get('ready_for_generation') else 'No'}")
+    lines.append(f"\n  {questions_data.get('summary', 'No summary available.')}")
+    lines.append(f"\n  Ready for Generation: {'Yes' if questions_data.get('ready_for_generation') else 'No'}")
 
     questions = questions_data.get("questions", [])
     if not questions:
-        lines.append("\nNo questions needed - knowledge base appears complete!")
+        lines.append("\n  No questions needed - knowledge base appears complete!")
         return "\n".join(lines)
 
-    # Group by priority
     blocking = [q for q in questions if q.get("priority") == "blocking"]
     important = [q for q in questions if q.get("priority") == "important"]
     nice = [q for q in questions if q.get("priority") == "nice_to_have"]
 
-    def format_group(title, group):
+    def show_group(title, group):
         if not group:
             return
-        lines.append(f"\n--- {title} ---")
+        lines.append(f"\n  --- {title} ---")
         for q in group:
-            lines.append(f"\n  [{q['id']}] {q['question']}")
-            lines.append(f"       Category: {q.get('category', 'general')}")
-            lines.append(f"       Field: {q.get('field_reference', 'N/A')}")
-            lines.append(f"       Why: {q.get('context', '')}")
-            if q.get("example_from_artifact"):
-                example = q["example_from_artifact"]
-                if len(example) > 100:
-                    example = example[:100] + "..."
-                lines.append(f"       From artifact: {example}")
+            lines.append(f"\n    [{q['id']}] {q['question']}")
+            if q.get("section_reference"):
+                lines.append(f"         Section: {q['section_reference']}")
+            lines.append(f"         Why: {q.get('context', '')}")
 
-    format_group("BLOCKING (cannot generate artifacts without this)", blocking)
-    format_group("IMPORTANT (affects correctness)", important)
-    format_group("NICE TO HAVE (edge cases and completeness)", nice)
+    show_group("BLOCKING (cannot generate without this)", blocking)
+    show_group("IMPORTANT (affects correctness)", important)
+    show_group("NICE TO HAVE (completeness)", nice)
 
     return "\n".join(lines)
