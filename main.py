@@ -2,9 +2,10 @@
 LikeMinds Layer 1 - Platform Knowledge Base Builder
 
 Orchestrates two agents in a refinement loop:
-  Analyzer  -> writes/rewrites the KB (markdown)
-  Interrogator -> reads KB, finds gaps, generates questions
-  User answers -> fed back into Analyzer
+  Analyzer     -> writes/rewrites the KB (markdown)
+  Interrogator -> reads KB, finds knowledge area gaps
+  User responds per area with: URL | file | text explanation
+  Analyzer     -> rewrites KB with new docs + answers
 
 Supports four input modes:
   full            artifacts + docs (local or URLs)
@@ -20,11 +21,11 @@ from datetime import datetime
 import config
 from utils.file_loader import (
     load_input_config, load_artifacts, load_docs,
-    detect_input_mode, summarize_inputs
+    detect_input_mode, summarize_inputs, reload_docs
 )
-from utils.web_scraper import scrape_urls
+from utils.web_scraper import scrape_urls, scrape_url
 from agents.analyzer import run_analyzer, run_enrichment
-from agents.interrogator import run_interrogator, format_questions_for_display
+from agents.interrogator import run_interrogator, format_areas_for_display
 
 
 def print_header():
@@ -40,7 +41,7 @@ def print_step(num: int, desc: str):
 
 
 def load_all_inputs():
-    """Load config, artifacts, local docs, and scraped docs. Returns everything."""
+    """Load config, artifacts, local docs, and scraped docs."""
     input_cfg = load_input_config()
     print(f"\n  Platform: {input_cfg['platform_name']}")
 
@@ -87,63 +88,113 @@ def save_kb(kb_markdown: str, platform_name: str,
     return filepath
 
 
-def interactive_qa(questions_data: dict) -> str:
-    """Present questions and collect answers. Returns formatted Q&A context."""
-    questions = questions_data.get("questions", [])
-    if not questions:
-        return ""
+def collect_area_responses(areas_data: dict,
+                           loaded_docs: list[dict]) -> tuple:
+    """
+    Present knowledge areas and collect responses.
 
-    print(format_questions_for_display(questions_data))
+    For each area the user can:
+      - Paste a URL -> system scrapes it immediately
+      - Type 'file' -> system re-reads inputs/docs/ for new files
+      - Type a free-text explanation
+      - Type 'skip' to skip the area
+      - Type 'done' to end the round
+
+    Returns: (new_docs: list[dict], text_answers: str, updated_loaded_docs: list[dict])
+    """
+    areas = areas_data.get("areas", [])
+    if not areas:
+        return [], "", loaded_docs
+
+    print(format_areas_for_display(areas_data))
 
     print(f"\n{'~'*60}")
-    print("  Answer the questions below.")
-    print("  Type 'skip' to skip, 'done' to finish this round.")
-    print(f"{'~'*60}\n")
+    print("  For each area, provide one of:")
+    print("    - A URL (starts with http) -> we'll scrape it")
+    print("    - 'file' -> if you've added docs to inputs/docs/")
+    print("    - A text explanation")
+    print("    - 'skip' to skip, 'done' to finish this round")
+    print(f"{'~'*60}")
 
-    qa_pairs = []
-    for q in questions:
-        priority = q.get("priority", "?").upper()
-        print(f"  [{q['id']}] [{priority}] {q['question']}")
-        if q.get("section_reference"):
-            print(f"       (Re: {q['section_reference']})")
+    new_docs = []
+    text_parts = []
+
+    for area in areas:
+        priority = area.get("priority", "?").upper()
+        print(f"\n  [{area['id']}] [{priority}] {area['title']}")
+        print(f"       We need: {area.get('what_we_need', '')[:120]}")
+        print(f"       Suggested: {area.get('suggested_sources', '')[:120]}")
         print()
 
-        answer = input("  Your answer: ").strip()
+        response = input("  Your response: ").strip()
 
-        if answer.lower() == "done":
-            print("\n  Ending this Q&A round.")
+        if response.lower() == "done":
+            print("\n  Ending this round.")
             break
-        elif answer.lower() == "skip":
+
+        if response.lower() == "skip":
             print("  Skipped.\n")
             continue
+
+        # URL response - scrape immediately
+        if response.startswith("http://") or response.startswith("https://"):
+            print(f"\n  Scraping {response}...")
+            try:
+                scraped = scrape_url(response, follow_links=False, max_pages=5)
+                if scraped:
+                    new_docs.extend(scraped)
+                    print(f"  Scraped {len(scraped)} page(s) for: {area['title']}")
+                else:
+                    print(f"  [WARNING] No content extracted from URL.")
+                    fallback = input("  Provide text explanation instead (or 'skip'): ").strip()
+                    if fallback.lower() != "skip" and fallback:
+                        text_parts.append(f"Regarding {area['title']}:")
+                        text_parts.append(f"{fallback}\n")
+            except Exception as e:
+                print(f"  [ERROR] Failed to scrape: {e}")
+                fallback = input("  Provide text explanation instead (or 'skip'): ").strip()
+                if fallback.lower() != "skip" and fallback:
+                    text_parts.append(f"Regarding {area['title']}:")
+                    text_parts.append(f"{fallback}\n")
+
+        # File response - reload docs directory
+        elif response.lower() == "file":
+            print(f"\n  Re-reading inputs/docs/ for new files...")
+            fresh_docs = reload_docs(already_loaded=loaded_docs)
+            if fresh_docs:
+                new_docs.extend(fresh_docs)
+                loaded_docs = loaded_docs + fresh_docs
+                filenames = ", ".join(d["filename"] for d in fresh_docs)
+                print(f"  Found {len(fresh_docs)} new file(s): {filenames}")
+            else:
+                print("  No new files found in inputs/docs/.")
+                print("  Make sure you've saved files there before typing 'file'.")
+                fallback = input("  Provide text explanation instead (or 'skip'): ").strip()
+                if fallback.lower() != "skip" and fallback:
+                    text_parts.append(f"Regarding {area['title']}:")
+                    text_parts.append(f"{fallback}\n")
+
+        # Text explanation
         else:
-            qa_pairs.append({
-                "id": q["id"],
-                "question": q["question"],
-                "section": q.get("section_reference", ""),
-                "answer": answer
-            })
-            print()
+            text_parts.append(f"Regarding {area['title']}:")
+            text_parts.append(f"{response}")
 
-    if not qa_pairs:
-        return ""
+            # Allow multi-line input for text explanations
+            print("  (Type more lines, empty line to finish this area)")
+            while True:
+                extra = input("  > ").strip()
+                if not extra:
+                    break
+                text_parts.append(extra)
+            text_parts.append("")
 
-    parts = ["Client provided the following answers:\n"]
-    for pair in qa_pairs:
-        ref = f" (Section: {pair['section']})" if pair["section"] else ""
-        parts.append(f"Q{ref}: {pair['question']}")
-        parts.append(f"A: {pair['answer']}\n")
-
-    return "\n".join(parts)
+    text_answers = "\n".join(text_parts) if text_parts else ""
+    return new_docs, text_answers, loaded_docs
 
 
 def main():
     print_header()
 
-    if not config.AZURE_AI_FOUNDRY_ENDPOINT:
-        print("\n  [ERROR] AZURE_AI_FOUNDRY_ENDPOINT not set.")
-        print("  Run: export AZURE_AI_FOUNDRY_ENDPOINT=https://<your-resource>.services.ai.azure.com/models\n")
-        sys.exit(1)
     if not config.AZURE_AI_FOUNDRY_API_KEY:
         print("\n  [ERROR] AZURE_AI_FOUNDRY_API_KEY not set.")
         print("  Run: export AZURE_AI_FOUNDRY_API_KEY=your-key-here\n")
@@ -171,6 +222,9 @@ def main():
     }
     print(f"\n  {mode_messages.get(mode, '')}")
 
+    # Keep track of all loaded docs (for reload detection)
+    loaded_docs = list(all_docs)
+
     # Step 2: Analyze
     print_step(2, "Analyzing inputs")
     print("\n  Running Analyzer agent...")
@@ -190,13 +244,13 @@ def main():
     round_num = 0
     while round_num < config.MAX_QUESTION_ROUNDS:
         round_num += 1
-        print_step(2 + round_num, f"Interrogation Round {round_num}")
+        print_step(2 + round_num, f"Gap Analysis Round {round_num}")
 
-        # Generate questions
+        # Identify knowledge area gaps
         print("\n  Running Interrogator agent...")
         start = time.time()
         try:
-            questions_data = run_interrogator(kb_markdown, mode=mode)
+            areas_data = run_interrogator(kb_markdown, mode=mode)
         except ValueError as e:
             print(f"\n  [ERROR] Interrogator failed: {e}")
             retry = input("  Retry this round? (y/n): ").strip().lower()
@@ -207,34 +261,47 @@ def main():
                 break
 
         elapsed = time.time() - start
-        num_q = len(questions_data.get("questions", []))
-        print(f"  Generated {num_q} question(s) in {elapsed:.1f}s")
+        num_areas = len(areas_data.get("areas", []))
+        print(f"  Identified {num_areas} knowledge area(s) in {elapsed:.1f}s")
 
         # Check if done
-        if questions_data.get("ready_for_generation"):
+        if areas_data.get("ready_for_generation"):
             print(f"\n  Knowledge base is READY for generation!")
-            print(f"  {questions_data.get('summary', '')}")
+            print(f"  {areas_data.get('summary', '')}")
             break
 
-        if not questions_data.get("questions"):
-            print("\n  No more questions. Knowledge base is complete.")
+        if not areas_data.get("areas"):
+            print("\n  No gaps found. Knowledge base is complete.")
             break
 
-        # Q&A
-        qa_context = interactive_qa(questions_data)
+        # Collect responses (URLs, files, text)
+        new_docs, text_answers, loaded_docs = collect_area_responses(
+            areas_data, loaded_docs
+        )
 
-        if not qa_context:
-            print("\n  No answers provided.")
+        if not new_docs and not text_answers:
+            print("\n  No new information provided.")
             proceed = input("  Continue to next round? (y/n): ").strip().lower()
             if proceed != "y":
                 break
             continue
 
-        # Enrich
-        print("\n  Updating knowledge base with your answers...")
+        # Log what we got
+        if new_docs:
+            print(f"\n  New documentation collected: {len(new_docs)} source(s)")
+        if text_answers:
+            answer_lines = text_answers.count("\n") + 1
+            print(f"  Text explanations collected: {answer_lines} lines")
+
+        # Enrich KB with new material
+        print("\n  Updating knowledge base with new information...")
         start = time.time()
         kb_markdown = run_enrichment(
-            kb_markdown, qa_context, scope=scope, mode=mode
+            existing_kb=kb_markdown,
+            new_docs=new_docs,
+            text_answers=text_answers,
+            scope=scope,
+            mode=mode
         )
         elapsed = time.time() - start
 
@@ -245,7 +312,7 @@ def main():
         print(f"  Saved: {saved}")
 
         if round_num < config.MAX_QUESTION_ROUNDS:
-            proceed = input("\n  Continue with more questions? (y/n): ").strip().lower()
+            proceed = input("\n  Continue with more rounds? (y/n): ").strip().lower()
             if proceed != "y":
                 break
 
@@ -253,7 +320,7 @@ def main():
     print_step(round_num + 3, "Saving final knowledge base")
     final_path = save_kb(kb_markdown, platform_name, round_num=round_num, is_final=True)
 
-    # Count some stats from the markdown
+    # Stats
     sections = kb_markdown.count("\n## ")
     subsections = kb_markdown.count("\n### ")
     code_blocks = kb_markdown.count("```")
@@ -261,7 +328,7 @@ def main():
 
     print(f"\n  Platform:              {platform_name}")
     print(f"  Input mode:            {mode}")
-    print(f"  Q&A rounds completed:  {round_num}")
+    print(f"  Rounds completed:      {round_num}")
     print(f"  Document length:       {len(kb_markdown)} chars, {kb_markdown.count(chr(10))+1} lines")
     print(f"  Sections:              {sections}")
     print(f"  Subsections:           {subsections}")

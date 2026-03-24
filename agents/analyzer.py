@@ -2,10 +2,14 @@
 Analyzer Agent
 
 Reads artifacts, documentation, and scope, then produces a comprehensive
-markdown knowledge base document. Outputs markdown directly, not JSON.
+markdown knowledge base document. Outputs markdown directly.
+
+Enrichment mode accepts new documentation AND text answers separately,
+so the agent can extract maximum information from full doc pages.
 """
 from anthropic import AnthropicFoundry
 import config
+from utils.stream_utils import stream_with_retry
 
 client = AnthropicFoundry(
     base_url=config.AZURE_AI_FOUNDRY_ENDPOINT,
@@ -69,7 +73,8 @@ What specific information is needed to fill each gap.
 ```
 
 WRITING RULES:
-- Be exhaustive. Every field in the artifact must be documented somewhere.
+- Cover every DISTINCT field type and object type, but do NOT repeat the same
+  pattern for every instance. One annotated example per pattern is enough.
 - Use annotated JSON/config blocks with inline comments explaining each element.
 - When you infer something from the artifact without doc confirmation, add:
   > **Needs Verification:** <what is unclear and what we assumed>
@@ -78,6 +83,8 @@ WRITING RULES:
 - Common patterns should include complete, copy-paste-ready examples.
 - Use ### subsections liberally to keep content scannable.
 - Do NOT use confidence scores, numeric ratings, or structured metadata.
+- Be thorough but concise. Prefer prose + one good example over exhaustive
+  field-by-field repetition. The Q&A rounds will fill gaps.
 - Write in clear, direct prose. This document will be read by both humans and AI.
 """
 
@@ -178,14 +185,26 @@ def _build_user_prompt(artifacts: list[dict], docs: list[dict],
     return "\n".join(parts)
 
 
+def _strip_markdown_fences(text: str) -> str:
+    """Remove wrapping markdown code fences if present."""
+    text = text.strip()
+    for prefix in ["```markdown", "```md", "```"]:
+        if text.startswith(prefix):
+            text = text[len(prefix):].strip()
+            break
+    if text.endswith("```"):
+        text = text[:-3].strip()
+    return text
+
+
 def run_analyzer(artifacts: list[dict], docs: list[dict],
                  scope: str = "", mode: str = "full") -> str:
     """
-    Run the Analyzer agent. Streams output live to stdout, returns the
-    complete knowledge base as a markdown string.
+    Run the Analyzer agent. Returns the knowledge base as a markdown string.
     """
-    print()  # blank line before streaming output begins
-    with client.messages.stream(
+    text = stream_with_retry(
+        client,
+        show_progress=True,
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
         system=_build_system_prompt(mode),
@@ -193,80 +212,76 @@ def run_analyzer(artifacts: list[dict], docs: list[dict],
             "role": "user",
             "content": _build_user_prompt(artifacts, docs, scope, mode)
         }]
-    ) as stream:
-        for text in stream.text_stream:
-            print(text, end="", flush=True)
-        response = stream.get_final_message()
-    print()  # newline after streaming finishes
-
-    kb_markdown = response.content[0].text.strip()
-
-    # Strip markdown fences if the model wrapped the whole thing
-    if kb_markdown.startswith("```markdown"):
-        kb_markdown = kb_markdown[len("```markdown"):].strip()
-    if kb_markdown.startswith("```md"):
-        kb_markdown = kb_markdown[len("```md"):].strip()
-    if kb_markdown.startswith("```"):
-        kb_markdown = kb_markdown[3:].strip()
-    if kb_markdown.endswith("```"):
-        kb_markdown = kb_markdown[:-3].strip()
-
-    return kb_markdown
+    )
+    return _strip_markdown_fences(text)
 
 
-def run_enrichment(existing_kb: str, qa_context: str,
-                   scope: str = "", mode: str = "full") -> str:
+def run_enrichment(existing_kb: str, new_docs: list[dict] = None,
+                   text_answers: str = "", scope: str = "",
+                   mode: str = "full") -> str:
     """
-    Rewrite the knowledge base incorporating new information from Q&A.
-    Returns the updated markdown string.
+    Rewrite the knowledge base incorporating new documentation and/or
+    text answers from the client.
+
+    Args:
+        existing_kb: Current KB markdown content
+        new_docs: List of new doc dicts (from URLs or files added mid-loop)
+        text_answers: Free-text explanations the client typed
+        scope: Original scope string
+        mode: Input mode
     """
     system_prompt = _build_system_prompt(mode)
 
-    user_prompt = f"""Here is the current knowledge base document:
+    # Build the enrichment prompt with separate sections for docs and answers
+    prompt_parts = [
+        "Here is the current knowledge base document:\n",
+        "---BEGIN KNOWLEDGE BASE---",
+        existing_kb,
+        "---END KNOWLEDGE BASE---\n"
+    ]
 
----BEGIN KNOWLEDGE BASE---
-{existing_kb}
----END KNOWLEDGE BASE---
+    if scope:
+        prompt_parts.append(f"SCOPE: {scope}\n")
 
-The client has provided the following answers to our questions:
+    has_new_docs = new_docs and len(new_docs) > 0
+    has_answers = len(text_answers.strip()) > 0
 
----BEGIN ANSWERS---
-{qa_context}
----END ANSWERS---
+    if has_new_docs:
+        prompt_parts.append("The client has provided NEW DOCUMENTATION:\n")
+        for i, doc in enumerate(new_docs, 1):
+            source = doc.get("source_url", doc["filename"])
+            prompt_parts.append(f"--- New Document {i}: {source} ---")
+            content = doc["content"]
+            if len(content) > 15000:
+                content = content[:15000] + "\n... [TRUNCATED] ..."
+            prompt_parts.append(content)
+            prompt_parts.append("")
 
-{"SCOPE: " + scope if scope else ""}
+    if has_answers:
+        prompt_parts.append("The client has also provided these explanations:\n")
+        prompt_parts.append("---BEGIN ANSWERS---")
+        prompt_parts.append(text_answers)
+        prompt_parts.append("---END ANSWERS---\n")
 
-Rewrite the knowledge base incorporating this new information:
-- Update the specific sections that the answers relate to
-- Remove "Needs Verification" callouts where answers confirm details
-- Add new subsections if the answers reveal areas not previously covered
-- Preserve everything that was not affected by the new answers
-- Where an answer confirms something, write with authority (no hedging)
+    prompt_parts.append("""Rewrite the knowledge base incorporating ALL the new information:
+- Extract everything relevant from the new documentation and integrate it into the appropriate sections
+- Incorporate the client's text explanations into the relevant sections
+- Remove "Needs Verification" callouts where new info confirms details
+- Add new subsections if the new material covers areas not previously documented
+- Preserve everything that was not affected by the new information
 - Update the "Known Gaps" section: remove resolved gaps, keep unresolved ones
+- Write with authority where new docs confirm something; no hedging
 
-Return the COMPLETE updated markdown document. Start directly with the heading."""
+Return the COMPLETE updated markdown document. Start directly with the heading.""")
 
-    print()
-    with client.messages.stream(
+    user_prompt = "\n".join(prompt_parts)
+
+    text = stream_with_retry(
+        client,
+        show_progress=True,
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
-    ) as stream:
-        for text in stream.text_stream:
-            print(text, end="", flush=True)
-        response = stream.get_final_message()
-    print()
-
-    updated_kb = response.content[0].text.strip()
-
-    if updated_kb.startswith("```markdown"):
-        updated_kb = updated_kb[len("```markdown"):].strip()
-    if updated_kb.startswith("```md"):
-        updated_kb = updated_kb[len("```md"):].strip()
-    if updated_kb.startswith("```"):
-        updated_kb = updated_kb[3:].strip()
-    if updated_kb.endswith("```"):
-        updated_kb = updated_kb[:-3].strip()
-
-    return updated_kb
+    )
+    return _strip_markdown_fences(text)

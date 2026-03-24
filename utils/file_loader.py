@@ -1,5 +1,6 @@
 """
-Input loading, mode detection, and YAML config parsing.
+Input loading, mode detection, YAML config parsing,
+and mid-loop doc reloading.
 """
 import os
 import json
@@ -109,6 +110,24 @@ def load_docs(docs_dir: str = None) -> list[dict]:
         })
 
     return docs
+
+
+def reload_docs(docs_dir: str = None,
+                already_loaded: list[dict] = None) -> list[dict]:
+    """
+    Re-read the docs directory and return only NEW files
+    that were not in the already_loaded list.
+    Called mid-loop when the user says they dropped new files.
+    """
+    all_docs = load_docs(docs_dir)
+
+    if not already_loaded:
+        return all_docs
+
+    known_filenames = {d["filename"] for d in already_loaded}
+    new_docs = [d for d in all_docs if d["filename"] not in known_filenames]
+
+    return new_docs
 
 
 def detect_input_mode(artifacts, docs, doc_urls, scope):
