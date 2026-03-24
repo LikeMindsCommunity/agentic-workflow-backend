@@ -19,7 +19,8 @@ def load_input_config(config_path: str = None) -> dict:
             "docs_dir": "docs",
             "doc_urls": [],
             "follow_links": False,
-            "max_pages": config.MAX_PAGES_PER_URL
+            "max_pages": config.MAX_PAGES_PER_URL,
+            "exclude_files": []
         }
 
     with open(config_path, "r") as f:
@@ -32,16 +33,18 @@ def load_input_config(config_path: str = None) -> dict:
         "docs_dir": data.get("docs_dir", "docs"),
         "doc_urls": data.get("doc_urls") or [],
         "follow_links": data.get("follow_links", False),
-        "max_pages": data.get("max_pages", config.MAX_PAGES_PER_URL)
+        "max_pages": data.get("max_pages", config.MAX_PAGES_PER_URL),
+        "exclude_files": data.get("exclude_files") or []
     }
 
 
-def load_artifacts(artifacts_dir: str = None) -> list[dict]:
+def load_artifacts(artifacts_dir: str = None, exclude_files: list = None) -> list[dict]:
     if artifacts_dir is None:
         artifacts_dir = config.ARTIFACTS_DIR
     elif not os.path.isabs(artifacts_dir):
         artifacts_dir = os.path.join(config.INPUT_DIR, artifacts_dir)
 
+    exclude_files = set(exclude_files or [])
     artifacts = []
     if not os.path.exists(artifacts_dir):
         return artifacts
@@ -49,6 +52,9 @@ def load_artifacts(artifacts_dir: str = None) -> list[dict]:
     for fname in sorted(os.listdir(artifacts_dir)):
         fpath = os.path.join(artifacts_dir, fname)
         if not os.path.isfile(fpath):
+            continue
+        # Skip hidden/system files (e.g. .DS_Store) and explicitly excluded files
+        if fname.startswith(".") or fname in exclude_files:
             continue
 
         with open(fpath, "r", encoding="utf-8", errors="replace") as f:

@@ -123,12 +123,20 @@ def run_interrogator(kb_markdown: str, mode: str = "full",
 
 Generate your questions as JSON."""
 
-    response = client.messages.create(
+    char_count = 0
+    print("  Interrogating KB", end="", flush=True)
+    with client.messages.stream(
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
-    )
+    ) as stream:
+        for text in stream.text_stream:
+            char_count += len(text)
+            if char_count % 200 < len(text):   # dot every ~200 chars
+                print(".", end="", flush=True)
+        response = stream.get_final_message()
+    print(f" done ({char_count} chars)\n", flush=True)
 
     response_text = response.content[0].text.strip()
 

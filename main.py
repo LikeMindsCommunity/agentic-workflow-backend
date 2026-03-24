@@ -44,7 +44,7 @@ def load_all_inputs():
     input_cfg = load_input_config()
     print(f"\n  Platform: {input_cfg['platform_name']}")
 
-    artifacts = load_artifacts(input_cfg["artifacts_dir"])
+    artifacts = load_artifacts(input_cfg["artifacts_dir"], input_cfg.get("exclude_files", []))
     local_docs = load_docs(input_cfg["docs_dir"])
 
     scraped_docs = []

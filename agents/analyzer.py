@@ -181,9 +181,11 @@ def _build_user_prompt(artifacts: list[dict], docs: list[dict],
 def run_analyzer(artifacts: list[dict], docs: list[dict],
                  scope: str = "", mode: str = "full") -> str:
     """
-    Run the Analyzer agent. Returns the knowledge base as a markdown string.
+    Run the Analyzer agent. Streams output live to stdout, returns the
+    complete knowledge base as a markdown string.
     """
-    response = client.messages.create(
+    print()  # blank line before streaming output begins
+    with client.messages.stream(
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
         system=_build_system_prompt(mode),
@@ -191,7 +193,11 @@ def run_analyzer(artifacts: list[dict], docs: list[dict],
             "role": "user",
             "content": _build_user_prompt(artifacts, docs, scope, mode)
         }]
-    )
+    ) as stream:
+        for text in stream.text_stream:
+            print(text, end="", flush=True)
+        response = stream.get_final_message()
+    print()  # newline after streaming finishes
 
     kb_markdown = response.content[0].text.strip()
 
@@ -240,12 +246,17 @@ Rewrite the knowledge base incorporating this new information:
 
 Return the COMPLETE updated markdown document. Start directly with the heading."""
 
-    response = client.messages.create(
+    print()
+    with client.messages.stream(
         model=config.MODEL,
         max_tokens=config.MAX_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
-    )
+    ) as stream:
+        for text in stream.text_stream:
+            print(text, end="", flush=True)
+        response = stream.get_final_message()
+    print()
 
     updated_kb = response.content[0].text.strip()
 

@@ -28,6 +28,11 @@ scope: |
 # Only the nodeflow JSON is provided for this test run.
 artifacts_dir: "sample_artifacts"
 
+# Files to exclude from the artifacts directory (in addition to hidden files
+# like .DS_Store which are always skipped automatically).
+# exclude_files:
+#   - "some_unwanted_file.json"
+
 # ------------------------------------------------------------
 # DOCUMENTATION — intentionally omitted for this test run
 # ------------------------------------------------------------
