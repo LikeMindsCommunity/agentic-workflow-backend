@@ -277,72 +277,146 @@ def run_analyzer(artifacts: list[dict], docs: list[dict],
     return "\n\n".join(section_texts)
 
 
+# ---------------------------------------------------------------------------
+# Enrichment batches — mirror SECTION_BATCHES exactly so the KB structure
+# stays consistent.  Each call receives the full existing KB as read-only
+# context but outputs ONLY the sections listed in its directive.
+# This keeps output tokens per call well within the Azure gateway timeout.
+# ---------------------------------------------------------------------------
+ENRICHMENT_BATCHES = [
+    {
+        "label": "Overview · Core Concepts · Artifact Structure",
+        "directive": (
+            "Rewrite ONLY these three sections incorporating the new information:\n"
+            "1. ## Overview\n"
+            "2. ## Core Concepts\n"
+            "3. ## Artifact Structure\n\n"
+            "Output ONLY these three sections. Start directly with ## Overview.\n"
+            "Do NOT include the document title or any other sections."
+        ),
+    },
+    {
+        "label": "Objects and Fields",
+        "directive": (
+            "Rewrite ONLY the per-object and per-component detail sections "
+            "incorporating the new information.\n"
+            "These are every ## section that is NOT one of: Overview, Core Concepts, "
+            "Artifact Structure, Validation Rules and Constraints, Dependencies and "
+            "Ordering, Common Patterns, Integration Checklist, Troubleshooting, Known Gaps.\n\n"
+            "Output ONLY those object/component sections. "
+            "Do NOT include any structural or closing sections."
+        ),
+    },
+    {
+        "label": "Validation Rules · Dependencies · Common Patterns",
+        "directive": (
+            "Rewrite ONLY these three sections incorporating the new information:\n"
+            "1. ## Validation Rules and Constraints\n"
+            "2. ## Dependencies and Ordering\n"
+            "3. ## Common Patterns\n\n"
+            "Output ONLY these three sections. Start directly with "
+            "## Validation Rules and Constraints.\n"
+            "Do NOT include any other sections."
+        ),
+    },
+    {
+        "label": "Integration Checklist · Troubleshooting · Known Gaps",
+        "directive": (
+            "Rewrite ONLY these three closing sections incorporating the new information:\n"
+            "1. ## Integration Checklist\n"
+            "2. ## Troubleshooting\n"
+            "3. ## Known Gaps\n\n"
+            "Output ONLY these three sections. Start directly with ## Integration Checklist.\n"
+            "Do NOT include any other sections."
+        ),
+    },
+]
+
+
 def run_enrichment(existing_kb: str, new_docs: list[dict] = None,
                    text_answers: str = "", scope: str = "",
                    mode: str = "full") -> str:
     """
-    Rewrite the knowledge base incorporating new documentation and/or
-    text answers from the client.
+    Update the knowledge base section-by-section with new documentation
+    and/or client answers.
+
+    Each batch call receives the full existing KB as read-only context but
+    outputs only its assigned sections, keeping generation time short enough
+    to avoid Azure gateway timeouts.
 
     Args:
-        existing_kb: Current KB markdown content
-        new_docs: List of new doc dicts (from URLs or files added mid-loop)
-        text_answers: Free-text explanations the client typed
-        scope: Original scope string
-        mode: Input mode
+        existing_kb:  Current KB markdown content
+        new_docs:     New doc dicts (from URLs or files shared mid-loop)
+        text_answers: Free-text explanations typed by the client
+        scope:        Original scope string
+        mode:         Input mode
     """
     system_prompt = _build_system_prompt(mode)
 
-    # Build the enrichment prompt with separate sections for docs and answers
-    prompt_parts = [
-        "Here is the current knowledge base document:\n",
-        "---BEGIN KNOWLEDGE BASE---",
-        existing_kb,
-        "---END KNOWLEDGE BASE---\n"
-    ]
+    # Build the new-information block once — reused in every batch call
+    new_info_parts = []
 
     if scope:
-        prompt_parts.append(f"SCOPE: {scope}\n")
+        new_info_parts.append(f"SCOPE: {scope}\n")
 
-    has_new_docs = new_docs and len(new_docs) > 0
-    has_answers = len(text_answers.strip()) > 0
-
-    if has_new_docs:
-        prompt_parts.append("The client has provided NEW DOCUMENTATION:\n")
+    if new_docs:
+        new_info_parts.append("NEW DOCUMENTATION PROVIDED BY CLIENT:\n")
         for i, doc in enumerate(new_docs, 1):
             source = doc.get("source_url", doc["filename"])
-            prompt_parts.append(f"--- New Document {i}: {source} ---")
-            content = doc["content"]
-            # if len(content) > 15000:
-            #     content = content[:15000] + "\n... [TRUNCATED] ..."
-            prompt_parts.append(content)
-            prompt_parts.append("")
+            new_info_parts.append(f"--- New Document {i}: {source} ---")
+            new_info_parts.append(doc["content"])
+            new_info_parts.append("")
 
-    if has_answers:
-        prompt_parts.append("The client has also provided these explanations:\n")
-        prompt_parts.append("---BEGIN ANSWERS---")
-        prompt_parts.append(text_answers)
-        prompt_parts.append("---END ANSWERS---\n")
+    if text_answers.strip():
+        new_info_parts.append("CLIENT EXPLANATIONS:\n")
+        new_info_parts.append("---BEGIN ANSWERS---")
+        new_info_parts.append(text_answers.strip())
+        new_info_parts.append("---END ANSWERS---\n")
 
-    prompt_parts.append("""Rewrite the knowledge base incorporating ALL the new information:
-- Extract everything relevant from the new documentation and integrate it into the appropriate sections
-- Incorporate the client's text explanations into the relevant sections
-- Remove "Needs Verification" callouts where new info confirms details
-- Add new subsections if the new material covers areas not previously documented
-- Preserve everything that was not affected by the new information
-- Update the "Known Gaps" section: remove resolved gaps, keep unresolved ones
-- Write with authority where new docs confirm something; no hedging
+    new_info_block = "\n".join(new_info_parts)
 
-Return the COMPLETE updated markdown document. Start directly with the heading.""")
-
-    user_prompt = "\n".join(prompt_parts)
-
-    text = stream_with_retry(
-        client,
-        show_progress=True,
-        model=config.MODEL,
-        max_tokens=config.ENRICHMENT_MAX_TOKENS,
-        system=system_prompt,
-        messages=[{"role": "user", "content": user_prompt}]
+    # Extract the document title line (# heading) to preserve it
+    title_line = next(
+        (line for line in existing_kb.splitlines()
+         if line.startswith("# ") and not line.startswith("## ")),
+        ""
     )
-    return _strip_markdown_fences(text)
+
+    # Enrich each section batch independently
+    section_texts = []
+    for i, batch in enumerate(ENRICHMENT_BATCHES, 1):
+        print(f"\n  [{i}/{len(ENRICHMENT_BATCHES)}] Enriching: {batch['label']} ...")
+
+        user_prompt = (
+            "Here is the complete current knowledge base for context:\n\n"
+            "---BEGIN EXISTING KB---\n"
+            f"{existing_kb}\n"
+            "---END EXISTING KB---\n\n"
+            f"{new_info_block}\n"
+            f"{batch['directive']}\n\n"
+            "Rewrite rules for the sections you are updating:\n"
+            "- Integrate all relevant new information into the appropriate subsections\n"
+            "- Remove \"Needs Verification\" callouts where new info confirms details\n"
+            "- Add new subsections if the new material reveals undocumented areas\n"
+            "- Preserve content that is not affected by the new information\n"
+            "- Write with authority where new docs confirm something; no hedging"
+        )
+
+        text = stream_with_retry(
+            client,
+            show_progress=True,
+            model=config.MODEL,
+            max_tokens=config.MAX_TOKENS,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        section_texts.append(_strip_markdown_fences(text))
+
+    # Reassemble: preserved title + all enriched section outputs
+    parts = []
+    if title_line:
+        parts.append(title_line)
+        parts.append("")
+    parts.extend(section_texts)
+
+    return "\n\n".join(parts)

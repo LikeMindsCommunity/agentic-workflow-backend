@@ -18,28 +18,40 @@ client = AnthropicFoundry(
 )
 
 
-BASE_SYSTEM_PROMPT = """You are reviewing a knowledge base document written for a client's platform. Your job is to determine whether this document is complete enough for an AI system to generate valid artifacts using ONLY this document as reference.
+BASE_SYSTEM_PROMPT = """You are reviewing a knowledge base document written for a client's platform. Your job is to determine whether this document is complete enough for an AI system to generate valid artifact FILES using ONLY this document as reference.
+
+CRITICAL SCOPE BOUNDARY — only flag gaps that directly affect writing the artifact file:
+- YES: field names, their types, required vs optional, valid values, defaults
+- YES: expression/condition syntax used in the file (operators, functions, variable references)
+- YES: valid event names and transition trigger values written into the file
+- YES: object structure — what nests inside what, ID reference patterns
+- NO: runtime platform behaviour (what happens at call time, agent routing logic)
+- NO: platform operations (audio upload process, CDN management, retention policies)
+- NO: performance limits, rate limits, cost implications
+- NO: external system integration (CRM webhooks, OAuth flows, database credentials)
+
+A gap only belongs here if NOT knowing it would cause you to write an incorrect or invalid value in the artifact file. If the gap is about what happens AFTER the file is deployed and executed, ignore it.
 
 IMPORTANT: You are NOT generating a list of individual questions. Instead, you are identifying KNOWLEDGE AREAS where information is missing. Each area groups multiple related gaps so the client can respond efficiently with a single documentation dump, URL, or explanation.
 
 HOW TO IDENTIFY KNOWLEDGE AREAS:
-Read the document and find clusters of related unknowns. For example:
-- Multiple unknown fields on the TransferNode = one area: "TransferNode and Call Routing"
-- Unclear scripting APIs and variable scoping = one area: "JavaScript Scripting Environment"
-- Several "Needs Verification" callouts about audio formats = one area: "Audio File Management"
+Read the document and find clusters of related unknowns that affect what you would write in the file. For example:
+- Multiple unknown field values on TransferNode = one area: "TransferNode Attribute Schema"
+- Unclear variable reference syntax = one area: "Variable Reference Format in Expressions"
+- Unknown valid event name strings = one area: "Transition Event Names and Trigger Values"
 
 DO NOT split closely related gaps into separate areas. Group them.
 Aim for 3-5 areas maximum per review, not 15-20.
 
 FOR EACH AREA, provide:
 - what_we_have: What the KB already documents about this area (be specific)
-- what_we_need: What is missing, grouped as a coherent description (not a bullet list of 20 sub-questions)
-- suggested_sources: What kind of documentation would fill this gap (e.g., "API reference for X", "Configuration guide for Y", "Developer docs URL for Z")
+- what_we_need: What is missing and why it prevents writing a correct value in the artifact
+- suggested_sources: What kind of documentation would fill this gap
 
 PRIORITY LEVELS:
-- blocking: Cannot generate valid artifacts without this area being documented
-- important: Artifacts can be generated but may be incorrect in some scenarios
-- nice_to_have: Edge cases, optimizations, completeness
+- blocking: Would cause you to write an invalid or missing required field in the artifact
+- important: Artifact can be written but a specific field value may be wrong in some scenarios
+- nice_to_have: Edge cases or optional fields that rarely appear
 
 OUTPUT FORMAT - respond with ONLY valid JSON, no markdown fences:
 {
@@ -69,16 +81,17 @@ MODE_ADDITIONS = {
 SPECIAL CONTEXT: This KB was built from artifacts alone with no documentation.
 Most content is inferred. The client likely has docs or URLs they can share.
 
-Frame your areas around broad documentation needs:
-- "We need the complete API reference for node types" rather than asking about
-  individual fields one at a time
-- "We need the platform developer guide" rather than asking about scripting
-  APIs piecemeal
-- Suggest specific doc types that would help: "API reference", "developer guide",
-  "configuration manual", "schema reference"
+Frame your areas around gaps that affect what you write in the artifact file:
+- Unknown valid values for enum/numeric fields (e.g., what does routingStrategy: 3 mean?)
+- Attribute schemas where required vs optional is unclear
+- Expression or condition syntax where you'd have to guess the format
+- Event name strings that were inferred and may be wrong
 
-The goal is to get the client to share everything they have in 1-2 rounds,
-not to interrogate them field by field across 10 rounds.""",
+Do NOT raise areas about: platform operations, deployment process, audio management,
+external system integrations, performance limits, or runtime behaviour.
+
+The goal is to get the client to share the schema/API reference docs so you can
+confirm what to write in the file — not to understand the full platform.""",
 
     "urls_only": """
 
