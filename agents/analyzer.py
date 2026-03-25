@@ -162,8 +162,8 @@ def _build_user_prompt(artifacts: list[dict], docs: list[dict],
         for i, artifact in enumerate(artifacts, 1):
             parts.append(f"--- Artifact {i}: {artifact['filename']} ({artifact['file_type']}) ---")
             content = artifact["raw_content"]
-            if len(content) > 15000:
-                content = content[:15000] + "\n... [TRUNCATED] ..."
+            # if len(content) > 15000:
+            #     content = content[:15000] + "\n... [TRUNCATED] ..."
             parts.append(content)
             parts.append("")
 
@@ -173,8 +173,8 @@ def _build_user_prompt(artifacts: list[dict], docs: list[dict],
             source = doc.get("source_url", doc["filename"])
             parts.append(f"--- Document {i}: {source} ---")
             content = doc["content"]
-            if len(content) > 15000:
-                content = content[:15000] + "\n... [TRUNCATED] ..."
+            # if len(content) > 15000:
+            #     content = content[:15000] + "\n... [TRUNCATED] ..."
             parts.append(content)
             parts.append("")
 
@@ -252,8 +252,8 @@ def run_enrichment(existing_kb: str, new_docs: list[dict] = None,
             source = doc.get("source_url", doc["filename"])
             prompt_parts.append(f"--- New Document {i}: {source} ---")
             content = doc["content"]
-            if len(content) > 15000:
-                content = content[:15000] + "\n... [TRUNCATED] ..."
+            # if len(content) > 15000:
+            #     content = content[:15000] + "\n... [TRUNCATED] ..."
             prompt_parts.append(content)
             prompt_parts.append("")
 
