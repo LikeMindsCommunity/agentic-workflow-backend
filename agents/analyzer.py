@@ -148,8 +148,12 @@ You must output a well-structured MARKDOWN document. No JSON. No preamble or clo
 {MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["full"])}"""
 
 
-def _build_user_prompt(artifacts: list[dict], docs: list[dict],
-                       scope: str, mode: str) -> str:
+def _build_context_block(artifacts: list[dict], docs: list[dict],
+                         scope: str, mode: str) -> str:
+    """
+    Build the input context (artifacts + docs + scope) WITHOUT a trailing
+    directive. The section-specific directive is appended separately per call.
+    """
     parts = []
 
     if scope:
@@ -161,10 +165,7 @@ def _build_user_prompt(artifacts: list[dict], docs: list[dict],
         parts.append("\n=== SAMPLE ARTIFACTS ===\n")
         for i, artifact in enumerate(artifacts, 1):
             parts.append(f"--- Artifact {i}: {artifact['filename']} ({artifact['file_type']}) ---")
-            content = artifact["raw_content"]
-            # if len(content) > 15000:
-            #     content = content[:15000] + "\n... [TRUNCATED] ..."
-            parts.append(content)
+            parts.append(artifact["raw_content"])
             parts.append("")
 
     if docs:
@@ -172,17 +173,68 @@ def _build_user_prompt(artifacts: list[dict], docs: list[dict],
         for i, doc in enumerate(docs, 1):
             source = doc.get("source_url", doc["filename"])
             parts.append(f"--- Document {i}: {source} ---")
-            content = doc["content"]
-            # if len(content) > 15000:
-            #     content = content[:15000] + "\n... [TRUNCATED] ..."
-            parts.append(content)
+            parts.append(doc["content"])
             parts.append("")
 
     if not artifacts and not docs:
         parts.append("\nNo artifacts or documentation provided. Build from scope alone.\n")
 
-    parts.append("\nWrite the complete knowledge base document now.")
     return "\n".join(parts)
+
+
+# ---------------------------------------------------------------------------
+# Section batches for chunked KB generation.
+# Each batch is one API call that writes a specific slice of the document.
+# This keeps individual responses small enough to avoid Azure gateway timeouts
+# while still producing a complete, fully-detailed knowledge base.
+# ---------------------------------------------------------------------------
+SECTION_BATCHES = [
+    {
+        "label": "Overview · Core Concepts · Artifact Structure",
+        "directive": (
+            "Start the knowledge base document with the title heading, then write ONLY "
+            "these three sections:\n"
+            "1. # <Platform Name> - <Artifact Type> Knowledge Base  ← document title\n"
+            "2. ## Overview\n"
+            "3. ## Core Concepts\n"
+            "4. ## Artifact Structure\n\n"
+            "Stop after completing ## Artifact Structure. Do NOT write any other sections."
+        ),
+    },
+    {
+        "label": "Objects and Fields",
+        "directive": (
+            "Continue the knowledge base by writing ONLY the per-object detail sections.\n"
+            "For every distinct object type in the artifacts write one ## section that covers:\n"
+            "  - What the object represents and when it is used\n"
+            "  - All fields with type, required/optional, valid values, defaults\n"
+            "  - Annotated JSON examples using real values from the sample artifacts\n"
+            "  - Behavioral notes and edge cases\n\n"
+            "Do NOT re-write Overview, Core Concepts, Artifact Structure, or any later sections. "
+            "Object sections only."
+        ),
+    },
+    {
+        "label": "Validation Rules · Dependencies · Common Patterns",
+        "directive": (
+            "Continue the knowledge base by writing ONLY these three sections:\n"
+            "1. ## Validation Rules and Constraints\n"
+            "2. ## Dependencies and Ordering\n"
+            "3. ## Common Patterns\n\n"
+            "Do NOT re-write any earlier sections or the closing sections."
+        ),
+    },
+    {
+        "label": "Integration Checklist · Troubleshooting · Known Gaps",
+        "directive": (
+            "Finish the knowledge base by writing ONLY these three sections:\n"
+            "1. ## Integration Checklist\n"
+            "2. ## Troubleshooting\n"
+            "3. ## Known Gaps\n\n"
+            "Do NOT re-write any earlier sections."
+        ),
+    },
+]
 
 
 def _strip_markdown_fences(text: str) -> str:
@@ -200,20 +252,29 @@ def _strip_markdown_fences(text: str) -> str:
 def run_analyzer(artifacts: list[dict], docs: list[dict],
                  scope: str = "", mode: str = "full") -> str:
     """
-    Run the Analyzer agent. Returns the knowledge base as a markdown string.
+    Generate the knowledge base in section batches to avoid Azure gateway
+    timeouts on large responses.  Each batch writes a specific slice of the
+    document; the slices are joined into a single markdown string at the end.
     """
-    text = stream_with_retry(
-        client,
-        show_progress=True,
-        model=config.MODEL,
-        max_tokens=config.MAX_TOKENS,
-        system=_build_system_prompt(mode),
-        messages=[{
-            "role": "user",
-            "content": _build_user_prompt(artifacts, docs, scope, mode)
-        }]
-    )
-    return _strip_markdown_fences(text)
+    system_prompt = _build_system_prompt(mode)
+    context_block = _build_context_block(artifacts, docs, scope, mode)
+
+    section_texts = []
+    for i, batch in enumerate(SECTION_BATCHES, 1):
+        print(f"\n  [{i}/{len(SECTION_BATCHES)}] Generating: {batch['label']} ...")
+        user_prompt = context_block + f"\n\n{batch['directive']}"
+
+        text = stream_with_retry(
+            client,
+            show_progress=True,
+            model=config.MODEL,
+            max_tokens=config.MAX_TOKENS,
+            system=system_prompt,
+            messages=[{"role": "user", "content": user_prompt}]
+        )
+        section_texts.append(_strip_markdown_fences(text))
+
+    return "\n\n".join(section_texts)
 
 
 def run_enrichment(existing_kb: str, new_docs: list[dict] = None,
@@ -280,7 +341,7 @@ Return the COMPLETE updated markdown document. Start directly with the heading."
         client,
         show_progress=True,
         model=config.MODEL,
-        max_tokens=config.MAX_TOKENS,
+        max_tokens=config.ENRICHMENT_MAX_TOKENS,
         system=system_prompt,
         messages=[{"role": "user", "content": user_prompt}]
     )

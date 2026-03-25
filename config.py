@@ -5,7 +5,8 @@ load_dotenv()
 AZURE_AI_FOUNDRY_ENDPOINT = os.environ.get("AZURE_AI_FOUNDRY_ENDPOINT", "")
 AZURE_AI_FOUNDRY_API_KEY = os.environ.get("AZURE_AI_FOUNDRY_API_KEY", "")
 MODEL = "claude-sonnet-4-5"
-MAX_TOKENS = 64000
+MAX_TOKENS = 16000         # per API call — keeps responses within Azure gateway timeout
+ENRICHMENT_MAX_TOKENS = 16000  # enrichment rewrites targeted sections, same budget
 
 BASE_DIR = os.path.dirname(__file__)
 INPUT_DIR = os.path.join(BASE_DIR, "inputs")
