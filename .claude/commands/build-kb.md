@@ -27,13 +27,11 @@ You are an expert platform analyst for LikeMinds. Your job is to build a compreh
 - Glob all files in `inputs/sample_artifacts/`
 - Skip `.DS_Store` and hidden files
 - Read each file. Note whether `.json` files are valid JSON or raw text.
-- If a single file exceeds 15 000 characters, read the first 15 000 chars and note the truncation.
 
 ### Documentation
 - Read all `.md .txt .json .yaml .yml .xml .html` files from `inputs/docs/`
 - For each URL in `doc_urls`: fetch with WebFetch, extract main content.
 - Use judgment on link following: if a page is sparse or mostly navigation, follow internal links to find the actual content. Stop when you have enough to understand the schema.
-- If a single document exceeds 12 000 characters, truncate and note it.
 
 ### Mode detection
 | Condition | Mode |

@@ -12,7 +12,8 @@
       "Skill(claude-api)",
       "Skill(claude-api:*)",
       "Bash(npm install:*)",
-      "Bash(wc:*)"
+      "Bash(wc:*)",
+      "Bash(head:*)"
     ]
   }
 }
