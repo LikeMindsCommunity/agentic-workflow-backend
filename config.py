@@ -14,10 +14,4 @@ DOCS_DIR = os.path.join(INPUT_DIR, "docs")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 INPUT_CONFIG_PATH = os.path.join(INPUT_DIR, "input_config.yaml")
 
-MAX_QUESTION_ROUNDS = 5
 MAX_AREAS_PER_ROUND = 5
-
-MAX_PAGES_PER_URL = 15
-MAX_CONTENT_PER_PAGE = 12000
-SCRAPE_TIMEOUT = 30
-SCRAPE_DELAY = 1.0

@@ -13,7 +13,10 @@
       "Skill(claude-api:*)",
       "Bash(npm install:*)",
       "Bash(wc:*)",
-      "Bash(head:*)"
+      "Bash(head:*)",
+      "Bash(ls /Users/mac/Desktop/agentic-workflow-backend/*.py)",
+      "Bash(python -c \"import main\")",
+      "Bash(source venv/bin/activate)"
     ]
   }
 }
