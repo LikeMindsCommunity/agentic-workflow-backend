@@ -1,31 +1,83 @@
 """
-LikeMinds Layer 1 - Platform Knowledge Base Builder
+LikeMinds Layer 1 - Knowledge Base Builder
 
-Orchestrates two agents in a refinement loop:
-  Analyzer     -> writes/rewrites the KB (markdown)
-  Interrogator -> reads KB, finds knowledge area gaps
-  User responds per area with: URL | file | text explanation
-  Analyzer     -> rewrites KB with new docs + answers
+Uses the Claude Agentic SDK to orchestrate the KB build loop.
+Claude agents handle all file I/O, web fetching, and generation.
+Python orchestrates the loop and handles user interaction.
 
-Supports four input modes:
-  full            artifacts + docs (local or URLs)
-  artifacts_only  only artifacts, agent asks all questions
-  urls_only       doc URLs + scope, no artifacts
-  scope_only      just requirements, everything via Q&A
+Flow:
+  1. Read input_config.yaml + detect mode
+  2. Draft agent  → reads inputs, writes KB file
+  3. Interrogator → reads KB, returns gap JSON
+  4. User Q&A     → collect URLs / files / text
+  5. Enrichment   → reads KB + new info, writes updated KB
+  6. Repeat 3-5 until ready or user types 'done'
 """
+import anyio
+import json
 import os
 import sys
 import time
 from datetime import datetime
+from pathlib import Path
 
 import config
-from utils.file_loader import (
-    load_input_config, load_artifacts, load_docs,
-    detect_input_mode, summarize_inputs, reload_docs
+from utils.file_loader import load_input_config, detect_input_mode
+from agents.prompts import (
+    ANALYZER_SYSTEM_PROMPT,
+    INTERROGATOR_SYSTEM_PROMPT,
+    MODE_INSTRUCTIONS,
+    MODE_ADDITIONS,
 )
-from utils.web_scraper import scrape_urls, scrape_url
-from agents.analyzer import run_analyzer, run_enrichment
-from agents.interrogator import run_interrogator, format_areas_for_display
+
+try:
+    from claude_agent_sdk import (
+        query,
+        ClaudeAgentOptions,
+        AssistantMessage,
+        UserMessage,
+        ResultMessage,
+        TextBlock,
+        ToolUseBlock,
+        ToolResultBlock,
+    )
+except ImportError:
+    print("\n  [ERROR] claude-agent-sdk not installed.")
+    print("  Run: pip install claude-agent-sdk\n")
+    sys.exit(1)
+
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+def get_safe_name(platform_name: str) -> str:
+    return platform_name.lower().replace(" ", "_")[:30]
+
+
+def get_latest_kb(safe_name: str) -> str | None:
+    """Return path to the most recently modified KB file, or None."""
+    out_dir = Path(config.OUTPUT_DIR)
+    if not out_dir.exists():
+        return None
+    files = sorted(out_dir.glob(f"kb_{safe_name}_*.md"), key=os.path.getmtime, reverse=True)
+    return str(files[0]) if files else None
+
+
+def make_kb_path(safe_name: str, label: str) -> str:
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    return os.path.join(config.OUTPUT_DIR, f"kb_{safe_name}_{label}_{ts}.md")
+
+
+def count_dir_files(directory: str) -> int:
+    """Count non-hidden files in a directory (non-recursive)."""
+    if not os.path.isdir(directory):
+        return 0
+    return sum(
+        1 for f in os.listdir(directory)
+        if not f.startswith(".") and os.path.isfile(os.path.join(directory, f))
+    )
 
 
 def print_header():
@@ -34,312 +86,378 @@ def print_header():
     print("=" * 60)
 
 
-def print_step(num: int, desc: str):
-    print(f"\n{'~'*60}")
-    print(f"  Step {num}: {desc}")
-    print(f"{'~'*60}")
+def print_step(label: str):
+    print(f"\n{'~' * 60}")
+    print(f"  {label}")
+    print(f"{'~' * 60}")
 
 
-def load_all_inputs():
-    """Load config, artifacts, local docs, and scraped docs."""
-    input_cfg = load_input_config()
-    print(f"\n  Platform: {input_cfg['platform_name']}")
-
-    artifacts = load_artifacts(input_cfg["artifacts_dir"], input_cfg.get("exclude_files", []))
-    local_docs = load_docs(input_cfg["docs_dir"])
-
-    scraped_docs = []
-    doc_urls = input_cfg.get("doc_urls", [])
-    if doc_urls:
-        print(f"\n  Scraping {len(doc_urls)} documentation URL(s)...")
-        scraped_docs = scrape_urls(
-            doc_urls,
-            follow_links=input_cfg.get("follow_links", False),
-            max_pages=input_cfg.get("max_pages", config.MAX_PAGES_PER_URL)
-        )
-        print(f"  Scraped {len(scraped_docs)} page(s)")
-
-    all_docs = local_docs + scraped_docs
-    scope = input_cfg["scope"]
-    mode = detect_input_mode(artifacts, all_docs, doc_urls, scope)
-
-    print(f"\n{summarize_inputs(artifacts, local_docs, scraped_docs, scope, mode)}")
-
-    return input_cfg, artifacts, all_docs, mode
+def _format_tool_args(name: str, args: dict) -> str:
+    """Return the most display-worthy argument for a tool call."""
+    for key in ("path", "file_path", "url", "pattern", "command", "query"):
+        if key in args:
+            return str(args[key])
+    if args:
+        return str(next(iter(args.values())))
+    return ""
 
 
-def save_kb(kb_markdown: str, platform_name: str,
-            round_num: int, is_final: bool = False) -> str:
-    """Save knowledge base markdown to outputs/."""
-    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
-
-    safe_name = platform_name.lower().replace(" ", "_")[:30]
-    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-    if is_final:
-        filename = f"kb_{safe_name}_FINAL_{timestamp}.md"
-    else:
-        filename = f"kb_{safe_name}_r{round_num}_{timestamp}.md"
-
-    filepath = os.path.join(config.OUTPUT_DIR, filename)
-    with open(filepath, "w", encoding="utf-8") as f:
-        f.write(kb_markdown)
-
-    return filepath
+def log_message(message) -> None:
+    """Print agent activity to stdout in CLI style."""
+    if isinstance(message, AssistantMessage):
+        for block in message.content:
+            if isinstance(block, ToolUseBlock):
+                arg = _format_tool_args(block.name, block.input)
+                print(f"  ⎿  {block.name}({arg})")
+            elif isinstance(block, TextBlock):
+                text = block.text.strip()
+                if text:
+                    print(f"     {text}")
+    elif isinstance(message, UserMessage):
+        if isinstance(message.content, list):
+            for block in message.content:
+                if isinstance(block, ToolResultBlock) and block.is_error:
+                    print(f"  [tool error] {block.content}")
 
 
-def collect_area_responses(areas_data: dict,
-                           loaded_docs: list[dict]) -> tuple:
-    """
-    Present knowledge areas and collect responses.
+# ---------------------------------------------------------------------------
+# Agent: Draft
+# ---------------------------------------------------------------------------
 
-    For each area the user can:
-      - Paste a URL -> system scrapes it immediately
-      - Type 'file' -> system re-reads inputs/docs/ for new files
-      - Type a free-text explanation
-      - Type 'skip' to skip the area
-      - Type 'done' to end the round
+async def run_draft_agent(cfg: dict, mode: str) -> str:
+    """Read all inputs and write the initial KB draft. Returns the saved path."""
+    platform_name = cfg["platform_name"]
+    safe_name = get_safe_name(platform_name)
+    scope = cfg.get("scope", "")
+    doc_urls = cfg.get("doc_urls") or []
+    output_path = make_kb_path(safe_name, "draft")
 
-    Returns: (new_docs: list[dict], text_answers: str, updated_loaded_docs: list[dict])
-    """
+    doc_urls_block = (
+        "\n".join(f"  - {u}" for u in doc_urls) if doc_urls else "  (none)"
+    )
+    mode_instruction = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["full"])
+
+    prompt = f"""Build a knowledge base for the **{platform_name}** platform.
+
+Input mode: **{mode}**
+
+Steps:
+1. Read `inputs/input_config.yaml` for scope and context.
+2. Glob and read every file in `inputs/sample_artifacts/`
+   (skip `.DS_Store` and any hidden files).
+3. Read every `.md .txt .json .yaml .yml .xml .html` file in `inputs/docs/`.
+4. Fetch each of these documentation URLs using WebFetch:
+{doc_urls_block}
+5. Write the complete knowledge base to: `{output_path}`
+
+Scope / requirements:
+{scope}
+
+Mode-specific instructions:
+{mode_instruction}
+
+Write section by section. Use the Write tool to save the final complete
+document to `{output_path}`.
+"""
+
+    print(f"\n  Output path: {output_path}\n")
+
+    async for message in query(
+        prompt=prompt,
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Glob", "Write", "WebFetch"],
+            cwd=config.BASE_DIR,
+            system_prompt=ANALYZER_SYSTEM_PROMPT,
+            permission_mode="acceptEdits",
+        ),
+    ):
+        log_message(message)
+
+    print(f"\n  Draft saved: {output_path}")
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# Agent: Interrogator
+# ---------------------------------------------------------------------------
+
+async def run_interrogator_agent(kb_path: str, mode: str) -> dict:
+    """Read the KB and return knowledge gap areas as a parsed dict."""
+    mode_addition = MODE_ADDITIONS.get(mode, "")
+    system_prompt = INTERROGATOR_SYSTEM_PROMPT + mode_addition
+    max_areas = config.MAX_AREAS_PER_ROUND
+
+    prompt = f"""Read the knowledge base file at: `{kb_path}`
+
+Identify up to {max_areas} knowledge areas where information is missing.
+Group related gaps — do NOT list individual field-level questions.
+
+Return ONLY valid JSON (no markdown fences, no extra text):
+{{
+  "summary": "2-3 sentence assessment of the KB state",
+  "ready_for_generation": true or false,
+  "areas": [
+    {{
+      "id": "a1",
+      "priority": "blocking",
+      "title": "Short descriptive title",
+      "what_we_have": "What the KB currently documents about this area",
+      "what_we_need": "What is missing and why it affects artifact file generation",
+      "suggested_sources": "Type of doc/URL/explanation that would fill this gap"
+    }}
+  ]
+}}
+"""
+
+    result_text = ""
+    async for message in query(
+        prompt=prompt,
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read"],
+            cwd=config.BASE_DIR,
+            system_prompt=system_prompt,
+        ),
+    ):
+        log_message(message)
+        if isinstance(message, ResultMessage):
+            result_text = message.result  # capture before generator exhausts
+
+    # Strip markdown fences if the model wraps the JSON
+    result_text = result_text.strip()
+    if result_text.startswith("```"):
+        lines = result_text.splitlines()
+        lines = lines[1:] if lines[0].startswith("```") else lines
+        lines = lines[:-1] if lines and lines[-1].strip() == "```" else lines
+        result_text = "\n".join(lines)
+
+    return json.loads(result_text)
+
+
+# ---------------------------------------------------------------------------
+# Agent: Enrichment
+# ---------------------------------------------------------------------------
+
+async def run_enrichment_agent(
+    kb_path: str,
+    user_input: str,
+    safe_name: str,
+    round_num: int,
+) -> str:
+    """Update the KB with new information. Returns the path of the updated file."""
+    output_path = make_kb_path(safe_name, f"r{round_num}")
+
+    prompt = f"""Update the knowledge base at: `{kb_path}`
+
+The user provided this response to the identified gaps:
+{user_input.strip()}
+
+Steps:
+1. Read the current KB from `{kb_path}`
+2. Process the user's response:
+   - If it contains URLs (starting with http), fetch each one with WebFetch
+   - If it says "file", glob and read any files in `inputs/docs/` not yet covered in the KB
+   - Any other text is a direct explanation — use it as-is
+3. Rewrite the KB incorporating all new information:
+   - Integrate new content into relevant sections
+   - Remove `> **Needs Verification:**` callouts where new info confirms details
+   - Add new subsections if new material reveals undocumented areas
+   - Update Known Gaps: remove resolved gaps, keep unresolved ones
+   - Write with authority where new docs confirm — no hedging
+4. Save the complete updated KB to: `{output_path}`
+"""
+
+    print(f"\n  Output path: {output_path}\n")
+
+    async for message in query(
+        prompt=prompt,
+        options=ClaudeAgentOptions(
+            allowed_tools=["Read", "Write", "WebFetch"],
+            cwd=config.BASE_DIR,
+            system_prompt=ANALYZER_SYSTEM_PROMPT,
+            permission_mode="acceptEdits",
+        ),
+    ):
+        log_message(message)
+
+    print(f"\n  Enrichment saved: {output_path}")
+    return output_path
+
+
+# ---------------------------------------------------------------------------
+# CLI: display gaps and collect user responses
+# ---------------------------------------------------------------------------
+
+def display_areas(areas_data: dict):
+    print(f"\n{'=' * 60}")
+    print("  KNOWLEDGE BASE ASSESSMENT")
+    print(f"{'=' * 60}")
+    print(f"\n  {areas_data.get('summary', '')}")
+    ready = areas_data.get("ready_for_generation", False)
+    print(f"\n  Ready for Generation: {'YES ✓' if ready else 'NO'}")
+
     areas = areas_data.get("areas", [])
     if not areas:
-        return [], "", loaded_docs
+        print("\n  No gaps identified.")
+        return
 
-    print(format_areas_for_display(areas_data))
-
-    print(f"\n{'~'*60}")
-    print("  For each area, provide one of:")
-    print("    - A URL (starts with http) -> we'll scrape it")
-    print("    - 'file' -> if you've added docs to inputs/docs/")
-    print("    - A text explanation")
-    print("    - 'skip' to skip, 'done' to finish this round")
-    print(f"{'~'*60}")
-
-    new_docs = []
-    text_parts = []
-
-    for area in areas:
-        priority = area.get("priority", "?").upper()
-        print(f"\n  [{area['id']}] [{priority}] {area['title']}")
-        print(f"       We need: {area.get('what_we_need', '')[:120]}")
-        print(f"       Suggested: {area.get('suggested_sources', '')[:120]}")
-        print()
-
-        response = input("  Your response: ").strip()
-
-        if response.lower() == "done":
-            print("\n  Ending this round.")
-            break
-
-        if response.lower() == "skip":
-            print("  Skipped.\n")
+    priority_groups = [
+        ("BLOCKING — cannot generate without this", "blocking"),
+        ("IMPORTANT — affects correctness", "important"),
+        ("NICE TO HAVE — completeness", "nice_to_have"),
+    ]
+    for group_label, priority in priority_groups:
+        group = [a for a in areas if a.get("priority") == priority]
+        if not group:
             continue
+        print(f"\n  --- {group_label} ---")
+        for a in group:
+            print(f"\n    [{a['id']}] {a['title']}")
+            print(f"         We have: {a.get('what_we_have', '')}")
+            print(f"         We need: {a.get('what_we_need', '')}")
+            print(f"         Source:  {a.get('suggested_sources', '')}")
 
-        # URL response - scrape immediately
-        if response.startswith("http://") or response.startswith("https://"):
-            print(f"\n  Scraping {response}...")
-            try:
-                scraped = scrape_url(response, follow_links=False, max_pages=5)
-                if scraped:
-                    new_docs.extend(scraped)
-                    print(f"  Scraped {len(scraped)} page(s) for: {area['title']}")
-                else:
-                    print(f"  [WARNING] No content extracted from URL.")
-                    fallback = input("  Provide text explanation instead (or 'skip'): ").strip()
-                    if fallback.lower() != "skip" and fallback:
-                        text_parts.append(f"Regarding {area['title']}:")
-                        text_parts.append(f"{fallback}\n")
-            except Exception as e:
-                print(f"  [ERROR] Failed to scrape: {e}")
-                fallback = input("  Provide text explanation instead (or 'skip'): ").strip()
-                if fallback.lower() != "skip" and fallback:
-                    text_parts.append(f"Regarding {area['title']}:")
-                    text_parts.append(f"{fallback}\n")
 
-        # File response - reload docs directory
-        elif response.lower() == "file":
-            print(f"\n  Re-reading inputs/docs/ for new files...")
-            fresh_docs = reload_docs(already_loaded=loaded_docs)
-            if fresh_docs:
-                new_docs.extend(fresh_docs)
-                loaded_docs = loaded_docs + fresh_docs
-                filenames = ", ".join(d["filename"] for d in fresh_docs)
-                print(f"  Found {len(fresh_docs)} new file(s): {filenames}")
-            else:
-                print("  No new files found in inputs/docs/.")
-                print("  Make sure you've saved files there before typing 'file'.")
-                fallback = input("  Provide text explanation instead (or 'skip'): ").strip()
-                if fallback.lower() != "skip" and fallback:
-                    text_parts.append(f"Regarding {area['title']}:")
-                    text_parts.append(f"{fallback}\n")
+def collect_user_input() -> tuple[str, bool]:
+    """
+    Collect free-form user input after gaps are displayed.
+    Returns (user_input, user_done).
+    user_done=True when the user typed 'done' — caller should skip enrichment.
 
-        # Text explanation
+    The raw input is passed directly to the enrichment agent, which handles
+    URL fetching, file reading, and text incorporation itself.
+    """
+    print(f"\n{'~' * 60}")
+    print("  Paste a URL, type 'file' if you dropped docs into inputs/docs/,")
+    print("  explain in plain text, or type 'done' to finish.")
+    print("  (blank line to submit)")
+    print(f"{'~' * 60}\n")
+
+    lines = []
+    while True:
+        line = input("  > ").strip()
+        if line.lower() == "done":
+            return "", True
+        if not line:
+            if lines:
+                break
         else:
-            text_parts.append(f"Regarding {area['title']}:")
-            text_parts.append(f"{response}")
+            lines.append(line)
 
-            # Allow multi-line input for text explanations
-            print("  (Type more lines, empty line to finish this area)")
-            while True:
-                extra = input("  > ").strip()
-                if not extra:
-                    break
-                text_parts.append(extra)
-            text_parts.append("")
-
-    text_answers = "\n".join(text_parts) if text_parts else ""
-    return new_docs, text_answers, loaded_docs
+    return "\n".join(lines), False
 
 
-def main():
+# ---------------------------------------------------------------------------
+# Main orchestrator
+# ---------------------------------------------------------------------------
+
+async def main():
     print_header()
 
-    if not config.AZURE_AI_FOUNDRY_API_KEY:
-        print("\n  [ERROR] AZURE_AI_FOUNDRY_API_KEY not set.")
-        print("  Run: export AZURE_AI_FOUNDRY_API_KEY=your-key-here\n")
-        sys.exit(1)
+    cfg = load_input_config()
+    platform_name = cfg["platform_name"]
+    safe_name = get_safe_name(platform_name)
+    scope = cfg.get("scope", "")
+    doc_urls = cfg.get("doc_urls") or []
 
-    # Step 1: Load inputs
-    print_step(1, "Loading inputs")
-    input_cfg, artifacts, all_docs, mode = load_all_inputs()
-    platform_name = input_cfg["platform_name"]
-    scope = input_cfg["scope"]
+    mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, doc_urls, scope)
+
+    artifact_count = count_dir_files(config.ARTIFACTS_DIR)
+    doc_count = count_dir_files(config.DOCS_DIR)
+
+    print(f"\n  Platform : {platform_name}")
+    print(f"  Mode     : {mode}")
+    print(f"  Artifacts: {artifact_count}")
+    print(f"  Docs     : {doc_count} local + {len(doc_urls)} URL(s)")
 
     if mode == "empty":
-        print("\n  [ERROR] No inputs found. Provide at least one of:")
-        print("    - Sample artifacts in inputs/sample_artifacts/")
-        print("    - Documentation in inputs/docs/")
-        print("    - Documentation URLs in inputs/input_config.yaml")
-        print("    - A scope description in inputs/input_config.yaml\n")
+        print(
+            "\n  [ERROR] No inputs found. Add artifacts to inputs/sample_artifacts/"
+            " or docs to inputs/docs/"
+        )
         sys.exit(1)
 
-    mode_messages = {
-        "full": "Full analysis with artifacts and documentation.",
-        "artifacts_only": "ARTIFACTS-ONLY mode. More questions to compensate for missing docs.",
-        "urls_only": "DOCS-ONLY mode. No artifacts - agent will ask for structure details.",
-        "scope_only": "SCOPE-ONLY mode. Very little info - expect extensive questioning."
-    }
-    print(f"\n  {mode_messages.get(mode, '')}")
+    # Phase detection: resume from existing KB or start a fresh draft
+    existing_kb = get_latest_kb(safe_name)
 
-    # Keep track of all loaded docs (for reload detection)
-    loaded_docs = list(all_docs)
+    if existing_kb:
+        print(f"\n  Existing KB found: {existing_kb}")
+        kb_path = existing_kb
+    else:
+        print_step("Draft Phase")
+        print("  Running Draft Agent...")
+        start = time.time()
+        kb_path = await run_draft_agent(cfg, mode)
+        print(f"  Draft completed in {time.time() - start:.1f}s")
 
-    # Step 2: Analyze
-    print_step(2, "Analyzing inputs")
-    print("\n  Running Analyzer agent...")
-    print("  (This may take 30-60 seconds)\n")
-
-    start = time.time()
-    kb_markdown = run_analyzer(artifacts, all_docs, scope=scope, mode=mode)
-    elapsed = time.time() - start
-
-    kb_lines = kb_markdown.count("\n") + 1
-    print(f"  Analysis complete in {elapsed:.1f}s ({kb_lines} lines)")
-
-    saved = save_kb(kb_markdown, platform_name, round_num=0)
-    print(f"  Saved draft: {saved}")
-
-    # Step 3+: Interrogation loop
+    # Refinement loop — runs until ready_for_generation, no areas, or user types 'done'
     round_num = 0
-    while round_num < config.MAX_QUESTION_ROUNDS:
+    while True:
         round_num += 1
-        print_step(2 + round_num, f"Gap Analysis Round {round_num}")
+        print_step(f"Gap Analysis — Round {round_num}")
 
-        # Identify knowledge area gaps
-        print("\n  Running Interrogator agent...")
+        print("  Running Interrogator Agent...")
         start = time.time()
         try:
-            areas_data = run_interrogator(kb_markdown, mode=mode)
-        except ValueError as e:
-            print(f"\n  [ERROR] Interrogator failed: {e}")
+            areas_data = await run_interrogator_agent(kb_path, mode)
+        except (json.JSONDecodeError, ValueError) as e:
+            print(f"\n  [ERROR] Interrogator returned invalid output: {e}")
             retry = input("  Retry this round? (y/n): ").strip().lower()
             if retry == "y":
                 round_num -= 1
                 continue
-            else:
-                break
+            break
 
-        elapsed = time.time() - start
-        num_areas = len(areas_data.get("areas", []))
-        print(f"  Identified {num_areas} knowledge area(s) in {elapsed:.1f}s")
+        print(f"  Interrogator completed in {time.time() - start:.1f}s")
+        display_areas(areas_data)
 
-        # Check if done
         if areas_data.get("ready_for_generation"):
-            print(f"\n  Knowledge base is READY for generation!")
-            print(f"  {areas_data.get('summary', '')}")
+            print("\n  Knowledge base is READY for generation.")
             break
 
         if not areas_data.get("areas"):
-            print("\n  No gaps found. Knowledge base is complete.")
+            print("\n  No gaps found.")
             break
 
-        # Collect responses (URLs, files, text)
-        new_docs, text_answers, loaded_docs = collect_area_responses(
-            areas_data, loaded_docs
-        )
+        # Collect loop — re-present until something is provided or user types 'done'
+        while True:
+            user_input, user_done = collect_user_input()
 
-        if not new_docs and not text_answers:
-            print("\n  No new information provided.")
-            proceed = input("  Continue to next round? (y/n): ").strip().lower()
-            if proceed != "y":
+            if user_done:
                 break
-            continue
 
-        # Log what we got
-        if new_docs:
-            print(f"\n  New documentation collected: {len(new_docs)} source(s)")
-        if text_answers:
-            answer_lines = text_answers.count("\n") + 1
-            print(f"  Text explanations collected: {answer_lines} lines")
+            if user_input.strip():
+                break
 
-        # Enrich KB with new material
-        print("\n  Updating knowledge base with new information...")
+            # Nothing provided — prompt and collect again (same round, no re-interrogation)
+            print("\n  Nothing provided. Type 'done' to finish, or share info for one of the areas above.")
+
+        if user_done:
+            break
+
+        print_step(f"Enrichment — Round {round_num}")
+        print("  Running Enrichment Agent...")
         start = time.time()
-        kb_markdown = run_enrichment(
-            existing_kb=kb_markdown,
-            new_docs=new_docs,
-            text_answers=text_answers,
-            scope=scope,
-            mode=mode
+        kb_path = await run_enrichment_agent(
+            kb_path, user_input, safe_name, round_num
         )
-        elapsed = time.time() - start
-
-        kb_lines = kb_markdown.count("\n") + 1
-        print(f"  Updated in {elapsed:.1f}s ({kb_lines} lines)")
-
-        saved = save_kb(kb_markdown, platform_name, round_num=round_num)
-        print(f"  Saved: {saved}")
-
-        if round_num < config.MAX_QUESTION_ROUNDS:
-            proceed = input("\n  Continue with more rounds? (y/n): ").strip().lower()
-            if proceed != "y":
-                break
+        print(f"  Enrichment completed in {time.time() - start:.1f}s")
+        # immediately loop back to interrogator — no confirmation prompt
 
     # Final save
-    print_step(round_num + 3, "Saving final knowledge base")
-    final_path = save_kb(kb_markdown, platform_name, round_num=round_num, is_final=True)
+    final_path = make_kb_path(safe_name, "FINAL")
+    content = Path(kb_path).read_text(encoding="utf-8")
+    Path(final_path).write_text(content, encoding="utf-8")
 
-    # Stats
-    sections = kb_markdown.count("\n## ")
-    subsections = kb_markdown.count("\n### ")
-    code_blocks = kb_markdown.count("```")
-    verifications = kb_markdown.lower().count("needs verification")
+    verifications = content.lower().count("needs verification")
 
-    print(f"\n  Platform:              {platform_name}")
-    print(f"  Input mode:            {mode}")
-    print(f"  Rounds completed:      {round_num}")
-    print(f"  Document length:       {len(kb_markdown)} chars, {kb_markdown.count(chr(10))+1} lines")
-    print(f"  Sections:              {sections}")
-    print(f"  Subsections:           {subsections}")
-    print(f"  Code blocks:           {code_blocks // 2}")
-    print(f"  Remaining gaps:        {verifications} 'Needs Verification' items")
-    print(f"\n  Output: {final_path}")
-
-    print(f"\n{'='*60}")
-    print("  Layer 1 complete.")
-    print(f"{'='*60}\n")
+    print(f"\n{'=' * 60}")
+    print(f"  Platform       : {platform_name}")
+    print(f"  Mode           : {mode}")
+    print(f"  Rounds         : {round_num}")
+    print(f"  Output         : {final_path}")
+    print(f"  Remaining gaps : {verifications} 'Needs Verification' items")
+    print(f"{'=' * 60}\n")
 
 
 if __name__ == "__main__":
-    main()
+    anyio.run(main)
