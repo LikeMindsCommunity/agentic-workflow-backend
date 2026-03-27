@@ -1,59 +1,23 @@
 # ============================================================
 # LikeMinds Layer 1 - Input Configuration
 # ============================================================
-# Define what inputs you have for this platform onboarding.
-# You can provide any combination of the sections below.
-# At minimum, provide EITHER artifacts OR doc_urls + scope.
+# Three fields to fill in. That's it.
+#
+# Artifacts:  drop files into inputs/sample_artifacts/
+# Local docs: drop files into inputs/docs/
 # ============================================================
 
-# Platform name (required)
+# What platform is this? (required)
 platform_name: "Exotel IVR"
 
-# ------------------------------------------------------------
-# SCOPE / REQUIREMENTS
-# ------------------------------------------------------------
-# What exactly are we trying to automate?
-# This helps the agents focus on the right parts of the platform.
-# Provide this especially when you're giving doc URLs without artifacts.
+# What are we trying to automate? Describe the artifact and its purpose. (required)
 scope: |
   We want to automate the creation of IVR workflows on the Exotel platform.
-  The final artifact is a JSON file that represents a complete IVR call flow
-  with nodes (playback, menu, transfer), connections between nodes, and
-  configuration for each node (audio files, timeouts, routing rules).
+  The final artifact is a JSON file that represents a complete IVR call flow.
   The system should be able to generate these JSON files given a natural
   language description of what the IVR should do.
 
-# ------------------------------------------------------------
-# ARTIFACTS (local files)
-# ------------------------------------------------------------
-# Drop sample artifacts into inputs/sample_artifacts/
-# These are real examples of the output we want to generate.
-# Supported: .json, .yaml, .xml, .csv, .txt, .conf, any text-based format
-# Leave empty or remove if you only have doc URLs.
-artifacts_dir: "sample_artifacts"
-
-# ------------------------------------------------------------
-# DOCUMENTATION (local files)
-# ------------------------------------------------------------
-# Drop documentation files into inputs/docs/
-# These are platform guides, API docs, schema references, etc.
-# Supported: .md, .txt, .json, .yaml, .xml, .html
-# Leave empty or remove if you only have doc URLs.
-docs_dir: "docs"
-
-# ------------------------------------------------------------
-# DOCUMENTATION URLS
-# ------------------------------------------------------------
-# Links to online documentation. The scraper will crawl these
-# and extract content. Provide the most relevant pages.
-# You can mix local docs and URLs - both will be used.
+# Online documentation URLs to read. Leave empty if using local docs only. (optional)
 doc_urls:
   # - "https://developer.exotel.com/api/ivr-workflows"
   # - "https://developer.exotel.com/api/call-flows"
-  # - "https://developer.exotel.com/guides/ivr-setup"
-
-# ------------------------------------------------------------
-# SCRAPER SETTINGS (optional, overrides config.py defaults)
-# ------------------------------------------------------------
-# follow_links: true       # follow internal links on doc pages
-# max_pages: 15            # max pages to scrape per URL

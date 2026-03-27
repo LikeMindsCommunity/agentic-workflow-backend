@@ -10,7 +10,9 @@
       "Bash(python3 -c \"import anthropic, httpx, bs4, markdownify, yaml, rich; print\\(''all deps ok''\\)\")",
       "Bash(python3 -m pip list)",
       "Skill(claude-api)",
-      "Skill(claude-api:*)"
+      "Skill(claude-api:*)",
+      "Bash(npm install:*)",
+      "Bash(wc:*)"
     ]
   }
 }
