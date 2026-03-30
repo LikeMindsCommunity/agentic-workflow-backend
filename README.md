@@ -1,298 +1,232 @@
-# LikeMinds Layer 1 - Platform Knowledge Base Builder
+# LikeMinds Layer 1 — Platform Knowledge Base Builder
 
-Two-agent system that builds structured markdown knowledge bases from client platform inputs.
+Builds a structured markdown knowledge base (KB) from a client's platform artifacts and documentation. The KB captures everything a downstream "Layer 2" system needs to automatically generate valid configuration files for that platform from natural language.
+
+**Concrete example:** Given sample Exotel IVR JSON files and API docs, the system produces a KB documenting every node type, field, transition event, and validation rule — so Layer 2 can generate new IVR flows from plain English.
+
+---
 
 ## Setup
 
 ```bash
+python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
-export ANTHROPIC_API_KEY=your-key-here
 ```
+
+Set your API key in `.env`:
+
+```
+ANTHROPIC_API_KEY=your-key-here
+```
+
+---
 
 ## Usage
 
-**1. Edit `inputs/input_config.yaml` with what you have:**
+**1. Describe your task in `inputs/input_config.yaml`:**
 
 ```yaml
-platform_name: "Exotel IVR"
-
-scope: |
-  We want to automate creation of IVR nodeflow JSON files.
-
-artifacts_dir: "sample_artifacts"   # drop files in inputs/sample_artifacts/
-docs_dir: "docs"                    # drop files in inputs/docs/
-
-doc_urls:                           # or provide documentation website links
-  - "https://developer.exotel.com/api/nodeflows"
+prompt: |
+  I want to automate the creation of IVR workflows for the Exotel platform.
+  The final artifact is a JSON file that represents a complete IVR call flow.
+  The system should generate these JSON files from natural language descriptions.
+  Documentation: https://developer.exotel.com/api/nodeflows
 ```
 
-**2. Run:**
+Write naturally — include the platform name, what you want to automate, and any documentation URLs. The agent infers the rest.
+
+**2. Drop your inputs:**
+
+- **Sample artifacts** → `inputs/sample_artifacts/` (JSON, XML, or any config files)
+- **Local docs** → `inputs/docs/` (markdown, text, YAML, HTML — can add mid-run)
+
+**3. Run:**
 
 ```bash
 python main.py
 ```
 
-**3. Respond to knowledge area gaps.** The system groups related unknowns into areas (not individual questions). For each area you can:
+**4. Respond to knowledge gaps.** After the draft is written, the system identifies up to 5 knowledge areas that need filling. For each round you can:
 
-- Paste a **URL** (starts with http) and the system scrapes it on the spot
-- Type **`file`** if you've added new docs to `inputs/docs/` since the run started
-- Type a **text explanation** (multi-line supported, empty line to finish)
-- Type `skip` to skip or `done` to end the round
+- Paste a **URL** → agent fetches and reads it immediately
+- Type **`file`** → agent re-reads `inputs/docs/` for anything newly added
+- Type a **text explanation** → multi-line supported, empty line to finish
+- Type **`done`** → end early with what you have
 
-This means one response can resolve dozens of individual gaps at once.
+One response per round — the enrichment agent handles URLs, files, and text all at once.
+
+---
+
+## How It Works
+
+The pipeline has three phases that loop until the KB is ready:
+
+```
+Phase 1 — DRAFT
+  Read input_config.yaml + detect input mode
+  Read all artifacts, local docs, and fetch any URLs from the prompt
+  Write the initial KB markdown file
+
+Phase 2 — GAP ANALYSIS
+  Read the current KB
+  Identify up to 5 knowledge areas still missing
+  Present gaps grouped by priority: BLOCKING / IMPORTANT / NICE TO HAVE
+
+Phase 3 — ENRICHMENT  (loops back to Phase 2)
+  User provides: a URL, "file", or plain text explanation
+  Rewrite the KB incorporating the new info
+  Loop back to Gap Analysis until ready or user types "done"
+```
+
+---
 
 ## Input Modes
 
-The system auto-detects what you provided and adapts:
+The system auto-detects what you provided and adapts agent behaviour:
 
-- **Full** - artifacts + docs. Best results, fewest gaps.
-- **Artifacts only** - no docs. Agent reverse-engineers and asks for doc sources.
-- **Docs/URLs only** - no artifacts. Agent builds from docs, asks for samples.
-- **Scope only** - just a description. Agent asks foundational questions.
+| Mode | What you have | Agent approach |
+|---|---|---|
+| `artifacts_and_docs` | Artifacts + docs/URLs | Maps every artifact element to docs; writes with authority |
+| `artifacts_only` | Artifacts, no docs | Reverse-engineers structure; liberal "Needs Verification" callouts |
+| `docs_only` | Docs/URLs, no artifacts | Extracts schema from docs; notes no artifact was validated |
+| `prompt_only` | Prompt text only | Fetches any URLs found in prompt; writes skeleton if none |
+
+---
 
 ## Output
 
-A single `.md` file in `outputs/` per platform. Intermediate versions saved after each round.
+Each run produces versioned `.md` files in `outputs/`:
+
+```
+outputs/
+  kb_<platform>_draft_<timestamp>.md    ← initial draft
+  kb_<platform>_r1_<timestamp>.md       ← after round 1 enrichment
+  kb_<platform>_r2_<timestamp>.md       ← after round 2 enrichment
+  kb_<platform>_FINAL_<timestamp>.md    ← final deliverable
+```
+
+---
 
 ## Project Structure
 
 ```
-likeminds-layer1/
-  main.py                    # orchestrator and CLI
-  config.py                  # settings
+agentic-workflow-backend/
+  main.py                    # orchestrator: three agent functions + CLI loop
+  config.py                  # paths, model settings, loop limits
+
   agents/
-    analyzer.py              # writes/rewrites the KB markdown
-    interrogator.py          # finds knowledge area gaps
+    prompts.py               # all system prompts and KB structure constants
+
   utils/
-    file_loader.py           # input loading, mode detection, mid-loop reload
-    web_scraper.py           # doc URL scraping
+    file_loader.py           # input loading and input mode detection
+
   inputs/
-    input_config.yaml        # your input configuration
-    sample_artifacts/        # client artifacts here
-    docs/                    # client docs here
-  outputs/                   # generated knowledge bases
+    input_config.yaml        # edit this before each run
+    sample_artifacts/        # drop client artifact files here
+    docs/                    # drop client doc files here (can add mid-run)
+
+  outputs/                   # generated KB files (gitignored)
+
+  .claude/
+    commands/build-kb.md     # equivalent Claude Code slash command implementation
 ```
 
-
-
-
-# Knowledge Base Builder
-
-You are an expert platform analyst for LikeMinds. Your job is to build a comprehensive knowledge base (KB) document for a client's platform by analysing their artifacts and documentation. The KB is a markdown file that captures everything needed to later generate valid platform artifacts automatically.
-
 ---
 
-## Step 1 — Read config and detect phase
+## Two Implementations
 
-1. Read `inputs/input_config.yaml`. Extract:
-   - `platform_name` (required)
-   - `scope` (what we want to automate)
-   - `doc_urls` (list of URLs, may be empty)
+The same pipeline exists in two forms. Both produce identical KB output using the same structure, writing rules, and scope boundaries.
 
-2. Derive `safe_name` = platform_name lowercased, spaces replaced with `_`, max 30 chars.
+### Approach 1 — Claude Code Slash Command
 
-3. Use Glob to list `outputs/kb_<safe_name>_*.md`. Pick the most recently modified file.
-   - **No file found** → go to **DRAFT PHASE**
-   - **File found** → load it → go to **GAPS PHASE**
+**Entry point:** `/build-kb` inside Claude Code
+**File:** `.claude/commands/build-kb.md`
 
----
+The entire pipeline is a single markdown prompt. Claude Code runs it as one continuous conversational session — Claude itself transitions between Draft, Gap Analysis, and Enrichment by following natural language instructions in the prompt. There is one "agent": Claude running the full command file.
 
-## Step 2 — Load inputs
-
-### Artifacts
-- Glob all files in `inputs/sample_artifacts/`
-- Skip `.DS_Store` and any hidden files
-- Read each file. For `.json` files note whether it is valid JSON or raw text.
-- Truncate any single file beyond 15 000 characters and note the truncation.
-
-### Documentation
-- Read all files with extensions `.md .txt .json .yaml .yml .xml .html` from `inputs/docs/`
-- For each URL in `doc_urls`: fetch with WebFetch, extract main content.
-- Use your judgment on link following: if a fetched page is sparse or mostly navigation, follow its internal links to find the actual content pages. Stop when you have enough to understand the schema — typically 5–10 pages per URL is sufficient.
-- Truncate any single document beyond 12 000 characters and note the truncation.
-
-### Mode detection
-| Condition | Mode |
+| Phase | What Claude does |
 |---|---|
-| Artifacts AND (docs or urls) both present | `full` |
-| Artifacts only, no docs | `artifacts_only` |
-| Docs/urls only, no artifacts | `urls_only` |
-| Only scope text, nothing else | `scope_only` |
-| Nothing at all | Error — tell user to add inputs |
+| Draft | Reads config, globs artifacts, fetches URLs, writes KB |
+| Gap Analysis | Re-reads KB, presents gap areas as prose, waits for user reply |
+| Enrichment | Parses user response, rewrites KB, loops back immediately |
 
-Tell the user: platform name, mode, artifact count, doc count.
+Loop control is conversational — the prompt instructs Claude to proceed without confirmation between phases.
 
----
-
-## DRAFT PHASE
-
-Write the complete knowledge base document following the **KB Structure** section below.
-
-- Stream your output directly — write each section as you go.
-- Save the completed document to: `outputs/kb_<safe_name>_draft_<YYYYMMDD_HHMMSS>.md`
-- Tell the user the file path and say: **"Draft complete. Want me to identify knowledge gaps now? (y/n)"**
-- If yes → go to **GAPS PHASE**. If no → go to **FINAL SAVE**.
+**Best for:** Quick iteration, exploratory runs, no setup needed.
 
 ---
 
-## KB Structure
+### Approach 2 — Python SDK Pipeline
 
-Every KB must contain exactly these sections in this order.
+**Entry point:** `python main.py`
+**Files:** `main.py`, `agents/prompts.py`
 
-```
-# <Platform Name> - <Artifact Type> Knowledge Base
+Python owns the loop. Three separate agents are called in sequence via `claude_agent_sdk`. Each agent is a single `query()` call with its own system prompt and tool set. Python handles phase transitions, CLI display, output file naming, and JSON parsing.
 
-## Overview
-What this platform is. What artifact we are generating. How it is used in practice.
+#### Agent 1 — Draft Agent
 
-## Core Concepts
-Key terminology and entity relationships. One ### subsection per major concept.
-Define every major concept before diving into structure.
+**Tools:** `Read`, `Glob`, `Write`, `WebFetch`
+**Prompt:** `ANALYZER_SYSTEM_PROMPT` — KB structure spec and writing rules
 
-## Artifact Structure
-Top-level shape of the artifact. One annotated example showing the full high-level
-structure with inline comments. Explain what each major section contains.
+Reads all inputs and writes the initial KB. Embeds `<!-- PLATFORM: Name -->` at the top so Python can parse the platform name and derive the output filename.
 
-## <ObjectType>
-(One ## section per distinct object type found in the artifacts)
-- What the object represents and when it is used
-- All fields: name, type, required/optional, valid values, defaults
-- Annotated JSON/config example using REAL values from the sample artifacts
-- Behavioral notes: what happens when a field is set to a specific value
-- Edge cases and special rules
+#### Agent 2 — Interrogator Agent
 
-## Validation Rules and Constraints
-Rules grouped by scope: per-field, cross-field, cross-object.
-For each rule: state the rule AND what breaks if it is violated.
+**Tools:** `Read`, `Grep` (read-only — never writes)
+**Prompt:** `INTERROGATOR_SYSTEM_PROMPT` — scope boundary table, readiness threshold, JSON output format
 
-## Dependencies and Ordering
-What must exist before what. Creation sequence.
-Exact fields that establish references between objects.
+Reviews the KB and returns a structured JSON object identifying knowledge gaps. Only flags gaps that would cause a wrong or missing value in the artifact file — operational concerns (CDN, rate limits, OAuth) are explicitly excluded. Python parses the JSON and decides whether to loop or exit.
 
-## Common Patterns
-Recurring configurations with COMPLETE annotated examples.
-Copy-paste ready templates. Explain when and why each pattern is used.
-
-## Integration Checklist
-Numbered step-by-step process for assembling a complete artifact.
-Note which fields/locations need updating at each step.
-
-## Troubleshooting
-Format per item: "Issue: <problem>" / "Check: <what to verify>"
-
-## Known Gaps
-Areas where the KB is still incomplete.
-For each gap: what is missing and what would fill it.
+```json
+{
+  "summary": "...",
+  "ready_for_generation": false,
+  "areas": [
+    {
+      "id": "a1",
+      "priority": "blocking",
+      "title": "...",
+      "what_we_have": "...",
+      "what_we_need": "...",
+      "suggested_sources": "..."
+    }
+  ]
+}
 ```
 
-### Writing rules
+#### Agent 3 — Enrichment Agent
 
-- Cover every **distinct** field type and object type. One annotated example per pattern — do not repeat the same pattern for every instance.
-- JSON/config examples must use **real values from the sample artifacts**, annotated with inline comments explaining each element.
-- When you infer something without doc confirmation, add a callout:
-  `> **Needs Verification:** <what is unclear and what was assumed>`
-- Validation rules must describe both the rule AND the consequence of violating it.
-- Common Patterns must be complete, copy-paste-ready examples — no placeholders.
-- Be thorough but concise. Q&A rounds will fill gaps. No exhaustive field-by-field repetition.
-- No confidence scores, numeric ratings, or structured metadata in the output.
+**Tools:** `Read`, `Glob`, `Write`, `WebFetch`
+**Prompt:** `ENRICHMENT_SYSTEM_PROMPT` — same KB structure as draft agent, framed for updating an existing document
 
-### Mode-specific behaviour
+Takes the user's response (URL, file, or text), processes it, and rewrites the KB. Removes confirmed `> **Needs Verification:**` callouts, adds new subsections, and updates `## Known Gaps`. Python immediately passes the new KB path back to the Interrogator for the next round.
 
-**`artifacts_only`** — Reverse-engineer everything from structure. Be liberal with Needs Verification callouts. The Known Gaps section should be extensive since there is no documentation to cross-reference.
+#### Loop flow
 
-**`urls_only`** — Extract schema from docs. Note that no real artifact was validated against this schema. Ask for sample artifacts in Known Gaps.
+```
+Python
+  ↓ run_draft_agent()          → Agent 1 writes KB
+  ↓ run_interrogator_agent()   → Agent 2 returns JSON gaps
+  ↓ display gaps (Python CLI)
+  ← user input
+  ↓ run_enrichment_agent()     → Agent 3 rewrites KB
+  ↓ run_interrogator_agent()   → Agent 2 re-reviews
+  (repeat until ready_for_generation: true or user types "done")
+  ↓ copy latest → kb_FINAL_<ts>.md
+```
 
-**`scope_only`** — Write a skeleton. Every section contains a Needs Verification callout explaining what is needed to fill it in.
-
-**`full`** — Map every artifact element to the documentation. Write with authority where docs confirm something. Note mismatches between artifact and docs.
+**Best for:** Reliable runs, token visibility, building into a larger system.
 
 ---
 
-## GAPS PHASE
+### Comparison
 
-Read the current KB. Identify where information is missing **from the perspective of writing the artifact file**.
-
-### Scope boundary — strictly enforce this
-
-Only flag gaps that affect what you write in the artifact file:
-
-| Include | Exclude |
-|---|---|
-| Field names, types, required/optional, valid values, defaults | Runtime platform behaviour (what happens at call time) |
-| Expression/condition syntax used in the file | Platform operations (upload process, CDN, deployment) |
-| Valid event names and transition trigger strings | Performance limits, rate limits, cost |
-| Object structure — nesting, ID reference patterns | External integrations (CRM webhooks, OAuth, credentials) |
-
-**A gap only belongs here if not knowing it would cause you to write an incorrect or missing value in the file.**
-
-### How to present gaps
-
-Group related unknowns into **3–5 knowledge areas** (not individual questions). Present them as:
-
-```
-I found N knowledge areas that need filling before artifact generation is reliable.
-
-[A1] BLOCKING — <Title>
-     We have: <what the KB already documents about this area>
-     We need: <what is missing and why it affects the artifact file>
-     Best source: <type of doc/URL/explanation that would fill this>
-
-[A2] IMPORTANT — <Title>
-     ...
-```
-
-After presenting all areas, say:
-> "For each area, you can paste a URL and I'll fetch it, type **file** if you've added docs to `inputs/docs/`, or just explain it directly. You can address multiple areas in one message. Skip any you don't have info for."
-
-Wait for the user's response.
-
----
-
-## HANDLING GAP RESPONSES
-
-Parse the user's conversational response naturally:
-
-- **URL** (starts with `http`) → fetch immediately with WebFetch. Note the source and what was extracted.
-- **"file"** → re-read `inputs/docs/`. Load files not yet loaded this session. Tell user what was found.
-- **Text explanation** → record exactly what the user said and which area it relates to.
-- **No mention of an area / "skip"** → skip that area silently.
-
-After handling all responses → go to **ENRICH PHASE**.
-
-If the user provided nothing useful (all skipped), ask:
-> "No new information was provided. Run another gap analysis round anyway? (y/n)"
-
----
-
-## ENRICH PHASE
-
-Update the KB incorporating all new information:
-
-- Integrate new doc content into the relevant sections
-- Remove `> **Needs Verification:**` callouts where new info confirms the detail
-- Add new subsections if new material reveals previously undocumented areas
-- Update **Known Gaps**: remove resolved gaps, keep unresolved ones
-- Write with authority where new docs confirm something — no hedging
-
-Save the updated KB to: `outputs/kb_<safe_name>_r<N>_<YYYYMMDD_HHMMSS>.md`
-(where N is the round number, starting at 1)
-
-Then ask: **"KB updated (round N). Want another round of gap analysis? (y/n)"**
-
-- **Yes** → go back to **GAPS PHASE** with the updated KB
-- **No** → go to **FINAL SAVE**
-
----
-
-## FINAL SAVE
-
-Save the current KB as: `outputs/kb_<safe_name>_FINAL_<YYYYMMDD_HHMMSS>.md`
-
-Print a summary:
-```
-  Platform:         <platform_name>
-  Mode:             <mode>
-  Rounds:           <N>
-  Output:           outputs/kb_<safe_name>_FINAL_<timestamp>.md
-  Remaining gaps:   <count of "Needs Verification" occurrences>
-```
+| | Slash Command | Python SDK |
+|---|---|---|
+| **Entry point** | `/build-kb` in Claude Code | `python main.py` |
+| **Number of agents** | 1 (Claude, full session) | 3 (Draft, Interrogator, Enrichment) |
+| **Loop control** | Claude (conversational) | Python (`while True` + async agents) |
+| **Gap output** | Prose in chat | JSON parsed and formatted by Python |
+| **Observability** | What you see in chat | Token counts, timing, tool call logs |
+| **Setup** | None | Python + virtualenv + dependencies |
+| **Testability** | Not practical | Individual agent functions |

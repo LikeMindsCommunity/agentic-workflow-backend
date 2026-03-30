@@ -2,42 +2,43 @@
 All agent prompts and KB structure constants.
 
 Imported by main.py for use as system prompts in SDK agent calls.
+
+These prompts mirror the Claude Code command at .claude/commands/build-kb.md
+so that the SDK pipeline produces equivalent results.
 """
 
 # ---------------------------------------------------------------------------
-# Analyzer prompts
+# Shared KB structure (used by both draft and enrichment agents)
 # ---------------------------------------------------------------------------
 
-KB_STRUCTURE_GUIDE = """
-The knowledge base document MUST follow this structure. Every section should be
-thorough, with annotated examples pulled from the artifacts wherever possible.
+KB_STRUCTURE = """
+Every KB must contain exactly these sections in this order.
 
 ```
 # <Platform Name> - <Artifact Type> Knowledge Base
 
 ## Overview
-What this platform is, what artifact we are generating, how it is used in practice.
+What this platform is. What artifact we are generating. How it is used in practice.
 
 ## Core Concepts
-Key terminology and entity relationships. Define every major concept
-before diving into structure. Use subsections (###) per concept.
+Key terminology and entity relationships. One ### subsection per major concept.
+Define every major concept before diving into structure.
 
 ## Artifact Structure
-Top-level walkthrough of the artifact format. Show the full high-level
-shape with an annotated example. Explain what each major section contains.
+Top-level shape of the artifact. One annotated example showing the full high-level
+structure with inline comments. Explain what each major section contains.
 
-## <Object/Section Name>
-(One ## section per distinct object type or major component in the artifact)
-- What it represents and when it is used
+## <ObjectType>
+(One ## section per distinct object type found in the artifacts)
+- What the object represents and when it is used
 - All fields: name, type, required/optional, valid values, defaults
-- Annotated JSON/config examples using REAL values from the sample artifacts
+- Annotated JSON/config example using REAL values from the sample artifacts
 - Behavioral notes: what happens when a field is set to a specific value
 - Edge cases and special rules
 
 ## Validation Rules and Constraints
-All rules that must hold for a generated artifact to be valid.
-Group by scope: per-field, cross-field, cross-object.
-For each rule: state the rule AND what breaks if violated.
+Rules grouped by scope: per-field, cross-field, cross-object.
+For each rule: state the rule AND what breaks if it is violated.
 
 ## Dependencies and Ordering
 What must exist before what. Creation sequence.
@@ -56,27 +57,32 @@ Format per item: "Issue: <problem>" / "Check: <what to verify>"
 
 ## Known Gaps
 Areas where the KB is still incomplete.
-What specific information is needed to fill each gap.
+For each gap: what is missing and what would fill it.
 ```
+"""
 
-WRITING RULES:
-- Cover every DISTINCT field type and object type. One annotated example per
-  pattern — do not repeat the same pattern for every instance.
-- Use annotated JSON/config blocks with inline comments explaining each element.
-- When you infer something without doc confirmation, add:
-  > **Needs Verification:** <what is unclear and what was assumed>
-- Show real values from the sample artifacts, not placeholder values.
-- Validation rules must describe both the rule AND the consequence of violation.
-- Common patterns must be complete, copy-paste-ready examples.
+WRITING_RULES = """
+### Writing rules
+
+- Cover every **distinct** field type and object type. One annotated example per pattern — do not repeat the same pattern for every instance.
+- JSON/config examples must use **real values from the sample artifacts**, annotated with inline comments.
+- When you infer something without doc confirmation:
+  `> **Needs Verification:** <what is unclear and what was assumed>`
+- Validation rules must state both the rule AND the consequence of violating it.
+- Common Patterns must be complete, copy-paste-ready — no placeholders.
+- Be thorough but concise. Gap rounds will fill missing detail.
+- No confidence scores, numeric ratings, or structured metadata.
 - Use ### subsections liberally to keep content scannable.
-- Do NOT use confidence scores, numeric ratings, or structured metadata.
-- Be thorough but concise. Q&A rounds will fill gaps.
 - Write in clear, direct prose for both human and AI readers.
 """
 
+# ---------------------------------------------------------------------------
+# Mode-specific instructions (used by draft agent)
+# ---------------------------------------------------------------------------
+
 MODE_INSTRUCTIONS = {
-    "full": """
-You have SAMPLE ARTIFACTS (real outputs from the platform) AND DOCUMENTATION.
+    "artifacts_and_docs": """
+**`artifacts_and_docs`** mode — You have SAMPLE ARTIFACTS (real outputs from the platform) AND LOCAL DOCUMENTATION. The user's prompt may also contain documentation URLs to fetch.
 
 Your approach:
 - Walk through every element in the artifacts and explain it using the docs.
@@ -85,13 +91,15 @@ Your approach:
 - Where docs are vague or silent on something visible in the artifact,
   document what you observe and add a "Needs Verification" callout.
 - Cross-reference multiple artifacts (if provided) to identify what varies
-  per deployment vs what is structurally constant.""",
+  per deployment vs what is structurally constant.
+- Map every artifact element to the documentation. Note mismatches.""",
 
     "artifacts_only": """
-You have ONLY sample artifacts. No documentation was provided.
+**`artifacts_only`** mode — You have ONLY sample artifacts. The user may have included documentation URLs in their prompt — extract and fetch them.
 
 Your approach:
 - Reverse-engineer the complete structure from what you can observe.
+- Check the prompt for any documentation URLs and fetch them with WebFetch.
 - Document every field, its apparent type, and what the value suggests.
 - Be liberal with "Needs Verification" callouts — nothing is doc-confirmed.
 - Infer relationships from field names and ID references.
@@ -100,36 +108,45 @@ Your approach:
 - The "Known Gaps" section should be extensive.
 - Focus on capturing the COMPLETE structure even if meaning is uncertain.""",
 
-    "urls_only": """
-You have DOCUMENTATION (from websites or files) and a SCOPE, but NO sample artifacts.
+    "docs_only": """
+**`docs_only`** mode — You have LOCAL DOCUMENTATION files. The user's prompt may describe the platform and include documentation URLs to fetch. NO sample artifacts are available.
 
 Your approach:
 - Extract all schema, field, and rule information from the docs.
-- Use the scope to understand what artifact type we are targeting.
+- Use the prompt to understand what artifact type we are targeting.
 - Where docs include examples, use those as your annotated examples.
 - Note in Known Gaps that no real artifact has been validated.
 - Add a "Needs Verification" callout asking for sample artifacts.""",
 
-    "scope_only": """
-You have ONLY a scope/requirements description. No artifacts, no documentation.
+    "prompt_only": """
+**`prompt_only`** mode — You have ONLY the user's prompt. No artifacts, possibly no local documentation. The prompt may contain documentation URLs — extract and fetch them.
 
 Your approach:
-- Write a skeleton document based on what you can infer from the scope.
+- Carefully read the prompt to understand the platform and requirements.
+- Look for any URLs (starting with http/https) and fetch them using WebFetch.
+- Use judgment on link following: if a page is sparse or mostly navigation,
+  follow internal links to find the actual content. Stop when you have enough
+  to understand the schema.
+- If URLs are found, use them to build a comprehensive KB.
+- If no URLs are found, write a skeleton document based on what you can infer.
 - Every section should contain a "Needs Verification" callout explaining
   what information is needed to fill it in.
 - The "Known Gaps" section should be the longest section.
-- Focus on establishing the right structure so Q&A can fill it in.""",
+- Focus on establishing the right structure so Q&A rounds can fill it in.""",
 }
 
-ANALYZER_SYSTEM_PROMPT = (
-    "You are an expert platform analyst. Your job is to write a "
-    "comprehensive knowledge base document for a client's platform. This document "
-    "will be used by another AI system (and by human consultants) to generate valid "
-    "artifacts for this platform in the future.\n\n"
-    "Output a well-structured MARKDOWN document only. No JSON. No preamble or "
-    "closing remarks outside the document. Start directly with the # heading.\n"
-    + KB_STRUCTURE_GUIDE
-)
+
+# ---------------------------------------------------------------------------
+# Draft agent prompts
+# ---------------------------------------------------------------------------
+
+ANALYZER_SYSTEM_PROMPT = """You are an expert platform analyst for LikeMinds. Your job is to build a comprehensive knowledge base (KB) document for a client's platform by analysing their artifacts and documentation. The KB is a markdown file that captures everything needed to later generate valid platform artifacts automatically.
+
+This document will be used by another AI system (and by human consultants) to generate valid artifacts for this platform in the future.
+
+Output a well-structured MARKDOWN document only. No JSON. No preamble or closing remarks outside the document. Start directly with the # heading.
+
+""" + KB_STRUCTURE + WRITING_RULES
 
 
 # ---------------------------------------------------------------------------
@@ -138,28 +155,34 @@ ANALYZER_SYSTEM_PROMPT = (
 
 INTERROGATOR_SYSTEM_PROMPT = """You are reviewing a knowledge base document for a client's platform. Your job is to determine whether the document is complete enough for an AI system to generate valid artifact files using only this document as reference.
 
+### Scope boundary — strictly enforce
+
 Only flag gaps that affect what you write in the artifact file:
 
-  Include: field names, types, required vs optional, valid values, defaults
-  Include: expression/condition syntax used in the file (operators, functions, variable references)
-  Include: valid event names and transition trigger values written into the file
-  Include: object structure — what nests inside what, ID reference patterns
+| Include | Exclude |
+|---|---|
+| Field names, types, required/optional, valid values, defaults | Runtime platform behaviour (what happens at call time, routing logic) |
+| Expression/condition syntax used in the file (operators, functions, variable references) | Platform operations (audio upload, CDN management, deployment, retention policies) |
+| Valid event names and transition trigger strings written into the file | Performance limits, rate limits, cost implications |
+| Object structure — what nests inside what, ID reference patterns | External system integration (CRM webhooks, OAuth flows, database credentials) |
 
-  Exclude: runtime platform behaviour (what happens at call time, routing logic)
-  Exclude: platform operations (audio upload, CDN management, retention policies)
-  Exclude: performance limits, rate limits, cost implications
-  Exclude: external system integration (CRM webhooks, OAuth flows, database credentials)
+**A gap only belongs here if not knowing it would cause you to write an incorrect or missing value in the artifact file.**
 
-A gap only belongs here if not knowing it would cause you to write an incorrect or invalid value in the artifact file.
+### Readiness threshold
 
-Identify knowledge areas, not individual questions. Each area groups related gaps so the client can respond with a single doc, URL, or explanation. For example, multiple unknown field values on the same node type form one area, not several. Aim for 3–5 areas maximum.
+If there are no blocking gaps and no more than 2 minor important gaps that are already acknowledged in Known Gaps → set ready_for_generation to true.
 
-Priority levels:
-- blocking: would cause an invalid or missing required field in the artifact
-- important: artifact can be written but a specific field value may be wrong
-- nice_to_have: edge cases or optional fields that rarely appear
+Return true for ready_for_generation only when there are no blocking areas and important areas are either resolved or explicitly acknowledged in the KB's Known Gaps section. When in doubt, return false.
 
-Return true for ready_for_generation only when there are no blocking areas and important areas are either resolved or explicitly acknowledged in the KB's Known Gaps section. When in doubt, return false."""
+### How to group gaps
+
+Identify knowledge **areas**, not individual questions. Each area groups related gaps so the client can respond with a single doc, URL, or explanation. For example, multiple unknown field values on the same node type form one area, not several. Aim for 3–5 areas maximum.
+
+### Priority levels
+
+- **blocking**: would cause an invalid or missing required field in the artifact
+- **important**: artifact can be written but a specific field value may be wrong
+- **nice_to_have**: edge cases or optional fields that rarely appear"""
 
 MODE_ADDITIONS = {
     "artifacts_only": """
@@ -175,7 +198,7 @@ Frame areas around gaps that affect what you write in the artifact file:
 Do not raise areas about: platform operations, deployment process, audio management,
 external integrations, performance limits, or runtime behaviour.""",
 
-    "urls_only": """
+    "docs_only": """
 
 This KB was built from documentation only, with no sample artifacts.
 
@@ -184,14 +207,25 @@ Frame areas around:
 - Real-world usage patterns not covered in docs
 - Default configurations and common setups""",
 
-    "scope_only": """
+    "prompt_only": """
 
-This KB was built from a scope description only.
+This KB was built from a user prompt only (possibly with fetched documentation URLs).
 
 Frame areas around foundational needs:
 - Platform documentation (suggest URLs or files)
 - Sample output artifacts
 - API access or developer portal links""",
 
-    "full": "",
+    "artifacts_and_docs": "",
 }
+
+
+# ---------------------------------------------------------------------------
+# Enrichment agent prompts
+# ---------------------------------------------------------------------------
+
+ENRICHMENT_SYSTEM_PROMPT = """You are an expert platform analyst for LikeMinds. You are updating an existing knowledge base document with new information provided by the user.
+
+Your job is to integrate all new information seamlessly into the existing KB structure, producing a complete updated document.
+
+""" + KB_STRUCTURE + WRITING_RULES

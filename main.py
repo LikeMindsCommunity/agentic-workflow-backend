@@ -16,6 +16,7 @@ Flow:
 import anyio
 import json
 import os
+import re
 import sys
 import time
 from datetime import datetime
@@ -25,6 +26,7 @@ import config
 from utils.file_loader import load_input_config, detect_input_mode
 from agents.prompts import (
     ANALYZER_SYSTEM_PROMPT,
+    ENRICHMENT_SYSTEM_PROMPT,
     INTERROGATOR_SYSTEM_PROMPT,
     MODE_INSTRUCTIONS,
     MODE_ADDITIONS,
@@ -37,9 +39,12 @@ try:
         AssistantMessage,
         UserMessage,
         ResultMessage,
+        StreamEvent,
         TextBlock,
+        ThinkingBlock,
         ToolUseBlock,
         ToolResultBlock,
+        ThinkingConfigAdaptive,
     )
 except ImportError:
     print("\n  [ERROR] claude-agent-sdk not installed.")
@@ -102,79 +107,155 @@ def _format_tool_args(name: str, args: dict) -> str:
     return ""
 
 
-def log_message(message) -> None:
-    """Print agent activity to stdout in CLI style."""
+def log_message(message, verbose: bool = False) -> None:
+    """Print agent activity to stdout in CLI style.
+
+    verbose=True  → also prints ThinkingBlock summaries and TextBlock previews.
+    verbose=False → only tool calls, tool errors, and result stats (default).
+    Set CLAUDE_VERBOSE=1 in env to enable at runtime.
+    """
+    verbose = verbose or os.environ.get("CLAUDE_VERBOSE", "") == "1"
+
     if isinstance(message, AssistantMessage):
         for block in message.content:
-            if isinstance(block, ToolUseBlock):
+            if isinstance(block, ThinkingBlock):
+                if verbose:
+                    # Trim long thinking to first 300 chars so it doesn't swamp the terminal
+                    thinking_preview = (block.thinking or "")[:300].replace("\n", " ")
+                    if len(block.thinking or "") > 300:
+                        thinking_preview += "…"
+                    print(f"  [think] {thinking_preview}")
+            elif isinstance(block, TextBlock):
+                if verbose:
+                    text_preview = (block.text or "")[:200].replace("\n", " ")
+                    if len(block.text or "") > 200:
+                        text_preview += "…"
+                    print(f"  [text]  {text_preview}")
+            elif isinstance(block, ToolUseBlock):
                 arg = _format_tool_args(block.name, block.input)
                 print(f"  ⎿  {block.name}({arg})")
-            elif isinstance(block, TextBlock):
-                text = block.text.strip()
-                if text:
-                    print(f"     {text}")
+
     elif isinstance(message, UserMessage):
         if isinstance(message.content, list):
             for block in message.content:
-                if isinstance(block, ToolResultBlock) and block.is_error:
-                    print(f"  [tool error] {block.content}")
+                if isinstance(block, ToolResultBlock):
+                    if block.is_error:
+                        print(f"  [tool error] {block.content}")
+                    elif verbose:
+                        result_preview = str(block.content or "")[:120].replace("\n", " ")
+                        print(f"  [tool ok]   {result_preview}")
+
+    elif isinstance(message, ResultMessage):
+        usage = getattr(message, "usage", None)
+        if usage:
+            inp  = getattr(usage, "input_tokens", "?")
+            out  = getattr(usage, "output_tokens", "?")
+            cache_r = getattr(usage, "cache_read_input_tokens", 0) or 0
+            cache_w = getattr(usage, "cache_creation_input_tokens", 0) or 0
+            print(
+                f"\n  [done] tokens — in: {inp}  out: {out}"
+                f"  cache_read: {cache_r}  cache_write: {cache_w}"
+            )
+        stop = getattr(message, "stop_reason", None)
+        if stop and stop != "end_turn":
+            print(f"  [stop_reason] {stop}")
 
 
 # ---------------------------------------------------------------------------
 # Agent: Draft
 # ---------------------------------------------------------------------------
 
-async def run_draft_agent(cfg: dict, mode: str) -> str:
-    """Read all inputs and write the initial KB draft. Returns the saved path."""
-    platform_name = cfg["platform_name"]
-    safe_name = get_safe_name(platform_name)
-    scope = cfg.get("scope", "")
-    doc_urls = cfg.get("doc_urls") or []
-    output_path = make_kb_path(safe_name, "draft")
+async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
+    """
+    Read all inputs and write the initial KB draft.
+    Returns (saved_path, inferred_platform_name).
+    """
+    mode_instruction = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS.get("prompt_only", ""))
 
-    doc_urls_block = (
-        "\n".join(f"  - {u}" for u in doc_urls) if doc_urls else "  (none)"
-    )
-    mode_instruction = MODE_INSTRUCTIONS.get(mode, MODE_INSTRUCTIONS["full"])
+    # Temporary output path - will rename after agent infers platform name
+    temp_output = os.path.join(config.OUTPUT_DIR, "kb_draft_temp.md")
+    os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
-    prompt = f"""Build a knowledge base for the **{platform_name}** platform.
+    agent_prompt = f"""Build a comprehensive knowledge base for a client's platform.
+
+---
+
+## Step 1 — Read config and understand the task
+
+1. Read `inputs/input_config.yaml`. It contains a single `prompt` field with the user's natural language description.
+
+2. From the prompt, intelligently infer:
+   - **Platform name** (e.g., "Exotel", "Twilio", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
+   - **Scope** — what they want to automate
+   - **Documentation URLs** — any http/https URLs mentioned in the prompt (you'll fetch these)
+
+---
+
+## Step 2 — Load inputs
+
+### Artifacts
+- Glob all files in `inputs/sample_artifacts/`
+- Skip `.DS_Store` and hidden files
+- Read each file. Note whether `.json` files are valid JSON or raw text.
+
+### Documentation
+- Read all `.md .txt .json .yaml .yml .xml .html` files from `inputs/docs/`
+- Extract any URLs from the user's prompt and fetch them with WebFetch
+- Use judgment on link following: if a page is sparse or mostly navigation, follow internal links to find the actual content. Stop when you have enough to understand the schema.
 
 Input mode: **{mode}**
 
-Steps:
-1. Read `inputs/input_config.yaml` for scope and context.
-2. Glob and read every file in `inputs/sample_artifacts/`
-   (skip `.DS_Store` and any hidden files).
-3. Read every `.md .txt .json .yaml .yml .xml .html` file in `inputs/docs/`.
-4. Fetch each of these documentation URLs using WebFetch:
-{doc_urls_block}
-5. Write the complete knowledge base to: `{output_path}`
+---
 
-Scope / requirements:
-{scope}
+## Step 3 — Write the KB
 
-Mode-specific instructions:
+Write the complete knowledge base document following the KB Structure in your system prompt.
+
+**IMPORTANT:** Start your KB with this HTML comment containing the platform name you inferred:
+```
+<!-- PLATFORM: Your Inferred Platform Name -->
+```
+
+Stream your output directly — write each section as you go.
+
 {mode_instruction}
 
-Write section by section. Use the Write tool to save the final complete
-document to `{output_path}`.
+Save the completed document to: `{temp_output}`
+
+Use the Write tool to save the final complete document. Do NOT ask for confirmation — just write it.
 """
 
-    print(f"\n  Output path: {output_path}\n")
-
     async for message in query(
-        prompt=prompt,
+        prompt=agent_prompt,
         options=ClaudeAgentOptions(
             allowed_tools=["Read", "Glob", "Write", "WebFetch"],
             cwd=config.BASE_DIR,
             system_prompt=ANALYZER_SYSTEM_PROMPT,
             permission_mode="acceptEdits",
+            include_partial_messages=True,
+            thinking=ThinkingConfigAdaptive(type="adaptive"),
         ),
     ):
         log_message(message)
 
-    print(f"\n  Draft saved: {output_path}")
-    return output_path
+    # Extract platform name from the KB file the agent wrote
+    if os.path.exists(temp_output):
+        with open(temp_output, "r") as f:
+            first_lines = f.read(500)
+            match = re.search(r'<!--\s*PLATFORM:\s*(.+?)\s*-->', first_lines)
+            platform_name = match.group(1) if match else "Unknown Platform"
+    else:
+        platform_name = "Unknown Platform"
+
+    # Rename to proper path with platform name
+    safe_name = get_safe_name(platform_name)
+    final_path = make_kb_path(safe_name, "draft")
+    if os.path.exists(temp_output):
+        os.rename(temp_output, final_path)
+
+    print(f"\n  Inferred Platform: {platform_name}")
+    print(f"  Draft saved: {final_path}")
+    return final_path, safe_name
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +270,11 @@ async def run_interrogator_agent(kb_path: str, mode: str) -> dict:
 
     prompt = f"""Read the knowledge base file at: `{kb_path}`
 
-Identify up to {max_areas} knowledge areas where information is missing.
-Group related gaps — do NOT list individual field-level questions.
+Identify where information is missing **from the perspective of writing the artifact file**.
+
+Group related unknowns into **{max_areas} knowledge areas maximum**. Do NOT list individual field-level questions — group related gaps so the client can respond with a single doc, URL, or explanation.
+
+If there are no blocking gaps and no more than 2 minor important gaps that are already acknowledged in Known Gaps → set ready_for_generation to true.
 
 Return ONLY valid JSON (no markdown fences, no extra text):
 {{
@@ -199,10 +283,10 @@ Return ONLY valid JSON (no markdown fences, no extra text):
   "areas": [
     {{
       "id": "a1",
-      "priority": "blocking",
+      "priority": "blocking | important | nice_to_have",
       "title": "Short descriptive title",
       "what_we_have": "What the KB currently documents about this area",
-      "what_we_need": "What is missing and why it affects artifact file generation",
+      "what_we_need": "What is missing and why it affects the artifact file — be specific about which fields/values/syntax are unknown",
       "suggested_sources": "Type of doc/URL/explanation that would fill this gap"
     }}
   ]
@@ -210,17 +294,28 @@ Return ONLY valid JSON (no markdown fences, no extra text):
 """
 
     result_text = ""
+    last_text_block = ""  # fallback: SDK sometimes returns empty ResultMessage.result
     async for message in query(
         prompt=prompt,
         options=ClaudeAgentOptions(
-            allowed_tools=["Read"],
+            allowed_tools=["Read", "Grep"],
             cwd=config.BASE_DIR,
             system_prompt=system_prompt,
+            include_partial_messages=True,
+            thinking=ThinkingConfigAdaptive(type="adaptive"),
         ),
     ):
         log_message(message)
-        if isinstance(message, ResultMessage):
-            result_text = message.result  # capture before generator exhausts
+        if isinstance(message, AssistantMessage):
+            for block in message.content:
+                if isinstance(block, TextBlock) and block.text:
+                    last_text_block = block.text  # keep the last substantive text
+        elif isinstance(message, ResultMessage):
+            result_text = message.result or ""
+
+    # Fall back to the last TextBlock if ResultMessage.result came back empty
+    if not result_text.strip() and last_text_block.strip():
+        result_text = last_text_block
 
     # Strip markdown fences if the model wraps the JSON
     result_text = result_text.strip()
@@ -230,7 +325,14 @@ Return ONLY valid JSON (no markdown fences, no extra text):
         lines = lines[:-1] if lines and lines[-1].strip() == "```" else lines
         result_text = "\n".join(lines)
 
-    return json.loads(result_text)
+    # If there's prose before the JSON object, skip to the opening brace
+    brace_start = result_text.find("{")
+    if brace_start > 0:
+        result_text = result_text[brace_start:]
+
+    # raw_decode parses exactly one JSON value and ignores any trailing prose
+    parsed, _ = json.JSONDecoder().raw_decode(result_text)
+    return parsed
 
 
 # ---------------------------------------------------------------------------
@@ -246,35 +348,56 @@ async def run_enrichment_agent(
     """Update the KB with new information. Returns the path of the updated file."""
     output_path = make_kb_path(safe_name, f"r{round_num}")
 
-    prompt = f"""Update the knowledge base at: `{kb_path}`
+    prompt = f"""Update the knowledge base with new information collected from the user.
 
-The user provided this response to the identified gaps:
+---
+
+## Current KB
+
+Read the current KB from: `{kb_path}`
+
+---
+
+## User's response to identified gaps
+
 {user_input.strip()}
 
-Steps:
-1. Read the current KB from `{kb_path}`
-2. Process the user's response:
-   - If it contains URLs (starting with http), fetch each one with WebFetch
-   - If it says "file", glob and read any files in `inputs/docs/` not yet covered in the KB
-   - Any other text is a direct explanation — use it as-is
-3. Rewrite the KB incorporating all new information:
-   - Integrate new content into relevant sections
-   - Remove `> **Needs Verification:**` callouts where new info confirms details
-   - Add new subsections if new material reveals undocumented areas
-   - Update Known Gaps: remove resolved gaps, keep unresolved ones
-   - Write with authority where new docs confirm — no hedging
-4. Save the complete updated KB to: `{output_path}`
-"""
+---
 
-    print(f"\n  Output path: {output_path}\n")
+## How to process the response
+
+Parse the user's response naturally:
+- **URL** (starts with `http`) → fetch each one with WebFetch immediately. Extract all relevant schema, field, and rule information.
+- **`file`** → glob and read `inputs/docs/`. Load any files not yet covered in the KB. If nothing new, note that.
+- **Text explanation** → use it as-is to fill the relevant gaps.
+
+---
+
+## How to update the KB
+
+1. Read the current KB from `{kb_path}`
+2. Process all new information from the user's response
+3. Rewrite the KB incorporating everything new:
+   - Integrate new doc content into the relevant sections
+   - Remove `> **Needs Verification:**` callouts where new info confirms the detail
+   - Add new subsections if new material reveals undocumented areas
+   - Update **Known Gaps**: remove resolved gaps, keep unresolved ones
+   - Write with authority where new docs confirm — no hedging
+   - Keep the `<!-- PLATFORM: ... -->` comment at the top
+4. Save the complete updated KB to: `{output_path}`
+
+Do NOT ask for confirmation — just read, update, and write.
+"""
 
     async for message in query(
         prompt=prompt,
         options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Write", "WebFetch"],
+            allowed_tools=["Read", "Glob", "Write", "WebFetch"],
             cwd=config.BASE_DIR,
-            system_prompt=ANALYZER_SYSTEM_PROMPT,
+            system_prompt=ENRICHMENT_SYSTEM_PROMPT,
             permission_mode="acceptEdits",
+            include_partial_messages=True,
+            thinking=ThinkingConfigAdaptive(type="adaptive"),
         ),
     ):
         log_message(message)
@@ -329,19 +452,38 @@ def collect_user_input() -> tuple[str, bool]:
     print(f"\n{'~' * 60}")
     print("  Paste a URL, type 'file' if you dropped docs into inputs/docs/,")
     print("  explain in plain text, or type 'done' to finish.")
-    print("  (blank line to submit)")
+    print("  (Enter once to submit. For multi-line input, end with a blank line.)")
     print(f"{'~' * 60}\n")
 
     lines = []
     while True:
-        line = input("  > ").strip()
+        try:
+            line = input("  > ").strip()
+        except EOFError:
+            break
         if line.lower() == "done":
             return "", True
         if not line:
             if lines:
                 break
-        else:
-            lines.append(line)
+            # First input is blank — prompt again, don't hang
+            continue
+        lines.append(line)
+        # Peek: if next char would be a newline (single-line input), auto-submit
+        # by breaking after the first non-empty line unless user continues typing
+        break
+
+    # If user continued past first line, collect remaining lines until blank
+    while lines:
+        try:
+            line = input("  > ").strip()
+        except EOFError:
+            break
+        if not line:
+            break
+        if line.lower() == "done":
+            return "", True
+        lines.append(line)
 
     return "\n".join(lines), False
 
@@ -354,40 +496,36 @@ async def main():
     print_header()
 
     cfg = load_input_config()
-    platform_name = cfg["platform_name"]
-    safe_name = get_safe_name(platform_name)
-    scope = cfg.get("scope", "")
-    doc_urls = cfg.get("doc_urls") or []
+    prompt = cfg.get("prompt", "")
 
-    mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, doc_urls, scope)
+    if not prompt:
+        print("\n  [ERROR] No prompt found in input_config.yaml")
+        sys.exit(1)
+
+    mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, prompt)
 
     artifact_count = count_dir_files(config.ARTIFACTS_DIR)
     doc_count = count_dir_files(config.DOCS_DIR)
 
-    print(f"\n  Platform : {platform_name}")
-    print(f"  Mode     : {mode}")
+    print(f"\n  Mode     : {mode}")
     print(f"  Artifacts: {artifact_count}")
-    print(f"  Docs     : {doc_count} local + {len(doc_urls)} URL(s)")
+    print(f"  Docs     : {doc_count} local")
+    print(f"\n  User Prompt Preview:")
+    print(f"  {prompt[:150]}{'...' if len(prompt) > 150 else ''}\n")
 
     if mode == "empty":
         print(
-            "\n  [ERROR] No inputs found. Add artifacts to inputs/sample_artifacts/"
-            " or docs to inputs/docs/"
+            "\n  [ERROR] No inputs found. Provide a prompt in input_config.yaml"
+            " and/or add files to inputs/sample_artifacts/ or inputs/docs/"
         )
         sys.exit(1)
 
-    # Phase detection: resume from existing KB or start a fresh draft
-    existing_kb = get_latest_kb(safe_name)
-
-    if existing_kb:
-        print(f"\n  Existing KB found: {existing_kb}")
-        kb_path = existing_kb
-    else:
-        print_step("Draft Phase")
-        print("  Running Draft Agent...")
-        start = time.time()
-        kb_path = await run_draft_agent(cfg, mode)
-        print(f"  Draft completed in {time.time() - start:.1f}s")
+    # Phase detection: start a fresh draft (platform name inferred by agent)
+    print_step("Draft Phase")
+    print("  Running Draft Agent...")
+    start = time.time()
+    kb_path, safe_name = await run_draft_agent(prompt, mode)
+    print(f"  Draft completed in {time.time() - start:.1f}s")
 
     # Refinement loop — runs until ready_for_generation, no areas, or user types 'done'
     round_num = 0
@@ -447,6 +585,10 @@ async def main():
     final_path = make_kb_path(safe_name, "FINAL")
     content = Path(kb_path).read_text(encoding="utf-8")
     Path(final_path).write_text(content, encoding="utf-8")
+
+    # Extract platform name from final KB
+    match = re.search(r'<!--\s*PLATFORM:\s*(.+?)\s*-->', content[:500])
+    platform_name = match.group(1) if match else safe_name
 
     verifications = content.lower().count("needs verification")
 

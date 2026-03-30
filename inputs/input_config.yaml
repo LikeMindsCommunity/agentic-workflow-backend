@@ -1,23 +1,24 @@
 # ============================================================
 # LikeMinds Layer 1 - Input Configuration
 # ============================================================
-# Three fields to fill in. That's it.
+# One field. One prompt. That's it.
+#
+# Just describe what you want to automate in natural language:
+#   - What platform you're working with
+#   - What kind of artifact/output you want to generate
+#   - Paste any documentation URLs directly in your description
+#
+# The AI agent will intelligently:
+#   ✓ Understand the platform and scope
+#   ✓ Find and fetch any documentation URLs you mention
+#   ✓ Build a comprehensive knowledge base from all sources
 #
 # Artifacts:  drop files into inputs/sample_artifacts/
 # Local docs: drop files into inputs/docs/
 # ============================================================
 
-# What platform is this? (required)
-platform_name: "Exotel IVR"
-
-# What are we trying to automate? Describe the artifact and its purpose. (required)
-scope: |
-  We want to automate the creation of IVR workflows on the Exotel platform.
+prompt: |
+  I want to automate the creation of IVR workflows for the Exotel platform.
   The final artifact is a JSON file that represents a complete IVR call flow.
-  The system should be able to generate these JSON files given a natural
-  language description of what the IVR should do.
-
-# Online documentation URLs to read. Leave empty if using local docs only. (optional)
-doc_urls:
-  # - "https://developer.exotel.com/api/ivr-workflows"
-  # - "https://developer.exotel.com/api/call-flows"
+  The system should generate these JSON files from natural language descriptions
+  of what the IVR should do.
