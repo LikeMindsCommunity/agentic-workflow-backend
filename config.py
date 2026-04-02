@@ -15,5 +15,3 @@ OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 INPUT_CONFIG_PATH = os.path.join(INPUT_DIR, "input_config.yaml")
 
 MAX_AREAS_PER_ROUND = 5
-MAX_SCRAPE_PAGES = 30
-SCRAPED_DOCS_DIR = os.path.join(INPUT_DIR, "docs", "scraped")

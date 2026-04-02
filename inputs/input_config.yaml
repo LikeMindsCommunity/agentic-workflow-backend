@@ -18,7 +18,5 @@
 # ============================================================
 
 prompt: |
-  I want to automate the creation of IVR workflows for the Exotel platform.
-  The final artifact is a JSON file that represents a complete IVR call flow.
-  The system should generate these JSON files from natural language descriptions
-  of what the IVR should do.
+  I want to automate the integration of MoEngage analytics events into each platform they offer, i.e https://developers.moengage.com/hc/en-us.
+  Refer to their website for the documentation.

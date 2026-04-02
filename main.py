@@ -31,7 +31,6 @@ from agents.prompts import (
     MODE_INSTRUCTIONS,
     MODE_ADDITIONS,
 )
-from agents.web_scraper import run_web_scraper_agent
 
 try:
     from claude_agent_sdk import (
@@ -552,27 +551,6 @@ async def main():
             " and/or add files to inputs/sample_artifacts/ or inputs/docs/"
         )
         sys.exit(1)
-
-    # Pre-step: scrape documentation from URLs found in the prompt
-    urls_in_prompt = re.findall(r'https?://[^\s,\'"<>]+', prompt)
-    if urls_in_prompt:
-        print_step("Web Scraper (pre-step)")
-        print(f"  Found {len(urls_in_prompt)} URL(s) in prompt:")
-        for url in urls_in_prompt:
-            print(f"    • {url}")
-        print("  Running Web Scraper Agent...")
-        start = time.time()
-        manifest = await run_web_scraper_agent(
-            urls=urls_in_prompt,
-            context_hint=prompt[:300],
-        )
-        scraped_count = manifest.get("pages_scraped", 0) if manifest else 0
-        print(f"  Scraper completed in {time.time() - start:.1f}s — {scraped_count} pages saved")
-
-        # Re-detect mode now that scraped docs exist
-        mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, prompt)
-        doc_count = count_dir_files(config.DOCS_DIR)
-        print(f"  Updated mode: {mode} ({doc_count} docs now available)")
 
     # Phase detection: start a fresh draft (platform name inferred by agent)
     print_step("Draft Phase")

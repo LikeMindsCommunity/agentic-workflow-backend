@@ -71,10 +71,9 @@ def _has_files(directory: str) -> bool:
     """Return True if the directory (or any subdirectory) contains at least one non-hidden file."""
     if not os.path.isdir(directory):
         return False
-    for root, dirs, files in os.walk(directory):
-        # Skip hidden directories
-        dirs[:] = [d for d in dirs if not d.startswith(".")]
-        for f in files:
-            if not f.startswith("."):
-                return True
-    return False
+
+    return any(
+        f for f in os.listdir(directory)
+        if not f.startswith(".") and os.path.isfile(os.path.join(directory, f))
+    )
+    
