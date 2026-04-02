@@ -31,6 +31,7 @@ from agents.prompts import (
     MODE_INSTRUCTIONS,
     MODE_ADDITIONS,
 )
+from agents.web_scraper import run_web_scraper_agent
 
 try:
     from claude_agent_sdk import (
@@ -50,6 +51,30 @@ except ImportError:
     print("\n  [ERROR] claude-agent-sdk not installed.")
     print("  Run: pip install claude-agent-sdk\n")
     sys.exit(1)
+
+# ---------------------------------------------------------------------------
+# MCP: Playwright stealth browser — bypasses bot detection (Cloudflare, etc.)
+# Uses rebrowser-playwright under the hood for fingerprint evasion.
+# Requires Xvfb on Linux (runs headed for better stealth).
+# ---------------------------------------------------------------------------
+PLAYWRIGHT_MCP_SERVER = {
+    "playwright": {
+        "type": "stdio",
+        "command": "npx",
+        "args": ["-y", "@pvinis/playwright-stealth-mcp-server"],
+    }
+}
+
+PLAYWRIGHT_TOOLS = [
+    "mcp__playwright__playwright_custom_user_agent",
+    "mcp__playwright__playwright_navigate",
+    "mcp__playwright__playwright_get_visible_text",
+    "mcp__playwright__playwright_get_visible_html",
+    "mcp__playwright__playwright_click",
+    "mcp__playwright__playwright_scroll",
+    "mcp__playwright__playwright_screenshot",
+    "mcp__playwright__playwright_close",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +201,7 @@ async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
     temp_output = os.path.join(config.OUTPUT_DIR, "kb_draft_temp.md")
     os.makedirs(config.OUTPUT_DIR, exist_ok=True)
 
-    agent_prompt = f"""Build a comprehensive knowledge base for a client's platform.
+    agent_prompt = f"""Build a comprehensive knowledge base for a client's platform/domain based on their stated use case.
 
 ---
 
@@ -185,23 +210,29 @@ async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
 1. Read `inputs/input_config.yaml`. It contains a single `prompt` field with the user's natural language description.
 
 2. From the prompt, intelligently infer:
-   - **Platform name** (e.g., "Exotel", "Twilio", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
-   - **Scope** — what they want to automate
+   - **Platform/domain name** (e.g., "Exotel", "Twilio", "MoEngage", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
+   - **Use case** — what they want to achieve or automate with this KB
    - **Documentation URLs** — any http/https URLs mentioned in the prompt (you'll fetch these)
 
 ---
 
 ## Step 2 — Load inputs
 
-### Artifacts
+### Sample/Reference Files
 - Glob all files in `inputs/sample_artifacts/`
 - Skip `.DS_Store` and hidden files
 - Read each file. Note whether `.json` files are valid JSON or raw text.
 
 ### Documentation
 - Read all `.md .txt .json .yaml .yml .xml .html` files from `inputs/docs/`
-- Extract any URLs from the user's prompt and fetch them with WebFetch
-- Use judgment on link following: if a page is sparse or mostly navigation, follow internal links to find the actual content. Stop when you have enough to understand the schema.
+- Extract any URLs from the user's prompt. For each URL:
+  1. Try `WebFetch` first (fast, no browser needed)
+  2. If it returns a 403/404 error or empty content, use the stealth browser:
+     a. Call `mcp__playwright__playwright_custom_user_agent` first
+     b. Call `mcp__playwright__playwright_navigate` — if it times out (30s), call it again immediately; the second attempt succeeds because the Cloudflare cookie is already set from the first attempt
+     c. Call `mcp__playwright__playwright_get_visible_text` to extract the page text
+- When following links: extract href attribute values from the visible text and call `mcp__playwright__playwright_navigate` directly on each URL — do NOT use `mcp__playwright__playwright_click` for navigation as element selectors are unreliable on Cloudflare-protected pages
+- Skip any URLs that look like old article IDs (short numeric IDs under 13 digits) — prefer newer article IDs or section URLs
 
 Input mode: **{mode}**
 
@@ -228,10 +259,11 @@ Use the Write tool to save the final complete document. Do NOT ask for confirmat
     async for message in query(
         prompt=agent_prompt,
         options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Glob", "Write", "WebFetch"],
+            allowed_tools=["Read", "Glob", "Write", "WebFetch", "WebSearch"] + PLAYWRIGHT_TOOLS,
+            mcp_servers=PLAYWRIGHT_MCP_SERVER,
             cwd=config.BASE_DIR,
             system_prompt=ANALYZER_SYSTEM_PROMPT,
-            permission_mode="acceptEdits",
+            permission_mode="bypassPermissions",
             include_partial_messages=True,
             thinking=ThinkingConfigAdaptive(type="adaptive"),
         ),
@@ -270,7 +302,7 @@ async def run_interrogator_agent(kb_path: str, mode: str) -> dict:
 
     prompt = f"""Read the knowledge base file at: `{kb_path}`
 
-Identify where information is missing **from the perspective of writing the artifact file**.
+Identify where information is missing **from the perspective of successfully executing the use case described in the KB's Overview section**.
 
 Group related unknowns into **{max_areas} knowledge areas maximum**. Do NOT list individual field-level questions — group related gaps so the client can respond with a single doc, URL, or explanation.
 
@@ -286,7 +318,7 @@ Return ONLY valid JSON (no markdown fences, no extra text):
       "priority": "blocking | important | nice_to_have",
       "title": "Short descriptive title",
       "what_we_have": "What the KB currently documents about this area",
-      "what_we_need": "What is missing and why it affects the artifact file — be specific about which fields/values/syntax are unknown",
+      "what_we_need": "What is missing and why it affects the use case — be specific about what is unknown",
       "suggested_sources": "Type of doc/URL/explanation that would fill this gap"
     }}
   ]
@@ -367,7 +399,7 @@ Read the current KB from: `{kb_path}`
 ## How to process the response
 
 Parse the user's response naturally:
-- **URL** (starts with `http`) → fetch each one with WebFetch immediately. Extract all relevant schema, field, and rule information.
+- **URL** (starts with `http`) → fetch each one. Try `WebFetch` first; if it returns a 403/empty response, use the stealth browser: call `mcp__playwright__playwright_custom_user_agent` first, then `mcp__playwright__playwright_navigate` (if it times out, call navigate again immediately — the second attempt works because the Cloudflare cookie is already set), then `mcp__playwright__playwright_get_visible_text`. Never use `mcp__playwright__playwright_click` for navigation — extract href values from visible text and navigate directly.
 - **`file`** → glob and read `inputs/docs/`. Load any files not yet covered in the KB. If nothing new, note that.
 - **Text explanation** → use it as-is to fill the relevant gaps.
 
@@ -392,10 +424,11 @@ Do NOT ask for confirmation — just read, update, and write.
     async for message in query(
         prompt=prompt,
         options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Glob", "Write", "WebFetch"],
+            allowed_tools=["Read", "Glob", "Write", "WebFetch", "WebSearch"] + PLAYWRIGHT_TOOLS,
+            mcp_servers=PLAYWRIGHT_MCP_SERVER,
             cwd=config.BASE_DIR,
             system_prompt=ENRICHMENT_SYSTEM_PROMPT,
-            permission_mode="acceptEdits",
+            permission_mode="bypassPermissions",
             include_partial_messages=True,
             thinking=ThinkingConfigAdaptive(type="adaptive"),
         ),
@@ -416,7 +449,7 @@ def display_areas(areas_data: dict):
     print(f"{'=' * 60}")
     print(f"\n  {areas_data.get('summary', '')}")
     ready = areas_data.get("ready_for_generation", False)
-    print(f"\n  Ready for Generation: {'YES ✓' if ready else 'NO'}")
+    print(f"\n  Ready for Use: {'YES ✓' if ready else 'NO'}")
 
     areas = areas_data.get("areas", [])
     if not areas:
@@ -424,7 +457,7 @@ def display_areas(areas_data: dict):
         return
 
     priority_groups = [
-        ("BLOCKING — cannot generate without this", "blocking"),
+        ("BLOCKING — use case cannot proceed without this", "blocking"),
         ("IMPORTANT — affects correctness", "important"),
         ("NICE TO HAVE — completeness", "nice_to_have"),
     ]
@@ -520,6 +553,27 @@ async def main():
         )
         sys.exit(1)
 
+    # Pre-step: scrape documentation from URLs found in the prompt
+    urls_in_prompt = re.findall(r'https?://[^\s,\'"<>]+', prompt)
+    if urls_in_prompt:
+        print_step("Web Scraper (pre-step)")
+        print(f"  Found {len(urls_in_prompt)} URL(s) in prompt:")
+        for url in urls_in_prompt:
+            print(f"    • {url}")
+        print("  Running Web Scraper Agent...")
+        start = time.time()
+        manifest = await run_web_scraper_agent(
+            urls=urls_in_prompt,
+            context_hint=prompt[:300],
+        )
+        scraped_count = manifest.get("pages_scraped", 0) if manifest else 0
+        print(f"  Scraper completed in {time.time() - start:.1f}s — {scraped_count} pages saved")
+
+        # Re-detect mode now that scraped docs exist
+        mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, prompt)
+        doc_count = count_dir_files(config.DOCS_DIR)
+        print(f"  Updated mode: {mode} ({doc_count} docs now available)")
+
     # Phase detection: start a fresh draft (platform name inferred by agent)
     print_step("Draft Phase")
     print("  Running Draft Agent...")
@@ -549,7 +603,7 @@ async def main():
         display_areas(areas_data)
 
         if areas_data.get("ready_for_generation"):
-            print("\n  Knowledge base is READY for generation.")
+            print("\n  Knowledge base is READY for use.")
             break
 
         if not areas_data.get("areas"):

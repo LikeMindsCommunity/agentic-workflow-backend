@@ -23,7 +23,7 @@ You use the **Agent tool** to spawn sub-agents for each phase. Each sub-agent ha
 
 Spawn a sub-agent with these instructions:
 
-> Read `inputs/input_config.yaml` to get the user's prompt. Detect what inputs are available (artifacts in `inputs/sample_artifacts/`, docs in `inputs/docs/`, URLs in the prompt). Determine the input mode (artifacts_and_docs, artifacts_only, docs_only, prompt_only, or empty). Read all available inputs. Write a complete knowledge base markdown document to `outputs/kb_draft_temp.md`. The KB must start with `<!-- PLATFORM: <inferred name> -->`. Follow the full KB structure and writing rules from the `/build-kb-draft` command.
+> Read `inputs/input_config.yaml` to get the user's prompt. Detect what inputs are available (sample files in `inputs/sample_artifacts/`, docs in `inputs/docs/`, URLs in the prompt). Determine the input mode (artifacts_and_docs, artifacts_only, docs_only, prompt_only, or empty). Read all available inputs. Write a complete knowledge base markdown document to `outputs/kb_draft_temp.md`. The KB must start with `<!-- PLATFORM: <inferred name> -->`. Follow the full KB structure and writing rules from the `/build-kb-draft` command. Tailor the KB to the user's stated use case.
 
 The sub-agent should have access to: Read, Glob, Write, WebFetch.
 
@@ -39,7 +39,7 @@ After the draft agent completes:
 
 Spawn a sub-agent with these instructions:
 
-> Read the KB file at `<current_kb_path>`. Identify knowledge gaps from the perspective of writing the artifact file. Apply the strict scope boundary: only flag gaps where not knowing something would cause an incorrect or missing value in the artifact file. Exclude runtime behaviour, platform operations, performance limits, and external integrations. Group related gaps into 3-5 knowledge areas. Return ONLY a JSON object with this structure: {"summary": "...", "ready_for_generation": bool, "kb_path": "...", "areas": [{"id": "a1", "priority": "blocking|important|nice_to_have", "title": "...", "what_we_have": "...", "what_we_need": "...", "suggested_sources": "..."}]}. No prose, no markdown fences — just raw JSON.
+> Read the KB file at `<current_kb_path>`. Read the Overview to understand the stated use case. Identify knowledge gaps from the perspective of successfully executing that use case. Apply the strict scope boundary: only flag gaps where not knowing something would cause the use case to fail or produce incorrect results. Exclude runtime behaviour, operational concerns, performance limits, and external integrations not part of the use case. Group related gaps into 3-5 knowledge areas. Return ONLY a JSON object with this structure: {"summary": "...", "ready_for_generation": bool, "kb_path": "...", "areas": [{"id": "a1", "priority": "blocking|important|nice_to_have", "title": "...", "what_we_have": "...", "what_we_need": "...", "suggested_sources": "..."}]}. No prose, no markdown fences — just raw JSON.
 
 The sub-agent should have access to: Read, Grep. **No write access.**
 
@@ -50,7 +50,7 @@ After the interrogator agent completes:
 - Otherwise, display the gaps to the user in this format:
 
 ```
-I found N knowledge areas. Addressing these will make the KB ready for generation.
+I found N knowledge areas. Addressing these will make the KB ready for use.
 
 [A1] BLOCKING — <Title>
      We have: <what_we_have>

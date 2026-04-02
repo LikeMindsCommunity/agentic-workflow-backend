@@ -9,15 +9,15 @@ You are an expert platform analyst for LikeMinds. Your ONLY job in this command 
 1. Read `inputs/input_config.yaml`. It contains a single `prompt` field with the user's natural language description.
 
 2. From the prompt, intelligently infer:
-   - **Platform name** (e.g., "Exotel", "Twilio", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
-   - **Scope** — what they want to automate
+   - **Platform/domain name** (e.g., "Exotel", "Twilio", "MoEngage", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
+   - **Use case** — what they want to achieve or automate with this KB
    - **Documentation URLs** — any http/https URLs mentioned in the prompt (you'll fetch these)
 
 ---
 
 ## Step 2 — Load inputs
 
-### Artifacts
+### Sample/Reference Files
 - Glob all files in `inputs/sample_artifacts/`
 - Skip `.DS_Store` and hidden files
 - Read each file. Note whether `.json` files are valid JSON or raw text.
@@ -25,18 +25,18 @@ You are an expert platform analyst for LikeMinds. Your ONLY job in this command 
 ### Documentation
 - Read all `.md .txt .json .yaml .yml .xml .html` files from `inputs/docs/`
 - Extract any URLs from the user's prompt and fetch them with WebFetch
-- Use judgment on link following: if a page is sparse or mostly navigation, follow internal links to find the actual content. Stop when you have enough to understand the schema.
+- Use judgment on link following: if a page is sparse or mostly navigation, follow internal links to find the actual content. Stop when you have enough to understand the domain.
 
 ### Mode detection
 | Condition | Mode |
 |---|---|
-| Artifacts AND local docs both present | `artifacts_and_docs` |
-| Artifacts only, no local docs | `artifacts_only` |
-| Local docs only, no artifacts | `docs_only` |
+| Sample files AND local docs both present | `artifacts_and_docs` |
+| Sample files only, no local docs | `artifacts_only` |
+| Local docs only, no sample files | `docs_only` |
 | Only the prompt (maybe with URLs) | `prompt_only` |
 | Nothing at all | Error — tell user to add inputs and stop |
 
-Tell the user: inferred platform name, mode, artifact count, local doc count.
+Tell the user: inferred platform/domain name, mode, sample file count, local doc count.
 
 ---
 
@@ -66,45 +66,46 @@ path: outputs/kb_draft_temp.md
 
 ## KB Structure
 
-Every KB must contain exactly these sections in this order.
+Every KB must contain exactly these sections in this order. Adapt the depth and emphasis of each section to the user's stated use case — not every KB is about generating config files.
 
 ```
-# <Platform Name> - <Artifact Type> Knowledge Base
+# <Platform/Domain Name> — <Use Case> Knowledge Base
 
 ## Overview
-What this platform is. What artifact we are generating. How it is used in practice.
+What this platform/domain is. What the use case is. How the knowledge in this KB
+will be applied.
 
 ## Core Concepts
 Key terminology and entity relationships. One ### subsection per major concept.
-Define every major concept before diving into structure.
+Define every major concept before diving into details.
 
-## Artifact Structure
-Top-level shape of the artifact. One annotated example showing the full high-level
-structure with inline comments. Explain what each major section contains.
+## Key Structures and Schemas
+The important data structures, schemas, APIs, or configuration formats relevant
+to this use case. Annotated examples showing shape and meaning. Skip if not relevant.
 
-## <ObjectType>
-(One ## section per distinct object type found in the artifacts)
-- What the object represents and when it is used
-- All fields: name, type, required/optional, valid values, defaults
-- Annotated JSON/config example using REAL values from the sample artifacts
-- Behavioral notes: what happens when a field is set to a specific value
+## <EntityType>
+(One ## section per distinct entity, object type, or domain concept that needs
+detailed documentation)
+- What it represents and when it is used
+- All fields/attributes: name, type, required/optional, valid values, defaults
+- Annotated example using REAL values from the provided inputs where available
+- Behavioral notes: what happens when a field/attribute is set to a specific value
 - Edge cases and special rules
 
-## Validation Rules and Constraints
-Rules grouped by scope: per-field, cross-field, cross-object.
-For each rule: state the rule AND what breaks if it is violated.
+## Rules and Constraints
+Rules grouped by scope: per-field, cross-field, cross-entity, business logic.
+For each rule: state the rule AND the consequence of violating it.
 
 ## Dependencies and Ordering
-What must exist before what. Creation sequence.
-Exact fields that establish references between objects.
+What must exist before what. Sequencing requirements.
+Fields or references that establish relationships between entities.
 
 ## Common Patterns
-Recurring configurations with COMPLETE annotated examples.
-Copy-paste ready templates. Explain when and why each pattern is used.
+Recurring configurations or workflows with COMPLETE annotated examples.
+Ready-to-use templates. Explain when and why each pattern is used.
 
-## Integration Checklist
-Numbered step-by-step process for assembling a complete artifact.
-Note which fields/locations need updating at each step.
+## Implementation Guide
+Step-by-step process for applying this knowledge to the use case.
 
 ## Troubleshooting
 Format per item: "Issue: <problem>" / "Check: <what to verify>"
@@ -116,21 +117,22 @@ For each gap: what is missing and what would fill it.
 
 ### Writing rules
 
-- Cover every **distinct** field type and object type. One annotated example per pattern — do not repeat the same pattern for every instance.
-- JSON/config examples must use **real values from the sample artifacts**, annotated with inline comments.
+- Cover every **distinct** entity type, concept, or pattern relevant to the use case. One annotated example per pattern — do not repeat the same pattern for every instance.
+- Examples must use **real values from the provided inputs** where available, annotated with inline comments.
 - When you infer something without doc confirmation:
   `> **Needs Verification:** <what is unclear and what was assumed>`
-- Validation rules must state both the rule AND the consequence of violating it.
-- Common Patterns must be complete, copy-paste-ready — no placeholders.
+- Rules and constraints must state both the rule AND the consequence of violating it.
+- Common Patterns must be complete, ready-to-use — no placeholders.
 - Be thorough but concise. Gap rounds will fill missing detail.
 - No confidence scores, numeric ratings, or structured metadata.
+- Tailor KB depth and focus to the stated use case.
 
 ### Mode-specific behaviour
 
-**`artifacts_only`** — Reverse-engineer everything from structure. Check the prompt for any documentation URLs and fetch them. Be liberal with Needs Verification callouts. Known Gaps should be extensive.
+**`artifacts_only`** — Reverse-engineer everything from the sample files. Check the prompt for any documentation URLs and fetch them. Be liberal with Needs Verification callouts. Known Gaps should be extensive.
 
-**`docs_only`** — Extract schema from docs. Note no real artifact was validated. Ask for sample artifacts in Known Gaps.
+**`docs_only`** — Extract all relevant information from docs. Note no real sample files were validated against. Ask for sample/reference files in Known Gaps.
 
 **`prompt_only`** — Look for URLs in the prompt and fetch them. If no URLs found, write a skeleton based on what you can infer. Every section should have Needs Verification callouts. Known Gaps should be the longest section.
 
-**`artifacts_and_docs`** — Map every artifact element to the documentation. Write with authority where docs confirm. Note mismatches.
+**`artifacts_and_docs`** — Map every sample file element to the documentation. Write with authority where docs confirm. Note mismatches.
