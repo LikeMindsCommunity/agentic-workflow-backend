@@ -28,6 +28,7 @@ from agents.prompts import (
     ANALYZER_SYSTEM_PROMPT,
     ENRICHMENT_SYSTEM_PROMPT,
     INTERROGATOR_SYSTEM_PROMPT,
+    SCRAPER_SYSTEM_PROMPT,
     MODE_INSTRUCTIONS,
     MODE_ADDITIONS,
 )
@@ -64,16 +65,7 @@ PLAYWRIGHT_MCP_SERVER = {
     }
 }
 
-PLAYWRIGHT_TOOLS = [
-    "mcp__playwright__playwright_custom_user_agent",
-    "mcp__playwright__playwright_navigate",
-    "mcp__playwright__playwright_get_visible_text",
-    "mcp__playwright__playwright_get_visible_html",
-    "mcp__playwright__playwright_click",
-    "mcp__playwright__playwright_scroll",
-    "mcp__playwright__playwright_screenshot",
-    "mcp__playwright__playwright_close",
-]
+PLAYWRIGHT_TOOLS = ["mcp__playwright__*"]
 
 
 # ---------------------------------------------------------------------------
@@ -186,6 +178,56 @@ def log_message(message, verbose: bool = False) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Agent: Scraper
+# ---------------------------------------------------------------------------
+
+async def run_scraper_agent(prompt: str) -> dict:
+    """
+    Discover and scrape all relevant documentation based on the user's prompt.
+    Saves individual markdown files + _manifest.json to inputs/docs/scraped/.
+    Returns the parsed manifest dict, or {} on failure.
+    """
+    os.makedirs(config.SCRAPED_DOCS_DIR, exist_ok=True)
+
+    agent_prompt = f"""Here is what the user wants to build:
+
+---
+{prompt.strip()}
+---
+
+Your job: find and scrape all documentation that would be relevant for this task.
+Save every page to: `{config.SCRAPED_DOCS_DIR}`
+Follow your system prompt instructions exactly — sitemap first, then DOM discovery, then fetch each page.
+"""
+
+    async for message in query(
+        prompt=agent_prompt,
+        options=ClaudeAgentOptions(
+            allowed_tools=["WebFetch", "WebSearch", "Read", "Write", "Glob"] + PLAYWRIGHT_TOOLS,
+            # NOTE: Bash is intentionally excluded — forces the agent to use
+            # the provided MCP browser tools instead of writing its own scripts.
+            mcp_servers=PLAYWRIGHT_MCP_SERVER,
+            cwd=config.BASE_DIR,
+            system_prompt=SCRAPER_SYSTEM_PROMPT,
+            permission_mode="bypassPermissions",
+            include_partial_messages=True,
+            thinking=ThinkingConfigAdaptive(type="adaptive"),
+        ),
+    ):
+        log_message(message)
+
+    # Read the manifest written by the agent
+    manifest_path = os.path.join(config.SCRAPED_DOCS_DIR, "_manifest.json")
+    if os.path.exists(manifest_path):
+        with open(manifest_path, "r") as f:
+            try:
+                return json.load(f)
+            except json.JSONDecodeError:
+                return {}
+    return {}
+
+
+# ---------------------------------------------------------------------------
 # Agent: Draft
 # ---------------------------------------------------------------------------
 
@@ -211,7 +253,6 @@ async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
 2. From the prompt, intelligently infer:
    - **Platform/domain name** (e.g., "Exotel", "Twilio", "MoEngage", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
    - **Use case** — what they want to achieve or automate with this KB
-   - **Documentation URLs** — any http/https URLs mentioned in the prompt (you'll fetch these)
 
 ---
 
@@ -223,17 +264,10 @@ async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
 - Read each file. Note whether `.json` files are valid JSON or raw text.
 
 ### Documentation
-- Read all `.md .txt .json .yaml .yml .xml .html` files from `inputs/docs/`
-- Extract any URLs from the user's prompt. For each URL:
-  1. Try `WebFetch` first (fast, no browser needed)
-  2. If it returns a 403/404 error or empty content, use the stealth browser:
-     a. Call `mcp__playwright__playwright_custom_user_agent` first
-     b. Call `mcp__playwright__playwright_navigate` — if it times out (30s), call it again immediately; the second attempt succeeds because the Cloudflare cookie is already set from the first attempt
-     c. Call `mcp__playwright__playwright_get_visible_text` to extract the page text
-     d. **Validate the page loaded correctly**: if the visible text contains "Page not found", "404", "This page doesn't exist", or is fewer than 200 characters — the page is dead, skip it and do not use its content
-- When discovering links to follow: navigate through **category/section pages** (URLs containing `/sections/` or `/categories/`) rather than jumping directly to article IDs. Section pages list all current valid articles. Avoid hardcoding or guessing article IDs — only follow URLs you explicitly found in visible page text.
-- When following links: extract href attribute values from the visible text and call `mcp__playwright__playwright_navigate` directly on each URL — do NOT use `mcp__playwright__playwright_click` for navigation as element selectors are unreliable on Cloudflare-protected pages
-- After every `mcp__playwright__playwright_navigate` call, check the first 300 characters of `mcp__playwright__playwright_get_visible_text` output. If it contains "Page not found", "404", or similar — skip this URL entirely and move to the next one
+- If `inputs/docs/scraped/research.md` exists, read it first — it contains pre-researched, relevant content extracted from the platform's documentation and is your PRIMARY source. Trust it.
+- Read any other files in `inputs/docs/` as supplementary material.
+- Do NOT re-fetch documentation that is already covered in `research.md`.
+- You may use WebFetch or WebSearch for light targeted follow-up only if a specific detail is clearly absent from the research doc.
 
 Input mode: **{mode}**
 
@@ -260,8 +294,7 @@ Use the Write tool to save the final complete document. Do NOT ask for confirmat
     async for message in query(
         prompt=agent_prompt,
         options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Glob", "Write", "WebFetch", "WebSearch"] + PLAYWRIGHT_TOOLS,
-            mcp_servers=PLAYWRIGHT_MCP_SERVER,
+            allowed_tools=["Read", "Glob", "Write", "WebFetch", "WebSearch"],
             cwd=config.BASE_DIR,
             system_prompt=ANALYZER_SYSTEM_PROMPT,
             permission_mode="bypassPermissions",
@@ -400,7 +433,7 @@ Read the current KB from: `{kb_path}`
 ## How to process the response
 
 Parse the user's response naturally:
-- **URL** (starts with `http`) → fetch each one. Try `WebFetch` first; if it returns a 403/empty response, use the stealth browser: call `mcp__playwright__playwright_custom_user_agent` first, then `mcp__playwright__playwright_navigate` (if it times out, call navigate again immediately — the second attempt works because the Cloudflare cookie is already set), then `mcp__playwright__playwright_get_visible_text`. After navigating, validate the page loaded: if visible text contains "Page not found", "404", or fewer than 200 characters — skip it. Never use `mcp__playwright__playwright_click` for navigation — extract href values from visible text and navigate directly.
+- **URL** (starts with `http`) → thoroughly scrape the documentation at that URL. Use whatever browsing tools and navigation strategy you need to discover and read all relevant content.
 - **`file`** → glob and read `inputs/docs/`. Load any files not yet covered in the KB. If nothing new, note that.
 - **Text explanation** → use it as-is to fill the relevant gaps.
 
@@ -536,14 +569,29 @@ async def main():
         print("\n  [ERROR] No prompt found in input_config.yaml")
         sys.exit(1)
 
+    # Phase 0: Scrape documentation before drafting
+    print_step("Scrape Phase")
+    print("  Running Scraper Agent (discovers and saves all relevant docs)...")
+    start = time.time()
+    manifest = await run_scraper_agent(prompt)
+    pages_consulted = manifest.get("pages_consulted", 0)
+    topics = manifest.get("topics_covered", [])
+    print(f"  Research completed in {time.time() - start:.1f}s")
+    print(f"  Pages consulted: {pages_consulted}  |  Topics covered: {len(topics)}")
+    if topics:
+        print(f"  Topics: {', '.join(topics[:6])}{'...' if len(topics) > 6 else ''}")
+    if pages_consulted == 0:
+        print("  [WARN] No pages consulted — draft agent will work from prompt only.")
+
     mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, prompt)
 
     artifact_count = count_dir_files(config.ARTIFACTS_DIR)
     doc_count = count_dir_files(config.DOCS_DIR)
+    scraped_count = count_dir_files(config.SCRAPED_DOCS_DIR) if os.path.isdir(config.SCRAPED_DOCS_DIR) else 0
 
     print(f"\n  Mode     : {mode}")
     print(f"  Artifacts: {artifact_count}")
-    print(f"  Docs     : {doc_count} local")
+    print(f"  Docs     : {doc_count} local  ({scraped_count} scraped)")
     print(f"\n  User Prompt Preview:")
     print(f"  {prompt[:150]}{'...' if len(prompt) > 150 else ''}\n")
 

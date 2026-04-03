@@ -11,6 +11,7 @@ BASE_DIR = os.path.dirname(__file__)
 INPUT_DIR = os.path.join(BASE_DIR, "inputs")
 ARTIFACTS_DIR = os.path.join(INPUT_DIR, "sample_artifacts")
 DOCS_DIR = os.path.join(INPUT_DIR, "docs")
+SCRAPED_DOCS_DIR = os.path.join(DOCS_DIR, "scraped")
 OUTPUT_DIR = os.path.join(BASE_DIR, "outputs")
 INPUT_CONFIG_PATH = os.path.join(INPUT_DIR, "input_config.yaml")
 
