@@ -230,8 +230,10 @@ async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
      a. Call `mcp__playwright__playwright_custom_user_agent` first
      b. Call `mcp__playwright__playwright_navigate` — if it times out (30s), call it again immediately; the second attempt succeeds because the Cloudflare cookie is already set from the first attempt
      c. Call `mcp__playwright__playwright_get_visible_text` to extract the page text
+     d. **Validate the page loaded correctly**: if the visible text contains "Page not found", "404", "This page doesn't exist", or is fewer than 200 characters — the page is dead, skip it and do not use its content
+- When discovering links to follow: navigate through **category/section pages** (URLs containing `/sections/` or `/categories/`) rather than jumping directly to article IDs. Section pages list all current valid articles. Avoid hardcoding or guessing article IDs — only follow URLs you explicitly found in visible page text.
 - When following links: extract href attribute values from the visible text and call `mcp__playwright__playwright_navigate` directly on each URL — do NOT use `mcp__playwright__playwright_click` for navigation as element selectors are unreliable on Cloudflare-protected pages
-- Skip any URLs that look like old article IDs (short numeric IDs under 13 digits) — prefer newer article IDs or section URLs
+- After every `mcp__playwright__playwright_navigate` call, check the first 300 characters of `mcp__playwright__playwright_get_visible_text` output. If it contains "Page not found", "404", or similar — skip this URL entirely and move to the next one
 
 Input mode: **{mode}**
 
@@ -398,7 +400,7 @@ Read the current KB from: `{kb_path}`
 ## How to process the response
 
 Parse the user's response naturally:
-- **URL** (starts with `http`) → fetch each one. Try `WebFetch` first; if it returns a 403/empty response, use the stealth browser: call `mcp__playwright__playwright_custom_user_agent` first, then `mcp__playwright__playwright_navigate` (if it times out, call navigate again immediately — the second attempt works because the Cloudflare cookie is already set), then `mcp__playwright__playwright_get_visible_text`. Never use `mcp__playwright__playwright_click` for navigation — extract href values from visible text and navigate directly.
+- **URL** (starts with `http`) → fetch each one. Try `WebFetch` first; if it returns a 403/empty response, use the stealth browser: call `mcp__playwright__playwright_custom_user_agent` first, then `mcp__playwright__playwright_navigate` (if it times out, call navigate again immediately — the second attempt works because the Cloudflare cookie is already set), then `mcp__playwright__playwright_get_visible_text`. After navigating, validate the page loaded: if visible text contains "Page not found", "404", or fewer than 200 characters — skip it. Never use `mcp__playwright__playwright_click` for navigation — extract href values from visible text and navigate directly.
 - **`file`** → glob and read `inputs/docs/`. Load any files not yet covered in the KB. If nothing new, note that.
 - **Text explanation** → use it as-is to fill the relevant gaps.
 
