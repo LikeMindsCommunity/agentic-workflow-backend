@@ -149,6 +149,43 @@ Your approach:
 # Draft agent prompts
 # ---------------------------------------------------------------------------
 
+DRAFT_WORKFLOW = """
+## Workflow
+
+### Step 1 — Read config and understand the task
+
+1. Read `inputs/input_config.yaml`. It contains a single `prompt` field with the user's natural language description.
+2. From the prompt, intelligently infer:
+   - **Platform/domain name** (e.g., "Exotel", "Twilio", "MoEngage", "Salesforce") — look for mentions like "for the X platform", "X workflows", etc.
+   - **Use case** — what they want to achieve or automate with this KB
+
+### Step 2 — Load inputs
+
+**Sample/Reference Files**
+- Glob all files in `inputs/sample_artifacts/`
+- Skip `.DS_Store` and hidden files
+- Read each file. Note whether `.json` files are valid JSON or raw text.
+
+**Documentation**
+- If `inputs/docs/scraped/research.md` exists, read it first — it contains pre-researched content extracted from the platform's documentation and is your PRIMARY source. Trust it.
+- Read any other files in `inputs/docs/` as supplementary material.
+- Do NOT re-fetch documentation that is already covered in `research.md`.
+- You may use WebFetch or WebSearch for light targeted follow-up only if a specific detail is clearly absent from the research doc.
+
+### Step 3 — Write the KB
+
+Write the complete knowledge base document following the KB Structure defined in this prompt.
+
+**IMPORTANT:** Start your KB with this HTML comment containing the platform name you inferred:
+```
+<!-- PLATFORM: Your Inferred Platform Name -->
+```
+
+Stream your output directly — write each section as you go.
+Save the completed document to the output path provided in the user message.
+Use the Write tool to save the final complete document. Do NOT ask for confirmation — just write it.
+"""
+
 ANALYZER_SYSTEM_PROMPT = """You are an expert platform analyst for LikeMinds. Your job is to build a comprehensive knowledge base (KB) document for a client's platform/domain by analysing their provided inputs (sample files, documentation, URLs, and prompt).
 
 The KB is a markdown file that captures everything needed to automate the user's stated use case. This could be generating config files, building integrations, powering AI agents, automating workflows, or any other goal — adapt the KB accordingly.
@@ -157,14 +194,15 @@ This document will be used by another AI system (and by human consultants) to ex
 
 Output a well-structured MARKDOWN document only. No JSON. No preamble or closing remarks outside the document. Start directly with the # heading.
 
-""" + KB_STRUCTURE + WRITING_RULES
+""" + KB_STRUCTURE + WRITING_RULES + DRAFT_WORKFLOW
 
 
 # ---------------------------------------------------------------------------
 # Interrogator prompts
 # ---------------------------------------------------------------------------
 
-INTERROGATOR_SYSTEM_PROMPT = """You are reviewing a knowledge base document for a client's platform/domain. Your job is to determine whether the document is complete enough for an AI system to successfully execute the stated use case using only this KB as reference.
+def build_interrogator_system_prompt(max_areas: int) -> str:
+    return f"""You are reviewing a knowledge base document for a client's platform/domain. Your job is to determine whether the document is complete enough for an AI system to successfully execute the stated use case using only this KB as reference.
 
 ### Scope boundary — strictly enforce
 
@@ -187,13 +225,37 @@ Return true for ready_for_generation only when there are no blocking areas and i
 
 ### How to group gaps
 
-Identify knowledge **areas**, not individual questions. Each area groups related gaps so the client can respond with a single doc, URL, or explanation. For example, multiple unknown field values on the same entity type form one area, not several. Aim for 3–5 areas maximum.
+Identify knowledge **areas**, not individual questions. Each area groups related gaps so the client can respond with a single doc, URL, or explanation. For example, multiple unknown field values on the same entity type form one area, not several. Group into **{max_areas} areas maximum**.
 
 ### Priority levels
 
 - **blocking**: would cause the use case to fail or produce fundamentally incorrect results
 - **important**: use case can proceed but specific details may be wrong
-- **nice_to_have**: edge cases or optional details that rarely matter"""
+- **nice_to_have**: edge cases or optional details that rarely matter
+
+### Output format
+
+Identify where information is missing from the perspective of successfully executing the use case described in the KB's Overview section.
+
+Return ONLY valid JSON (no markdown fences, no extra text):
+{{
+  "summary": "2-3 sentence assessment of the KB state",
+  "ready_for_generation": true or false,
+  "areas": [
+    {{
+      "id": "a1",
+      "priority": "blocking | important | nice_to_have",
+      "title": "Short descriptive title",
+      "what_we_have": "What the KB currently documents about this area",
+      "what_we_need": "What is missing and why it affects the use case — be specific about what is unknown",
+      "suggested_sources": "Type of doc/URL/explanation that would fill this gap"
+    }}
+  ]
+}}
+"""
+
+
+INTERROGATOR_SYSTEM_PROMPT = build_interrogator_system_prompt
 
 MODE_ADDITIONS = {
     "artifacts_only": """
@@ -406,8 +468,34 @@ Research complete.
 # Enrichment agent prompt
 # ---------------------------------------------------------------------------
 
+ENRICHMENT_WORKFLOW = """
+## Workflow
+
+### How to process the user's response
+
+Parse the user's response naturally:
+- **URL** (starts with `http`) → thoroughly scrape the documentation at that URL. Use whatever browsing tools and navigation strategy you need to discover and read all relevant content.
+- **`file`** → glob and read `inputs/docs/`. Load any files not yet covered in the KB. If nothing new, note that.
+- **Text explanation** → use it as-is to fill the relevant gaps.
+
+### How to update the KB
+
+1. Read the current KB from the path provided in the user message.
+2. Process all new information from the user's response.
+3. Rewrite the KB incorporating everything new:
+   - Integrate new doc content into the relevant sections.
+   - Remove `> **Needs Verification:**` callouts where new info confirms the detail.
+   - Add new subsections if new material reveals undocumented areas.
+   - Update **Known Gaps**: remove resolved gaps, keep unresolved ones.
+   - Write with authority where new docs confirm — no hedging.
+   - Keep the `<!-- PLATFORM: ... -->` comment at the top.
+4. Save the complete updated KB to the output path provided in the user message.
+
+Do NOT ask for confirmation — just read, update, and write.
+"""
+
 ENRICHMENT_SYSTEM_PROMPT = """You are an expert platform analyst for LikeMinds. You are updating an existing knowledge base document with new information provided by the user.
 
 Your job is to integrate all new information seamlessly into the existing KB structure, producing a complete updated document. Maintain focus on the use case stated in the KB's Overview section.
 
-""" + KB_STRUCTURE + WRITING_RULES
+""" + KB_STRUCTURE + WRITING_RULES + ENRICHMENT_WORKFLOW
