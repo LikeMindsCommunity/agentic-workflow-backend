@@ -9,7 +9,6 @@ import time
 from pathlib import Path
 
 import config
-from agents.scraper import run_scraper_agent
 from agents.draft import run_draft_agent
 from agents.interrogator import run_interrogator_agent
 from agents.enrichment import run_enrichment_agent
@@ -28,29 +27,14 @@ async def main():
         print("\n  [ERROR] No prompt found in input_config.yaml")
         sys.exit(1)
 
-    # Phase 0: Scrape documentation before drafting
-    print_step("Scrape Phase")
-    print("  Running Scraper Agent (discovers and saves all relevant docs)...")
-    start = time.time()
-    manifest = await run_scraper_agent(prompt)
-    pages_consulted = manifest.get("pages_consulted", 0)
-    topics = manifest.get("topics_covered", [])
-    print(f"  Research completed in {time.time() - start:.1f}s")
-    print(f"  Pages consulted: {pages_consulted}  |  Topics covered: {len(topics)}")
-    if topics:
-        print(f"  Topics: {', '.join(topics[:6])}{'...' if len(topics) > 6 else ''}")
-    if pages_consulted == 0:
-        print("  [WARN] No pages consulted — draft agent will work from prompt only.")
-
     mode = detect_input_mode(config.ARTIFACTS_DIR, config.DOCS_DIR, prompt)
 
     artifact_count = count_dir_files(config.ARTIFACTS_DIR)
     doc_count = count_dir_files(config.DOCS_DIR)
-    scraped_count = count_dir_files(config.SCRAPED_DOCS_DIR) if os.path.isdir(config.SCRAPED_DOCS_DIR) else 0
 
     print(f"\n  Mode     : {mode}")
     print(f"  Artifacts: {artifact_count}")
-    print(f"  Docs     : {doc_count} local  ({scraped_count} scraped)")
+    print(f"  Docs     : {doc_count} local")
     print(f"\n  User Prompt Preview:")
     print(f"  {prompt[:150]}{'...' if len(prompt) > 150 else ''}\n")
 
@@ -90,12 +74,11 @@ async def main():
         display_areas(areas_data)
 
         if areas_data.get("ready_for_generation"):
-            print("\n  Knowledge base is READY for use.")
-            break
-
-        if not areas_data.get("areas"):
-            print("\n  No gaps found.")
-            break
+            print("\n  Knowledge base is READY — no blocking gaps remain.")
+            print("  You can continue refining or type 'done' to finish.")
+        elif not areas_data.get("areas"):
+            print("\n  No gaps identified.")
+            print("  You can continue refining or type 'done' to finish.")
 
         while True:
             user_input, user_done = collect_user_input()

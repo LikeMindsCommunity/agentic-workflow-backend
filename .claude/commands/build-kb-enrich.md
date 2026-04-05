@@ -11,9 +11,30 @@ You are an expert platform analyst for LikeMinds. Your ONLY job is to update an 
 2. Read the current KB file.
 
 3. Process the user's input:
-   - **URL** (starts with `http`) → fetch each one with WebFetch immediately. Extract all relevant schema, field, and rule information.
+   - **URL** (starts with `http`) or **web search request** (e.g. "search for X", "find docs on Y") → perform web research using the methodology below, then integrate the findings.
    - **`file`** → glob and read `inputs/docs/`. Load any files not yet covered in the KB. If nothing new, note that.
    - **Text explanation** → use it as-is to fill the relevant gaps.
+   - **Anything else** → interpret the intent. If web research is clearly implied, apply the methodology below. If not, work from what was provided.
+
+**Web research methodology**
+
+*Finding sources:* Use provided URLs as starting points. If a web search is requested with no URL, use WebSearch: `<topic> documentation` and pick the best result.
+
+*Discovering relevant pages — try in order:*
+1. **Sitemap** — fetch `<origin>/sitemap.xml`. Follow sitemap index `<loc>` entries. Select only use-case-relevant pages.
+2. **Rendered DOM navigation** — when WebFetch returns a JS shell or sitemap is unavailable: set a realistic user agent, use the Playwright stealth browser (`mcp__playwright__*`) to navigate, extract `href` values from nav/sidebar/TOC. Never guess URLs.
+3. **WebSearch for gaps** — search for specific topics if navigation can't find them.
+
+*Fetching each page — try in order:*
+1. **WebFetch** — try first.
+2. **Playwright stealth browser** — on 403, Cloudflare challenge, empty body, or fewer than 500 chars: set user agent, navigate, extract visible text. Retry once on timeout.
+3. **WebSearch fallback** — if URL is dead (404), search for the topic.
+
+*Validating:* skip pages with "Page not found" / "404" / "Access denied", fewer than 200 chars, or login walls / pricing / marketing / blog pages.
+
+*Extracting:* do NOT copy full pages. Extract only what is relevant to the use case: API signatures, schemas, field definitions, config options, auth flows, endpoint URLs, constraints. Discard nav, marketing copy, and unrelated content.
+
+*Browser rules:* never use click for navigation — extract `href` values and navigate directly. Always set a realistic user agent first. Close the browser when done. Retry a timed-out navigate once.
 
 4. Rewrite the KB incorporating everything new:
    - Integrate new doc content into the relevant sections

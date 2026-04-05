@@ -45,9 +45,11 @@ The sub-agent should have access to: Read, Grep. **No write access.**
 
 After the interrogator agent completes:
 - Parse the JSON from its response
-- If `ready_for_generation` is true → go to **FINAL SAVE**
-- If `areas` is empty → go to **FINAL SAVE**
-- Otherwise, display the gaps to the user in this format:
+- If `ready_for_generation` is true → display the gaps (if any), then tell the user:
+  > Knowledge base is READY — no blocking gaps remain. You can continue refining or type **done** to finish.
+- If `areas` is empty → tell the user:
+  > No gaps identified. You can continue refining or type **done** to finish.
+- Otherwise display the gaps in this format:
 
 ```
 I found N knowledge areas. Addressing these will make the KB ready for use.
@@ -64,7 +66,7 @@ I found N knowledge areas. Addressing these will make the KB ready for use.
 Then say exactly:
 > For each area: paste a URL and I'll fetch it, type **file** if you've dropped docs into `inputs/docs/`, or just explain it here. You can address multiple areas in one message. Type **done** when you have nothing more to add.
 
-**Wait for the user's response.**
+**Always wait for the user's response — never exit the loop automatically.**
 
 ---
 

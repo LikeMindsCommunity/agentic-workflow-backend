@@ -8,22 +8,43 @@ The user will provide one or more URLs: $ARGUMENTS
 
 If no URLs are provided, read `inputs/input_config.yaml` and extract any URLs from the `prompt` field.
 
-## Fetching strategy
+## Discovering relevant pages
 
-1. **WebFetch** — Try this first. Fast and cheap.
-2. **Stealth browser** — When WebFetch returns 403, Cloudflare challenge, or empty content:
-   - Set a realistic user agent first
-   - Navigate to the URL — if it times out, retry immediately (Cloudflare cookie from first attempt makes second succeed)
-   - Extract visible text
-3. **WebSearch** — If URL is dead (404, domain gone), search for the content elsewhere.
+Try in this order for each seed URL:
 
-## Crawl behavior
+**1. Sitemap**
+- Fetch `<origin>/sitemap.xml` with WebFetch.
+- If it is a sitemap index (contains `<sitemap>` elements), follow each `<loc>` to collect sub-sitemaps.
+- Select only pages relevant to the use case (API refs, SDK guides, integration docs, schemas — not marketing, pricing, blog, changelog, login).
 
-- From each page, find internal documentation links (sidebar nav, breadcrumbs, related articles).
-- **Prioritize**: API references, SDK guides, schema docs, config guides, developer quickstarts.
-- **Skip**: Marketing, blog, changelog, pricing, login, status pages.
-- Track visited URLs — never visit the same URL twice.
-- Max 30 pages unless the user specifies otherwise.
+**2. Rendered DOM navigation** — when WebFetch returns a JS shell or sitemap is unavailable
+- Set a realistic user agent first.
+- Use the Playwright stealth browser (`mcp__playwright__*` tools) to navigate to the seed URL.
+- Extract `href` values from sidebar navigation, category listings, section pages, and tables of contents.
+- For Zendesk Help Center sites (path contains `/hc/`): navigate `/hc/en-us/categories` to get all section and article URLs.
+- Never construct or guess URLs — only follow URLs explicitly found in the rendered page or sitemap.
+
+**3. WebSearch for specific gaps**
+- If a specific topic is needed and cannot be found via navigation, search for it directly.
+
+Track visited URLs — never visit the same URL twice. Max 30 pages unless the user specifies otherwise.
+
+## Fetching each page
+
+Try in this order:
+1. **WebFetch** — try first.
+2. **Playwright stealth browser** — when WebFetch returns 403, Cloudflare challenge, empty body, or fewer than 500 chars of real text:
+   - Set a realistic user agent before the first navigate.
+   - Navigate to the URL; if it times out, retry once.
+   - Extract visible text.
+3. **WebSearch fallback** — if the URL is dead (404), search for the topic and use an equivalent page.
+
+## Validating pages
+
+Skip any page that:
+- Contains "Page not found", "404", "Access denied", or similar.
+- Has fewer than 200 characters of real content.
+- Is a login wall, pricing page, marketing page, blog post, changelog, or status page.
 
 ## Output
 
@@ -53,10 +74,10 @@ After all pages are scraped, write `inputs/docs/scraped/_manifest.json`:
 
 ## Browser rules
 
-- Never use click for navigation — extract href values and navigate directly.
-- Set user agent before the first navigate.
-- Close the browser when done.
-- If navigate times out, retry once before giving up on that URL.
+- Never use click for navigation — extract `href` values and navigate directly.
+- Always set a realistic user agent before the first navigate call.
+- Close the browser when completely done.
+- Retry a timed-out navigate once before giving up on that URL.
 
 ## When done
 

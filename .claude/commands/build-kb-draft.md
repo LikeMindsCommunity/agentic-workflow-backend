@@ -24,8 +24,36 @@ You are an expert platform analyst for LikeMinds. Your ONLY job in this command 
 
 ### Documentation
 - Read all `.md .txt .json .yaml .yml .xml .html` files from `inputs/docs/`
-- Extract any URLs from the user's prompt and fetch them with WebFetch
-- Use judgment on link following: if a page is sparse or mostly navigation, follow internal links to find the actual content. Stop when you have enough to understand the domain.
+
+### Web Research — only if the prompt asks for it
+- If the prompt contains URLs (starting with `http`) or explicitly asks you to search the web (e.g. "find docs for X", "look up Y API"), perform web research using the methodology below.
+- Otherwise, do NOT search the web or fetch any URLs. Work entirely from local inputs.
+
+**Finding documentation sources**
+- If URLs are provided, use them as your starting points.
+- If no URLs are provided but web research is needed, use WebSearch: `<platform name> developer documentation API SDK` and pick the official docs site.
+
+**Discovering relevant pages — try in order**
+
+1. **Sitemap** — fetch `<origin>/sitemap.xml`. If it's a sitemap index, follow each `<loc>`. Select only pages relevant to the use case (API refs, SDK guides, integration docs — not marketing, pricing, blog, changelog, login).
+2. **Rendered DOM navigation** — when WebFetch returns a JS shell or sitemap is unavailable:
+   - Set a realistic user agent first.
+   - Use the Playwright stealth browser (`mcp__playwright__*` tools) to navigate to the seed URL.
+   - Extract `href` values from sidebar navigation, category listings, and tables of contents.
+   - For Zendesk Help Center sites (path contains `/hc/`): navigate `/hc/en-us/categories`.
+   - Never construct or guess URLs — only follow URLs found in the rendered page or sitemap.
+3. **WebSearch for gaps** — if a specific topic can't be found via navigation, search directly.
+
+**Fetching each page — try in order**
+1. **WebFetch** — try first.
+2. **Playwright stealth browser** — when WebFetch returns 403, Cloudflare challenge, empty body, or fewer than 500 chars of real text: set user agent, navigate, extract visible text. Retry once on timeout.
+3. **WebSearch fallback** — if the URL is dead (404), search for the topic and use an equivalent page.
+
+**Validating pages** — skip any page that: contains "Page not found" / "404" / "Access denied", has fewer than 200 chars of real content, or is a login wall / pricing / marketing / blog / changelog page.
+
+**Extracting content** — do NOT copy full pages. Extract only what is relevant: API signatures, SDK examples, schemas, field definitions, config options, auth flows, endpoint URLs, constraints. Discard navigation, marketing copy, and unrelated content.
+
+**Browser rules** — never use click for navigation; extract `href` values and navigate directly. Always set a realistic user agent first. Close the browser when done. Retry a timed-out navigate once.
 
 ### Mode detection
 | Condition | Mode |

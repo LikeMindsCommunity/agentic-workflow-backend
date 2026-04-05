@@ -28,7 +28,8 @@ async def run_draft_agent(prompt: str, mode: str) -> tuple[str, str]:
     async for message in query(
         prompt=agent_prompt,
         options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Glob", "Write", "WebFetch", "WebSearch"],
+            allowed_tools=["Read", "Glob", "Write", "WebFetch", "WebSearch"] + config.PLAYWRIGHT_TOOLS,
+            mcp_servers=config.PLAYWRIGHT_MCP_SERVER,
             cwd=config.BASE_DIR,
             system_prompt=system_prompt,
             permission_mode="bypassPermissions",

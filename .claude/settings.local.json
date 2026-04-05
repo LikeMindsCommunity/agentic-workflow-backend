@@ -21,7 +21,8 @@
       "Bash(python3 -c \"from claude_agent_sdk import ClaudeAgentOptions; help\\(ClaudeAgentOptions\\)\")",
       "Bash(pip3 show:*)",
       "Bash(python3 -m pip show claude-agent-sdk)",
-      "Bash(find /Users/mac -name *.py -path *claude_agent*)"
+      "Bash(find /Users/mac -name *.py -path *claude_agent*)",
+      "WebSearch"
     ]
   }
 }
