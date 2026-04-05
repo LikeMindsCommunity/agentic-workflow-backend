@@ -46,7 +46,7 @@ You are an expert platform analyst for LikeMinds. Your ONLY job is to update an 
 
 5. Save the complete updated KB to the same file path (overwrite).
 
-6. After saving, output exactly this summary block and nothing else:
+6. After saving, output this summary block:
 
 ```
 ENRICHMENT_COMPLETE

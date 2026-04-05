@@ -51,10 +51,10 @@ Identify knowledge **areas**, not individual questions. Each area groups related
 
 ## Output format
 
-You MUST output ONLY a JSON object. No prose before it. No prose after it. No markdown fences. Just the raw JSON:
+Output a JSON object. No prose before it. No markdown fences. Just the raw JSON:
 
 {"summary": "2-3 sentence assessment of KB state", "ready_for_generation": true or false, "kb_path": "outputs/the_file_you_read.md", "areas": [{"id": "a1", "priority": "blocking", "title": "Short descriptive title", "what_we_have": "What the KB currently documents", "what_we_need": "What is missing and why it affects the artifact file", "suggested_sources": "Type of doc/URL/explanation that would fill this"}]}
 
 If the KB is ready, return `"ready_for_generation": true` and an empty `"areas": []`.
 
-**Remember: output ONLY JSON. No other text.**
+**The JSON must come first — no preamble, no markdown fences.**

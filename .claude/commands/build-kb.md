@@ -1,21 +1,19 @@
 # Knowledge Base Builder — Orchestrator
 
-You are the orchestrator for the LikeMinds KB Builder pipeline. You coordinate three specialist phases — Draft, Interrogate, Enrich — by delegating work to sub-agents and managing the loop yourself.
+You are the orchestrator for the LikeMinds KB Builder pipeline. You coordinate three specialist phases — Draft, Interrogate, Enrich — by spawning focused sub-agents for each phase and managing the loop yourself.
 
-**This is a looping workflow. You drive the full cycle — draft → interrogate → collect user response → enrich → interrogate → collect → enrich — entirely within this single session. The only time you pause is when waiting for the user to provide gap information. The loop ends when the user types `done` or the interrogator reports no blocking gaps.**
+**This is a looping workflow.** You drive the full cycle — draft → interrogate → collect user response → enrich → interrogate → collect → enrich — entirely within this single session. The loop ends only when the user types `done`.
 
 ---
 
 ## Your role as orchestrator
 
-You are NOT the one doing the detailed analysis. Your job is:
-1. **Delegate** each phase to the right sub-agent
+You are NOT the one doing the detailed analysis or writing. Your job is:
+1. **Spawn** a sub-agent for each phase with focused instructions
 2. **Parse** structured output from sub-agents
 3. **Present** results to the user in a clean format
 4. **Collect** user input between rounds
 5. **Loop** until done
-
-You use the **Agent tool** to spawn sub-agents for each phase. Each sub-agent has a focused, narrow role.
 
 ---
 
@@ -23,14 +21,14 @@ You use the **Agent tool** to spawn sub-agents for each phase. Each sub-agent ha
 
 Spawn a sub-agent with these instructions:
 
-> Read `inputs/input_config.yaml` to get the user's prompt. Detect what inputs are available (sample files in `inputs/sample_artifacts/`, docs in `inputs/docs/`, URLs in the prompt). Determine the input mode (artifacts_and_docs, artifacts_only, docs_only, prompt_only, or empty). Read all available inputs. Write a complete knowledge base markdown document to `outputs/kb_draft_temp.md`. The KB must start with `<!-- PLATFORM: <inferred name> -->`. Follow the full KB structure and writing rules from the `/build-kb-draft` command. Tailor the KB to the user's stated use case.
+> Read and follow the instructions in `.claude/commands/build-kb-draft.md`. Execute the KB draft workflow exactly as described in that file.
 
-The sub-agent should have access to: Read, Glob, Write, WebFetch.
+The sub-agent should have access to: Read, Glob, Write, WebFetch, WebSearch.
 
 After the draft agent completes:
-- Read `outputs/kb_draft_temp.md` (just the first few lines) to extract the platform name from the `<!-- PLATFORM: ... -->` comment
-- Rename the file to `outputs/kb_<safe_platform_name>_draft.md` using a Bash mv command
-- Tell the user: platform name, mode, and saved path
+- Read the first few lines of `outputs/kb_draft_temp.md` to extract `<!-- PLATFORM: ... -->`
+- Rename the file to `outputs/kb_<safe_platform_name>_draft.md` using a Bash mv command (lowercase, spaces → underscores)
+- Tell the user: platform name inferred, mode detected, saved path
 - Immediately proceed to Phase 2
 
 ---
@@ -39,17 +37,14 @@ After the draft agent completes:
 
 Spawn a sub-agent with these instructions:
 
-> Read the KB file at `<current_kb_path>`. Read the Overview to understand the stated use case. Identify knowledge gaps from the perspective of successfully executing that use case. Apply the strict scope boundary: only flag gaps where not knowing something would cause the use case to fail or produce incorrect results. Exclude runtime behaviour, operational concerns, performance limits, and external integrations not part of the use case. Group related gaps into 3-5 knowledge areas. Return ONLY a JSON object with this structure: {"summary": "...", "ready_for_generation": bool, "kb_path": "...", "areas": [{"id": "a1", "priority": "blocking|important|nice_to_have", "title": "...", "what_we_have": "...", "what_we_need": "...", "suggested_sources": "..."}]}. No prose, no markdown fences — just raw JSON.
+> Read and follow the instructions in `.claude/commands/build-kb-interrogate.md`. The KB file to analyse is at `<current_kb_path>`.
 
 The sub-agent should have access to: Read, Grep. **No write access.**
 
 After the interrogator agent completes:
-- Parse the JSON from its response
-- If `ready_for_generation` is true → display the gaps (if any), then tell the user:
-  > Knowledge base is READY — no blocking gaps remain. You can continue refining or type **done** to finish.
-- If `areas` is empty → tell the user:
-  > No gaps identified. You can continue refining or type **done** to finish.
-- Otherwise display the gaps in this format:
+- Parse the JSON from its response (strip any prose or fences — find the first `{`)
+- Extract `ready_for_generation`, `areas`, `summary`, `kb_path`
+- Display the gaps in this format:
 
 ```
 I found N knowledge areas. Addressing these will make the KB ready for use.
@@ -63,7 +58,13 @@ I found N knowledge areas. Addressing these will make the KB ready for use.
      ...
 ```
 
-Then say exactly:
+If `ready_for_generation` is true, say:
+> Knowledge base is READY — no blocking gaps remain. You can continue refining or type **done** to finish.
+
+If `areas` is empty, say:
+> No gaps identified. You can continue refining or type **done** to finish.
+
+Otherwise (after displaying gaps), say exactly:
 > For each area: paste a URL and I'll fetch it, type **file** if you've dropped docs into `inputs/docs/`, or just explain it here. You can address multiple areas in one message. Type **done** when you have nothing more to add.
 
 **Always wait for the user's response — never exit the loop automatically.**
@@ -74,23 +75,26 @@ Then say exactly:
 
 When the user responds:
 
-- If the user types **`done`** → go to **FINAL SAVE** immediately. Do not enrich.
-- If the user provides nothing useful (blank, unrelated) → say "Nothing new provided. Type **done** to finish, or share info for one of the areas above." Wait again.
-- If the user provides URLs, `file`, or text explanations → proceed to **ENRICH**.
+- **`done`** → go to **FINAL SAVE** immediately. Do not enrich.
+- **Blank or unrelated** → say "Nothing new provided. Type **done** to finish, or share info for one of the areas above." Wait again.
+- **URLs, `file`, or text explanations** → proceed to **ENRICH**.
 
 ---
 
 ## Phase 4 — ENRICH
 
-Spawn a sub-agent with these instructions:
+First, write the user's full response to a context file:
+- Write the response text to `inputs/enrich_input.txt`
 
-> Read the current KB from `<current_kb_path>`. The user provided this information to fill knowledge gaps: "<user's response>". Process it: URLs → fetch with WebFetch and extract relevant info. "file" → glob and read `inputs/docs/` for new files. Text → use as-is. Rewrite the complete KB incorporating all new information. Remove Needs Verification callouts where confirmed. Update Known Gaps. Save the updated KB to `<current_kb_path>` (overwrite the file). Keep the `<!-- PLATFORM: ... -->` comment at the top.
+Then spawn a sub-agent with these instructions:
 
-The sub-agent should have access to: Read, Glob, Write, WebFetch.
+> Read and follow the instructions in `.claude/commands/build-kb-enrich.md`. The current KB is at `<current_kb_path>`. The user's response to the knowledge gaps is in `inputs/enrich_input.txt`.
+
+The sub-agent should have access to: Read, Glob, Write, WebFetch, WebSearch.
 
 After the enrichment agent completes:
-- Tell the user the file was updated
-- **Immediately loop back to Phase 2** (Interrogate) — do not ask for confirmation
+- Tell the user the KB was updated
+- **Immediately loop back to Phase 2** — do not ask for confirmation
 - Increment your round counter
 
 ---
@@ -98,7 +102,7 @@ After the enrichment agent completes:
 ## FINAL SAVE
 
 1. Read the current KB file
-2. Copy it to `outputs/kb_<safe_platform_name>_FINAL.md` using Write
+2. Copy its content to `outputs/kb_<safe_platform_name>_FINAL.md` using Write
 3. Count occurrences of "Needs Verification" in the content
 4. Print this summary:
 
@@ -106,7 +110,7 @@ After the enrichment agent completes:
   Platform:       <platform name>
   Mode:           <mode>
   Rounds:         <N>
-  Output:         <final path>
+  Output:         outputs/kb_<safe_name>_FINAL.md
   Remaining gaps: <count> "Needs Verification" items
 ```
 
@@ -117,5 +121,5 @@ After the enrichment agent completes:
 - **Never skip the interrogator.** Every enrichment round MUST be followed by an interrogation round.
 - **Never enrich without user input.** Always wait for the user between interrogate and enrich.
 - **Keep sub-agents focused.** Draft only drafts. Interrogator only reads and analyses. Enricher only updates.
-- **Parse interrogator JSON yourself.** If the JSON is wrapped in prose or fences, strip them before parsing. Find the first `{` and parse from there.
+- **Parse interrogator JSON yourself.** If the JSON is wrapped in prose or markdown fences, strip them before parsing. Find the first `{` and parse from there.
 - **Track rounds.** Increment a counter each time you go through interrogate → enrich. Display it in the final summary.

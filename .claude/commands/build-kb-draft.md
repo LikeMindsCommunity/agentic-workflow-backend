@@ -33,27 +33,38 @@ You are an expert platform analyst for LikeMinds. Your ONLY job in this command 
 - If URLs are provided, use them as your starting points.
 - If no URLs are provided but web research is needed, use WebSearch: `<platform name> developer documentation API SDK` and pick the official docs site.
 
-**Discovering relevant pages — try in order**
+**Step 1 — Discover all relevant pages (be exhaustive)**
 
-1. **Sitemap** — fetch `<origin>/sitemap.xml`. If it's a sitemap index, follow each `<loc>`. Select only pages relevant to the use case (API refs, SDK guides, integration docs — not marketing, pricing, blog, changelog, login).
-2. **Rendered DOM navigation** — when WebFetch returns a JS shell or sitemap is unavailable:
+Try in this order:
+
+1. **Sitemap** — fetch `<origin>/sitemap.xml`. If it is a sitemap index, follow each `<loc>` to collect sub-sitemaps. Select only use-case-relevant pages (API refs, SDK guides, integration docs — not marketing, pricing, blog, changelog, login).
+
+2. **Deep DOM navigation via Playwright** — when WebFetch returns a JS shell, a 403, or the sitemap is missing:
    - Set a realistic user agent first.
-   - Use the Playwright stealth browser (`mcp__playwright__*` tools) to navigate to the seed URL.
-   - Extract `href` values from sidebar navigation, category listings, and tables of contents.
-   - For Zendesk Help Center sites (path contains `/hc/`): navigate `/hc/en-us/categories`.
-   - Never construct or guess URLs — only follow URLs found in the rendered page or sitemap.
-3. **WebSearch for gaps** — if a specific topic can't be found via navigation, search directly.
+   - Navigate to the seed URL and extract all top-level navigation links (sidebar, nav menu, category listings, TOC).
+   - For each top-level section, navigate into it and extract the next level of links.
+   - Keep following links until you reach individual content pages. Do not stop at the first level.
+   - Collect the full list of relevant page URLs before fetching content.
+   - Never construct or guess URLs — only follow URLs found in the rendered pages.
 
-**Fetching each page — try in order**
+3. **WebSearch supplement — always run this after navigation**, even if navigation succeeded:
+   - For each major topic area the use case requires (e.g. SDK initialisation, event tracking, user attributes, per-platform guides, constraints/limits, authentication), run a targeted search:
+     `<platform> <topic> documentation`
+   - Use results to find pages missed by navigation and to cross-verify what you found.
+
+**Step 2 — Fetch each page**
+
 1. **WebFetch** — try first.
 2. **Playwright stealth browser** — when WebFetch returns 403, Cloudflare challenge, empty body, or fewer than 500 chars of real text: set user agent, navigate, extract visible text. Retry once on timeout.
-3. **WebSearch fallback** — if the URL is dead (404), search for the topic and use an equivalent page.
+3. **WebSearch fallback** — if the URL is dead (404) or both WebFetch and Playwright fail, search for the topic and use an equivalent result.
 
-**Validating pages** — skip any page that: contains "Page not found" / "404" / "Access denied", has fewer than 200 chars of real content, or is a login wall / pricing / marketing / blog / changelog page.
+**Step 3 — Validate and extract**
 
-**Extracting content** — do NOT copy full pages. Extract only what is relevant: API signatures, SDK examples, schemas, field definitions, config options, auth flows, endpoint URLs, constraints. Discard navigation, marketing copy, and unrelated content.
+Skip any page that: contains "Page not found" / "404" / "Access denied", has fewer than 200 chars of real content, or is a login wall / pricing / marketing / blog / changelog page.
 
-**Browser rules** — never use click for navigation; extract `href` values and navigate directly. Always set a realistic user agent first. Close the browser when done. Retry a timed-out navigate once.
+Do NOT copy full pages. Extract only what is relevant to the use case: API signatures, SDK examples, schemas, field definitions, config options, auth flows, endpoint URLs, constraints. Discard navigation, marketing copy, and unrelated content.
+
+**Browser rules** — never use click for navigation; extract `href` values and navigate directly. Always set a realistic user agent first. Close the browser only after ALL pages have been fetched. Retry a timed-out navigate once.
 
 ### Mode detection
 | Condition | Mode |
@@ -81,7 +92,7 @@ Save the completed document to: `outputs/kb_draft_temp.md`
 
 Do NOT ask for confirmation — just write it.
 
-After saving, output exactly this summary block and nothing else:
+After saving, output this summary block:
 
 ```
 DRAFT_COMPLETE

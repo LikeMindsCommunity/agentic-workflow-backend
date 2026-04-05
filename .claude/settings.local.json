@@ -22,7 +22,19 @@
       "Bash(pip3 show:*)",
       "Bash(python3 -m pip show claude-agent-sdk)",
       "Bash(find /Users/mac -name *.py -path *claude_agent*)",
-      "WebSearch"
+      "WebSearch",
+      "WebFetch(domain:developers.moengage.com)",
+      "Bash(mcp tools:*)",
+      "WebFetch(domain:www.moengage.com)",
+      "Bash(claude mcp:*)",
+      "mcp__playwright__playwright_custom_user_agent",
+      "mcp__playwright__playwright_navigate",
+      "mcp__playwright__playwright_get_visible_text",
+      "mcp__playwright__playwright_close"
     ]
-  }
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "playwright"
+  ]
 }

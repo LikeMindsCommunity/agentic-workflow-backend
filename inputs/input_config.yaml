@@ -1,22 +1,12 @@
-# ============================================================
-# LikeMinds Layer 1 - Input Configuration
-# ============================================================
-# One field. One prompt. That's it.
+# LikeMinds KB Builder — Input Config
 #
-# Just describe what you want to automate in natural language:
-#   - What platform you're working with
-#   - What kind of artifact/output you want to generate
-#   - Paste any documentation URLs directly in your description
+# HOW TO USE:
+#   1. Fill in the prompt below — describe the platform, use case, and paste any doc URLs.
+#   2. (Optional) Drop sample files into inputs/sample_artifacts/ and docs into inputs/docs/
+#   3. Run:  /build-kb   (Claude Code)   or   python main.py   (SDK)
 #
-# The AI agent will intelligently:
-#   ✓ Understand the platform and scope
-#   ✓ Find and fetch any documentation URLs you mention
-#   ✓ Build a comprehensive knowledge base from all sources
-#
-# Artifacts:  drop files into inputs/sample_artifacts/
-# Local docs: drop files into inputs/docs/
-# ============================================================
+# The agent drafts a KB, identifies gaps, and loops with you until it's complete.
 
 prompt: |
   I want to automate the integration of MoEngage analytics events into each platform they offer, i.e https://developers.moengage.com/hc/en-us.
-  Refer to their website for the documentation.
+  Refer to their website for the documentation. The agent should be able to use the moEngage sdk to integrate the analytics events into the platform.

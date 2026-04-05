@@ -1,10 +1,3 @@
 {
-  "model": "claude-sonnet-4-5",
-  "mcpServers": {
-    "playwright": {
-      "type": "stdio",
-      "command": "npx",
-      "args": ["-y", "@pvinis/playwright-stealth-mcp-server"]
-    }
-  }
+  "model": "claude-sonnet-4-5"
 }

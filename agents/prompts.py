@@ -97,7 +97,7 @@ WEB_RESEARCH_METHODOLOGY = """
   `<platform name> developer documentation API SDK`
   Pick the official developer/docs site from the results.
 
-### Discovering relevant pages
+### Discovering relevant pages — be exhaustive
 
 Try in this order:
 
@@ -106,16 +106,18 @@ Try in this order:
 - If it is a sitemap index (contains `<sitemap>` elements), follow each `<loc>` to collect sub-sitemaps.
 - Select only pages relevant to the use case (API refs, SDK guides, integration docs, schemas — not marketing, pricing, blog, changelog, login).
 
-**2. Rendered DOM navigation** — when WebFetch returns a JS shell or sitemap is unavailable
+**2. Deep DOM navigation via Playwright** — when WebFetch returns a JS shell, a 403, or the sitemap is missing
 - Set a realistic user agent first.
-- Use the Playwright stealth browser to navigate to the seed URL.
-- Extract `href` values from sidebar navigation, category listings, section pages, and tables of contents.
-- For Zendesk Help Center sites (path contains `/hc/`): navigate `/hc/en-us/categories` to get all section and article URLs.
-- Never construct or guess URLs — only follow URLs explicitly found in the rendered page or sitemap.
+- Navigate to the seed URL and extract all top-level navigation links (sidebar, nav menu, category listings, TOC).
+- For each top-level section, navigate into it and extract the next level of links.
+- Keep following links until you reach individual content pages. Do not stop at the first level.
+- Collect the full list of relevant page URLs before fetching content.
+- Never construct or guess URLs — only follow URLs explicitly found in the rendered pages.
 
-**3. WebSearch for specific gaps**
-- If a specific topic is needed and cannot be found via navigation, search for it directly.
-- Use the best result's URL.
+**3. WebSearch supplement — always run after navigation, even if navigation succeeded**
+- For each major topic area the use case requires (e.g. SDK initialisation, event tracking, user attributes, per-platform guides, constraints/limits, authentication), run a targeted search:
+  `<platform> <topic> documentation`
+- Use results to find pages missed by navigation and to cross-verify what was found.
 
 ### Fetching each page
 

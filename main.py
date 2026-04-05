@@ -17,14 +17,6 @@ except ImportError:
 
 from orchestrator import main
 
-# async def main():
-#     async for message in query(
-#         prompt="hello",
-#         options=ClaudeAgentOptions(
-#             model="claude-sonnet-4-5",
-#         ),
-#     ):
-#         print(message)
 
 if __name__ == "__main__":
     anyio.run(main)
