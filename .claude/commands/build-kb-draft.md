@@ -31,7 +31,7 @@ You are an expert platform analyst for LikeMinds. Your ONLY job in this command 
 
 **Finding documentation sources**
 - If URLs are provided, use them as your starting points.
-- If no URLs are provided but web research is needed, use WebSearch: `<platform name> developer documentation API SDK` and pick the official docs site.
+- If no URLs are provided but web research is needed (user has asked to research on web), use WebSearch: `<platform name> developer documentation API SDK` and pick the official docs site.
 
 **Step 1 — Discover all relevant pages (be exhaustive)**
 

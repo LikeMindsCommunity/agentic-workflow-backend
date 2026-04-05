@@ -93,7 +93,7 @@ WEB_RESEARCH_METHODOLOGY = """
 ### Finding documentation sources
 
 - If URLs are provided, use them as your starting points.
-- If no URLs are provided but web research is needed, use WebSearch:
+- If no URLs are provided but web research is needed (user has asked to search the web), use WebSearch:
   `<platform name> developer documentation API SDK`
   Pick the official developer/docs site from the results.
 

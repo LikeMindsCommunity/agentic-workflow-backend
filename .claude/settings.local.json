@@ -30,7 +30,8 @@
       "mcp__playwright__playwright_custom_user_agent",
       "mcp__playwright__playwright_navigate",
       "mcp__playwright__playwright_get_visible_text",
-      "mcp__playwright__playwright_close"
+      "mcp__playwright__playwright_close",
+      "WebFetch(domain:developer.exotel.com)"
     ]
   },
   "enableAllProjectMcpServers": true,
