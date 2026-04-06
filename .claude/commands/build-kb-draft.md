@@ -79,6 +79,45 @@ Tell the user: inferred platform/domain name, mode, sample file count, local doc
 
 ---
 
+## Step 2.5 — Build a coverage inventory (required before writing)
+
+Before writing a single word of the KB, build a complete inventory of every distinct entity variant present in the artifacts. This step prevents the most common KB failure: documenting 12 out of 17 things because the agent started writing before it knew how many things existed.
+
+### 2.5.1 — Identify discriminator fields
+
+A **discriminator field** is any field whose value determines what kind of entity an object is. Common names: `type`, `kind`, `alias`, `category`, `action`, `event`, `class`, `nodeType`, `method`, `resource`, `schema`, `format`, `mode`. The field name varies by domain — identify it by finding the field that takes different string values across otherwise similarly-shaped objects.
+
+For each artifact file:
+1. Find every object in the structure (nested or top-level) that has a discriminator field.
+2. Collect every unique value of that field across all files.
+
+### 2.5.2 — Build the inventory table
+
+Produce an inventory table like this before writing:
+
+```
+ENTITY INVENTORY
+Discriminator field: <field name>
+Total distinct values: N
+
+  value_1  — seen in: file_a.json, file_b.json  (N occurrences)
+  value_2  — seen in: file_b.json               (N occurrences)
+  value_3  — seen in: file_a.json               (N occurrences)
+  ...
+```
+
+If there are multiple discriminator fields (e.g. one for entity type and one for event type), produce one inventory table per field.
+
+### 2.5.3 — Use the inventory as a mandatory checklist
+
+Every item in the inventory **must appear** in the KB as a documented section or subsection. Do not start writing until you have the complete inventory. After drafting, verify each inventory item has been covered. If any item is missing, add it before saving.
+
+A value is only "covered" if:
+- Its discriminator value is **explicitly named** in the KB (not just implied or grouped with something else), AND
+- Its schema, fields/attributes, and at least one example are present.
+
+---
+
 ## Step 3 — Write the KB
 
 Write the complete knowledge base document following the KB Structure below.
@@ -156,6 +195,8 @@ For each gap: what is missing and what would fill it.
 
 ### Writing rules
 
+- **Inventory-first**: Before writing any `## EntityType` section, confirm you have completed Step 2.5. Every distinct value from your inventory must get its own documented subsection. Do not group distinct variants together unless they share identical schemas — if they differ in any field, event, or behavior, they are separate entities.
+- **Frequency does not determine inclusion**: An entity variant that appears in only one artifact is just as required in the KB as one that appears in all of them. Rare variants are often the ones that cause failures when the agent encounters them.
 - Cover every **distinct** entity type, concept, or pattern relevant to the use case. One annotated example per pattern — do not repeat the same pattern for every instance.
 - Examples must use **real values from the provided inputs** where available, annotated with inline comments.
 - When you infer something without doc confirmation:
@@ -165,13 +206,14 @@ For each gap: what is missing and what would fill it.
 - Be thorough but concise. Gap rounds will fill missing detail.
 - No confidence scores, numeric ratings, or structured metadata.
 - Tailor KB depth and focus to the stated use case.
+- **Pre-save checklist**: Before saving the KB, run through your inventory one final time. For each item, confirm a section exists. If any are missing, add them now. Do not defer to gap rounds — gap rounds are for things you could not know, not things you observed but skipped.
 
 ### Mode-specific behaviour
 
-**`artifacts_only`** — Reverse-engineer everything from the sample files. Check the prompt for any documentation URLs and fetch them. Be liberal with Needs Verification callouts. Known Gaps should be extensive.
+**`artifacts_only`** — Reverse-engineer everything from the sample files. Step 2.5 (inventory) is mandatory and must be completed first. The inventory is your ground truth — every distinct variant found must be documented, even if it appears in only one file. Be liberal with Needs Verification callouts. Known Gaps should be extensive.
 
 **`docs_only`** — Extract all relevant information from docs. Note no real sample files were validated against. Ask for sample/reference files in Known Gaps.
 
 **`prompt_only`** — Look for URLs in the prompt and fetch them. If no URLs found, write a skeleton based on what you can infer. Every section should have Needs Verification callouts. Known Gaps should be the longest section.
 
-**`artifacts_and_docs`** — Map every sample file element to the documentation. Write with authority where docs confirm. Note mismatches.
+**`artifacts_and_docs`** — Step 2.5 (inventory) is mandatory. Build the inventory from the artifacts first, then map each inventory item to the documentation. Write with authority where docs confirm. Note any inventory item the docs do not cover. Note mismatches between artifact behaviour and doc descriptions.
