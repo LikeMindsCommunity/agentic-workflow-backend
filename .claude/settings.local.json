@@ -31,7 +31,12 @@
       "mcp__playwright__playwright_navigate",
       "mcp__playwright__playwright_get_visible_text",
       "mcp__playwright__playwright_close",
-      "WebFetch(domain:developer.exotel.com)"
+      "WebFetch(domain:developer.exotel.com)",
+      "Bash(python3 -c \"import json; f = open\\('nodeflow \\(2\\).json'\\); d = json.load\\(f\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c \"import json; f = open\\('nodeflow \\(8\\).json'\\); d = json.load\\(f\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c \"import json; f = open\\('nodeflow \\(8\\).json'\\); d = json.load\\(f\\); print\\(list\\(d['nodeflowInfo'].keys\\(\\)\\)\\)\")",
+      "Bash(python3 -c ':*)",
+      "Bash(python3)"
     ]
   },
   "enableAllProjectMcpServers": true,

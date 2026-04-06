@@ -71,14 +71,18 @@ async def main():
             break
 
         print(f"  Interrogator completed in {time.time() - start:.1f}s")
-        display_areas(areas_data)
+        areas = areas_data.get("areas", [])
+        ready = areas_data.get("ready_for_generation", False)
 
-        if areas_data.get("ready_for_generation"):
-            print("\n  Knowledge base is READY — no blocking gaps remain.")
-            print("  You can continue refining or type 'done' to finish.")
-        elif not areas_data.get("areas"):
+        if areas:
+            if ready:
+                print("\n  ✓ No blocking gaps — but here are areas you could still improve:")
+            display_areas(areas_data)
+            print("\n  For each area: paste a URL, type 'file' if you've added docs,")
+            print("  or just explain it. Type 'done' when you have nothing more to add.")
+        else:
             print("\n  No gaps identified.")
-            print("  You can continue refining or type 'done' to finish.")
+            print("  Type 'done' to finish, or share anything else you'd like to add.")
 
         while True:
             user_input, user_done = collect_user_input()
