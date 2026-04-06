@@ -14,6 +14,12 @@ You are reviewing a knowledge base document for a client's platform/domain. Your
 
 3. Read the Overview section to understand the stated use case, then identify where information is missing **from the perspective of successfully executing that use case**.
 
+4. **Cross-check artifact coverage** — if sample files exist in `inputs/sample_artifacts/`, perform this check:
+   - Scan every artifact for fields that act as discriminators (fields named `type`, `kind`, `alias`, `category`, `action`, `event`, `class`, `nodeType`, `method`, `schema`, `format`, or similar — any field whose value determines what kind of entity the object is).
+   - Collect every distinct value of each discriminator field across all artifacts.
+   - For each distinct value, check whether it is **explicitly named and documented** in the KB.
+   - Any discriminator value present in the artifacts but absent or undocumented in the KB is a coverage gap. Flag it as BLOCKING if the use case requires generating or handling that entity type.
+
 ---
 
 ## Scope boundary — strictly enforce
