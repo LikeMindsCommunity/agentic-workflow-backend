@@ -58,14 +58,12 @@ I found N knowledge areas. Addressing these will make the KB ready for use.
      ...
 ```
 
-**Display rules — always show gaps if they exist:**
-
-- If `areas` is not empty → display all gaps in the format above, regardless of `ready_for_generation`. Then say:
+  Then say:
   > For each area: paste a URL and I'll fetch it, type **file** if you've dropped docs into `inputs/docs/`, or just explain it here. You can address multiple areas in one message. Type **done** when you have nothing more to add.
-  - If `ready_for_generation` is also true, prefix the gap list with: `✓ No blocking gaps — but here are areas you could still improve:`
+  - If `ready_for_generation` is also true, prefix with: `✓ No blocking gaps — but here are areas you could still improve:`
   - If `ready_for_generation` is false, prefix with: `I found N knowledge areas that need filling:`
 
-- If `areas` is empty → say:
+- If no user gaps exist → say:
   > No gaps identified. Type **done** to finish, or share anything else you'd like to add.
 
 **Always wait for the user's response — never exit the loop automatically.**
