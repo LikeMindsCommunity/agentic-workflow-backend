@@ -35,6 +35,8 @@ You are an expert platform analyst for LikeMinds. Your ONLY job in this command 
 
 **Step 1 — Discover all relevant pages (be exhaustive)**
 
+Your goal is to produce a complete list of URLs to read before you fetch any content. Do not start fetching content until discovery is done.
+
 Try in this order:
 
 1. **Sitemap** — fetch `<origin>/sitemap.xml`. If it is a sitemap index, follow each `<loc>` to collect sub-sitemaps. Select only use-case-relevant pages (API refs, SDK guides, integration docs — not marketing, pricing, blog, changelog, login).
@@ -44,13 +46,11 @@ Try in this order:
    - Navigate to the seed URL and extract all top-level navigation links (sidebar, nav menu, category listings, TOC).
    - For each top-level section, navigate into it and extract the next level of links.
    - Keep following links until you reach individual content pages. Do not stop at the first level.
-   - Collect the full list of relevant page URLs before fetching content.
    - Never construct or guess URLs — only follow URLs found in the rendered pages.
 
-3. **WebSearch supplement — always run this after navigation**, even if navigation succeeded:
-   - For each major topic area the use case requires (e.g. SDK initialisation, event tracking, user attributes, per-platform guides, constraints/limits, authentication), run a targeted search:
-     `<platform> <topic> documentation`
-   - Use results to find pages missed by navigation and to cross-verify what you found.
+3. **Output your URL plan** — before fetching any page content, print the full list of URLs you intend to visit. This makes your coverage visible and forces you to complete discovery before reading.
+
+4. **WebSearch — gaps only, not primary discovery** — WebSearch returns stale article IDs and misses entire sections of live sites. Use it only after DOM navigation to find topics your navigation missed, not as a replacement for it.
 
 **Step 2 — Fetch each page**
 

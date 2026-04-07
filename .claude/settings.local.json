@@ -36,7 +36,20 @@
       "Bash(python3 -c \"import json; f = open\\('nodeflow \\(8\\).json'\\); d = json.load\\(f\\); print\\(list\\(d.keys\\(\\)\\)\\)\")",
       "Bash(python3 -c \"import json; f = open\\('nodeflow \\(8\\).json'\\); d = json.load\\(f\\); print\\(list\\(d['nodeflowInfo'].keys\\(\\)\\)\\)\")",
       "Bash(python3 -c ':*)",
-      "Bash(python3)"
+      "Bash(python3)",
+      "Bash(python3:*)",
+      "Bash",
+      "Read",
+      "Write",
+      "Edit",
+      "MultiEdit",
+      "Glob",
+      "Grep",
+      "LS",
+      "TodoRead",
+      "TodoWrite",
+      "WebSearch",
+      "WebFetch"
     ]
   },
   "enableAllProjectMcpServers": true,
