@@ -118,6 +118,31 @@ A value is only "covered" if:
 
 ---
 
+### 2.5.4 — Completeness Questions for Observed Enumerations
+
+Inventorying what you observed is not the same as knowing the full set. For every field that takes a fixed set of platform-defined values — including discriminator fields from 2.5.1 and any other field whose values are short, recurring, and clearly platform-defined rather than user-invented — ask whether the observed list is complete.
+
+For each such field, record what you saw and add a gap question asking whether there are more. Examples of the kind of fields this applies to: entity type fields, mode/kind selectors, status fields, provider type fields, event name sets.
+
+Add each question to the Known Gaps section with a priority:
+- **BLOCKING** — if an unseen value means the generator would produce wrong or broken output. Entity type / kind fields are always BLOCKING — if the platform has types not in the samples, the generator can never produce them.
+- **IMPORTANT** — if an unseen value would produce incorrect but non-fatal output.
+- **NICE TO HAVE** — cosmetic or rarely-used fields with low impact.
+
+---
+
+### 2.5.5 — Platform-Provided Value Detection
+
+In many platforms, expressions, scripts, queries, or templates reference values that the platform injects automatically — the user never declares or defines them. Look for any identifier or reference that is **used in the artifacts but never defined anywhere in them**. These are candidates for platform-provided built-ins.
+
+Before writing the KB, separate all observed values into two lists:
+- **User-defined** — explicitly declared or assigned somewhere in the artifacts
+- **Platform-provided candidates** — used or referenced but never declared or assigned anywhere in the artifacts
+
+Add a gap question asking whether the platform-provided list is complete and whether there are others not seen in the samples. This gap is priority IMPORTANT.
+
+---
+
 ## Step 3 — Write the KB
 
 Write the complete knowledge base document following the KB Structure below.
@@ -190,23 +215,28 @@ Format per item: "Issue: <problem>" / "Check: <what to verify>"
 
 ## Known Gaps
 Areas where the KB is still incomplete.
-For each gap: what is missing and what would fill it.
+For each gap: what is missing, its priority, and what would fill it.
+Include all enumeration completeness questions from Step 2.5.4 and the
+platform-provided value question from Step 2.5.5 here as named gap items.
 ```
 
 ### Writing rules
 
-- **Inventory-first**: Before writing any `## EntityType` section, confirm you have completed Step 2.5. Every distinct value from your inventory must get its own documented subsection. Do not group distinct variants together unless they share identical schemas — if they differ in any field, event, or behavior, they are separate entities.
+- **Inventory-first**: Before writing any `## EntityType` section, confirm you have completed Step 2.5 including 2.5.4 and 2.5.5. Every distinct value from your inventory must get its own documented subsection. Do not group distinct variants together unless they share identical schemas — if they differ in any field, event, or behavior, they are separate entities.
 - **Frequency does not determine inclusion**: An entity variant that appears in only one artifact is just as required in the KB as one that appears in all of them. Rare variants are often the ones that cause failures when the agent encounters them.
 - Cover every **distinct** entity type, concept, or pattern relevant to the use case. One annotated example per pattern — do not repeat the same pattern for every instance.
 - Examples must use **real values from the provided inputs** where available, annotated with inline comments.
 - When you infer something without doc confirmation:
   `> **Needs Verification:** <what is unclear and what was assumed>`
+- **Enumeration labelling**: Every time the KB documents a field that takes a fixed set of platform-defined values, explicitly mark the list as either `[observed only — may be incomplete]` or `[confirmed complete]`. Never present an observed list as the full set without a confirmed source.
+- **Platform-provided value classification**: When the domain has runtime-injected values (variables, context objects, built-ins), always document them in a separate list from user-defined values. Never merge the two. Note that the platform-provided list is observed only and may be incomplete.
+- **Completeness questions as first-class gaps**: Every question raised in Steps 2.5.4 and 2.5.5 must appear in the Known Gaps section with a priority. These are not optional notes — omitting them means the interrogator agent has no basis to go resolve them.
 - Rules and constraints must state both the rule AND the consequence of violating it.
 - Common Patterns must be complete, ready-to-use — no placeholders.
 - Be thorough but concise. Gap rounds will fill missing detail.
 - No confidence scores, numeric ratings, or structured metadata.
 - Tailor KB depth and focus to the stated use case.
-- **Pre-save checklist**: Before saving the KB, run through your inventory one final time. For each item, confirm a section exists. If any are missing, add them now. Do not defer to gap rounds — gap rounds are for things you could not know, not things you observed but skipped.
+- **Pre-save checklist**: Before saving the KB, run through your inventory one final time. For each item, confirm a section exists. If any are missing, add them now. Confirm every completeness question from Steps 2.5.4 and 2.5.5 appears in Known Gaps. Do not defer to gap rounds — gap rounds are for things you could not know, not things you observed but skipped.
 
 ### Mode-specific behaviour
 

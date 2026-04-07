@@ -27,15 +27,22 @@ Search the sample files in `inputs/sample_artifacts/` using Read and Grep. Look 
 Be thorough: open multiple artifact files and search for the exact field names mentioned in each gap before moving on.
 
 **Check C — Linked documentation**
-Scan the KB for any URLs (http/https links) related to the gap topic. If a relevant URL exists, fetch it with WebFetch. If WebFetch returns a JS shell, a 403, or fewer than 500 characters of real content, retry with the Playwright MCP browser.
+Scan both the KB body AND the gap description text itself for any URLs (http/https links) related to the gap topic. A URL embedded directly in the gap description is the strongest possible lead — always fetch it first.
+
+Fetch every relevant URL found with WebFetch. If WebFetch returns a JS shell, a 403, or fewer than 500 characters of real content, retry with the Playwright MCP browser.
 - If the fetched page answers the gap, mark it **doc-resolved** and record the source URL.
 - If the URL is dead (404/403 and Playwright also fails), use WebSearch to find the current equivalent page on the same site, then fetch that.
-- If no relevant URL exists in the KB, proceed to Check D.
+- If no relevant URL exists anywhere, proceed to Check D.
 
 **Check D — Web research for gaps with no KB source**
-If a gap has no URL in the KB, use WebSearch to find the official documentation for the missing topic. You already know the platform name from the `<!-- PLATFORM: -->` comment at the top of the KB. Run a targeted search: `<platform> <gap topic> documentation` and fetch the most relevant result using Playwright if WebFetch returns 403.
-- If the fetched page answers the gap, mark it **web-resolved** and record the source URL.
-- Only mark a gap **unresolved** after Check D has been attempted and failed.
+Before marking any gap unresolved, make a genuine attempt to find the answer online. The KB was built from documentation that exists on the web — the information is likely there.
+
+1. Identify the platform's official docs site. It will be referenced somewhere in the KB — look for any `http/https` URL in the KB body and extract its root domain. That is your primary search target.
+2. Run at least two different searches before giving up. Try `site:<docs-domain> <gap topic>` first, then fall back to `<platform name> <gap topic> documentation`. Vary the phrasing if the first attempt returns irrelevant results.
+3. Fetch the most relevant result from each search using WebFetch, retrying with Playwright if needed.
+4. If the fetched page partially answers the gap, follow any links on that page that look relevant before giving up.
+- If any attempt answers the gap, mark it **web-resolved** and record the source URL.
+- Only mark a gap **unresolved** after all search attempts have been exhausted and failed to return relevant content.
 
 ---
 
