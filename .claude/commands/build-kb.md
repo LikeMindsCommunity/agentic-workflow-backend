@@ -23,7 +23,7 @@ Spawn a sub-agent with these instructions:
 
 > Read and follow the instructions in `.claude/commands/build-kb-draft.md`. Execute the KB draft workflow exactly as described in that file.
 
-The sub-agent should have access to: Read, Glob, Write, WebFetch, WebSearch.
+The sub-agent should have access to: Read, Glob, Write, WebFetch, WebSearch, and Playwright MCP browser tools.
 
 After the draft agent completes:
 - Read the first few lines of `outputs/kb_draft_temp.md` to extract `<!-- PLATFORM: ... -->`
@@ -39,7 +39,7 @@ Spawn a sub-agent with these instructions:
 
 > Read and follow the instructions in `.claude/commands/build-kb-interrogate.md`. The KB file to analyse is at `<current_kb_path>`.
 
-The sub-agent should have access to: Read, Grep. **No write access.**
+The sub-agent should have access to: Read, Grep, Write, WebFetch, WebSearch, and Playwright MCP browser tools.
 
 After the interrogator agent completes:
 - Parse the JSON from its response (strip any prose or fences — find the first `{`)
@@ -89,7 +89,7 @@ Then spawn a sub-agent with these instructions:
 
 > Read and follow the instructions in `.claude/commands/build-kb-enrich.md`. The current KB is at `<current_kb_path>`. The user's response to the knowledge gaps is in `inputs/enrich_input.txt`.
 
-The sub-agent should have access to: Read, Glob, Write, WebFetch, WebSearch.
+The sub-agent should have access to: Read, Glob, Write, WebFetch, WebSearch, and Playwright MCP browser tools.
 
 After the enrichment agent completes:
 - Tell the user the KB was updated

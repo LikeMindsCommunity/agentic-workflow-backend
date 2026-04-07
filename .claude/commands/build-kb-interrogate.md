@@ -2,7 +2,7 @@
 
 You are reviewing a knowledge base document for a client's platform/domain. Your job is to work through the KB's Known Gaps, resolve every gap you can directly from the KB body, the sample artifacts, or linked documentation, write those answers into the KB, and surface only the gaps that genuinely cannot be answered.
 
-**Tools you may use: Read, Grep, Write, WebFetch, WebSearch, and the Playwright MCP browser tools. Do NOT fetch URLs speculatively — only fetch a URL if it is explicitly referenced in the KB.**
+**Tools you may use: Read, Grep, Write, WebFetch, WebSearch, and the Playwright MCP browser tools.**
 
 ---
 
@@ -14,7 +14,7 @@ Find the most recent KB file in `outputs/`. Use Grep to search for `<!-- PLATFOR
 
 ## Step 2 — Attempt to resolve each gap
 
-For every gap, run both checks before deciding it is unresolved:
+For every gap, run all checks in order before deciding it is unresolved:
 
 **Check A — KB body**
 Grep the KB file for keywords from the gap description. Ask: does the KB body already answer this, even though it is still listed as a gap? If yes, mark it **self-resolved**.
@@ -27,16 +27,21 @@ Search the sample files in `inputs/sample_artifacts/` using Read and Grep. Look 
 Be thorough: open multiple artifact files and search for the exact field names mentioned in each gap before moving on.
 
 **Check C — Linked documentation**
-Scan the KB for any URLs (http/https links) related to the gap topic. If a relevant URL exists, fetch it with WebFetch. If WebFetch returns a JS shell, a 403, or fewer than 500 characters of real content, retry with the Playwright MCP browser. Only follow URLs that are explicitly present in the KB — do not search speculatively.
+Scan the KB for any URLs (http/https links) related to the gap topic. If a relevant URL exists, fetch it with WebFetch. If WebFetch returns a JS shell, a 403, or fewer than 500 characters of real content, retry with the Playwright MCP browser.
 - If the fetched page answers the gap, mark it **doc-resolved** and record the source URL.
-- If the URL is dead (404/403 and Playwright also fails), use WebSearch to find the current equivalent page on the same site, then fetch that. This is the only permitted use of WebSearch — finding a live replacement for a dead KB URL, not general exploration.
-- If no relevant URL exists in the KB or the page does not answer the gap, mark it **unresolved**.
+- If the URL is dead (404/403 and Playwright also fails), use WebSearch to find the current equivalent page on the same site, then fetch that.
+- If no relevant URL exists in the KB, proceed to Check D.
+
+**Check D — Web research for gaps with no KB source**
+If a gap has no URL in the KB, use WebSearch to find the official documentation for the missing topic. You already know the platform name from the `<!-- PLATFORM: -->` comment at the top of the KB. Run a targeted search: `<platform> <gap topic> documentation` and fetch the most relevant result using Playwright if WebFetch returns 403.
+- If the fetched page answers the gap, mark it **web-resolved** and record the source URL.
+- Only mark a gap **unresolved** after Check D has been attempted and failed.
 
 ---
 
 ## Step 3 — Write resolved gaps into the KB
 
-For every gap marked **self-resolved** or **artifact-resolved**:
+For every gap marked **self-resolved**, **artifact-resolved**, **doc-resolved**, or **web-resolved**:
 
 1. Find the relevant section in the KB and integrate the answer directly — update field descriptions, add examples, correct wrong assumptions, add missing values.
 2. Remove the gap entry from the **Known Gaps** section.
