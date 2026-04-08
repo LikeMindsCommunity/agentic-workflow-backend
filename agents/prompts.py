@@ -64,17 +64,24 @@ Format per item: "Issue: <problem>" / "Check: <what to verify>"
 
 ## Known Gaps
 Areas where the KB is still incomplete.
-For each gap: what is missing and what would fill it.
+For each gap: what is missing, its priority, and what would fill it.
+Include all enumeration completeness questions from Step 2.5.4 and the
+platform-provided value question from Step 2.5.5 here as named gap items.
 ```
 """
 
 WRITING_RULES = """
 ### Writing rules
 
+- **Inventory-first**: Before writing any ## EntityType section, confirm you have completed Step 2.5 including 2.5.4 and 2.5.5. Every distinct value from your inventory must get its own documented subsection. Do not group distinct variants together unless they share identical schemas — if they differ in any field, event, or behavior, they are separate entities.
+- **Frequency does not determine inclusion**: An entity variant that appears in only one artifact is just as required in the KB as one that appears in all of them. Rare variants are often the ones that cause failures when the agent encounters them.
 - Cover every **distinct** entity type, concept, or pattern relevant to the use case. One annotated example per pattern — do not repeat the same pattern for every instance.
 - Examples must use **real values from the provided inputs** where available, annotated with inline comments.
 - When you infer something without doc confirmation:
   `> **Needs Verification:** <what is unclear and what was assumed>`
+- **Enumeration labelling**: Every time the KB documents a field that takes a fixed set of platform-defined values, explicitly mark the list as either `[observed only — may be incomplete]` or `[confirmed complete]`. Never present an observed list as the full set without a confirmed source.
+- **Platform-provided value classification**: When the domain has runtime-injected values (variables, context objects, built-ins), always document them in a separate list from user-defined values. Never merge the two. Note that the platform-provided list is observed only and may be incomplete.
+- **Completeness questions as first-class gaps**: Every question raised in Steps 2.5.4 and 2.5.5 must appear in the Known Gaps section with a priority. These are not optional notes — omitting them means the interrogator agent has no basis to go resolve them.
 - Rules and constraints must state both the rule AND the consequence of violating it.
 - Common Patterns must be complete, ready-to-use — no placeholders.
 - Be thorough but concise. Gap rounds will fill missing detail.
@@ -82,6 +89,7 @@ WRITING_RULES = """
 - Use ### subsections liberally to keep content scannable.
 - Write in clear, direct prose for both human and AI readers.
 - Tailor the KB depth and focus to the stated use case — do not force artifact/config generation framing when the use case is different.
+- **Pre-save checklist**: Before saving the KB, run through your inventory one final time. For each item, confirm a section exists. If any are missing, add them now. Confirm every completeness question from Steps 2.5.4 and 2.5.5 appears in Known Gaps. Do not defer to gap rounds — gap rounds are for things you could not know, not things you observed but skipped.
 """
 
 # ---------------------------------------------------------------------------
@@ -246,6 +254,36 @@ DRAFT_WORKFLOW = """
 - Otherwise, do NOT search the web or fetch any URLs. Work entirely from local inputs.
 """ + WEB_RESEARCH_METHODOLOGY + """
 
+### Step 2.5 — Build a coverage inventory (required before writing)
+
+Before writing a single word of the KB, build a complete inventory of every distinct entity variant present in the artifacts. This step prevents the most common KB failure: documenting 12 out of 17 things because the agent started writing before it knew how many things existed.
+
+**2.5.1 — Identify discriminator fields**
+A discriminator field is any field whose value determines what kind of entity an object is. Common names: `type`, `kind`, `alias`, `category`, `action`, `event`, `class`, `nodeType`, `method`, `resource`, `schema`, `format`, `mode`. For each artifact file, find every object that has a discriminator field and collect every unique value across all files.
+
+**2.5.2 — Build the inventory table**
+Produce a table before writing: discriminator field name, total distinct values, and which files each value appears in. If there are multiple discriminator fields, produce one table per field. Every item in this inventory must appear in the KB as a documented section or subsection.
+
+**2.5.3 — Use the inventory as a mandatory checklist**
+A value is only "covered" if its discriminator value is explicitly named in the KB (not just implied) AND its schema, fields/attributes, and at least one example are present. Do not start writing until the inventory is complete.
+
+**2.5.4 — Completeness questions for observed enumerations**
+Inventorying what you observed is not the same as knowing the full set. For every field that takes a fixed set of platform-defined values — including discriminator fields and any other field whose values are short, recurring, and clearly platform-defined rather than user-invented — ask whether the observed list is complete.
+
+For each such field, record what you saw and add a gap question asking whether there are more. Add each question to the Known Gaps section with a priority:
+- **BLOCKING** — if an unseen value means the generator would produce wrong or broken output. Entity type / kind fields are always BLOCKING.
+- **IMPORTANT** — if an unseen value would produce incorrect but non-fatal output.
+- **NICE TO HAVE** — cosmetic or rarely-used fields with low impact.
+
+**2.5.5 — Platform-provided value detection**
+In many platforms, expressions, scripts, queries, or templates reference values that the platform injects automatically — the user never declares or defines them. Look for any identifier or reference that is used in the artifacts but never defined anywhere in them. These are candidates for platform-provided built-ins.
+
+Before writing the KB, separate all observed values into two lists:
+- **User-defined** — explicitly declared or assigned somewhere in the artifacts
+- **Platform-provided candidates** — used or referenced but never declared or assigned anywhere in the artifacts
+
+Add a gap question asking whether the platform-provided list is complete and whether there are others not seen in the samples. This gap is priority IMPORTANT.
+
 ### Step 3 — Write the KB
 
 Write the complete knowledge base document following the KB Structure defined in this prompt.
@@ -276,52 +314,100 @@ Output a well-structured MARKDOWN document only. No JSON. No preamble or closing
 # ---------------------------------------------------------------------------
 
 def build_interrogator_system_prompt(max_areas: int) -> str:
-    return f"""You are reviewing a knowledge base document for a client's platform/domain. Your job is to determine whether the document is complete enough for an AI system to successfully execute the stated use case using only this KB as reference.
+    return f"""You are reviewing a knowledge base document for a client's platform/domain. Your job is to work through the KB's Known Gaps, resolve every gap you can directly from the KB body, the sample artifacts, or linked documentation, write those answers into the KB, and surface only the gaps that genuinely cannot be answered.
 
-### Scope boundary — strictly enforce
+---
 
-Only flag gaps that would prevent or degrade successful execution of the use case described in the KB's Overview section:
+## Step 1 — Read the KB and extract Known Gaps
 
-| Include | Exclude |
-|---|---|
-| Information directly needed to execute the use case (schemas, fields, APIs, workflows, rules) | General platform knowledge not relevant to the specific use case |
-| Syntax, formats, or structures that must be correct for the use case to work | Runtime behaviour, operational concerns, deployment processes |
-| Valid values, enums, or references that the use case requires | Performance limits, cost implications, scaling considerations |
-| Entity relationships and dependencies needed for correct execution | External integrations not part of the stated use case |
+Read the full KB document provided. Locate the **Known Gaps** section and list every gap item. These are your only work items — do not look for other gaps.
 
-**A gap only belongs here if not knowing it would cause the use case to fail or produce incorrect results.**
+---
 
-### Readiness threshold
+## Step 2 — Attempt to resolve each gap
 
-If there are no blocking gaps and no more than 2 minor important gaps that are already acknowledged in Known Gaps → set ready_for_generation to true.
+For every gap, run both checks before deciding it is unresolved:
 
-Return true for ready_for_generation only when there are no blocking areas and important areas are either resolved or explicitly acknowledged in the KB's Known Gaps section. When in doubt, return false.
+**Check A — KB body**
+Grep the KB file for keywords from the gap description. Ask: does the KB body already answer this, even though it is still listed as a gap? If yes, mark it **self-resolved**.
 
-### How to group gaps
+**Check B — Artifacts**
+Search the sample files in `inputs/sample_artifacts/` using Read and Grep. Look specifically for the field names and patterns described in the gap.
+- If the artifacts give a clear answer, mark it **artifact-resolved** and record exactly what you found (field name, value, file name).
+- If the artifacts are ambiguous or silent, continue to Check C.
 
-Identify knowledge **areas**, not individual questions. Each area groups related gaps so the client can respond with a single doc, URL, or explanation. For example, multiple unknown field values on the same entity type form one area, not several. Group into **{max_areas} areas maximum**.
+Be thorough: open multiple artifact files and search for the exact field names mentioned in each gap before moving on.
 
-### Priority levels
+**Check C — Linked documentation**
+Scan both the KB body AND the gap description text itself for any URLs (http/https links) related to the gap topic. A URL embedded directly in the gap description is the strongest possible lead — always fetch it first.
+
+Fetch every relevant URL found with WebFetch. If WebFetch returns a JS shell, a 403, or fewer than 500 characters of real content, retry with the Playwright MCP browser.
+- If the fetched page answers the gap, mark it **doc-resolved** and record the source URL.
+- If the URL is dead (404/403 and Playwright also fails), use WebSearch to find the current equivalent page on the same site, then fetch that.
+- If no relevant URL exists anywhere, proceed to Check D.
+
+**Check D — Web research for gaps with no KB source**
+Before marking any gap unresolved, make a genuine attempt to find the answer online. The KB was built from documentation that exists on the web — the information is likely there.
+
+1. Identify the platform's official docs site. It will be referenced somewhere in the KB — look for any http/https URL in the KB body and extract its root domain. That is your primary search target.
+2. Run at least two different searches before giving up. Try `site:<docs-domain> <gap topic>` first, then fall back to `<platform name> <gap topic> documentation`. Vary the phrasing if the first attempt returns irrelevant results.
+3. Fetch the most relevant result from each search using WebFetch, retrying with Playwright if needed.
+4. If the fetched page partially answers the gap, follow any links on that page that look relevant before giving up.
+- If any attempt answers the gap, mark it **web-resolved** and record the source URL.
+- Only mark a gap **unresolved** after all search attempts have been exhausted and failed to return relevant content.
+
+---
+
+## Step 3 — Write resolved gaps into the KB
+
+For every gap marked **self-resolved**, **artifact-resolved**, **doc-resolved**, or **web-resolved**:
+
+1. Find the relevant section in the KB and integrate the answer directly — update field descriptions, add examples, correct wrong assumptions, add missing values.
+2. Remove the gap entry from the **Known Gaps** section.
+3. If the KB body had wrong information (e.g. a field documented as "always null" that has real values in the artifacts), correct it.
+
+After processing all resolvable gaps, save the updated KB to the **same file path** using Write.
+
+---
+
+## Step 4 — Group unresolved gaps and ask
+
+Take only the unresolved gaps from Step 2. Group them by topic so the client can answer a cluster with one response:
+- All unknown field values on the same entity → one area
+- All expression / syntax / format questions → one area
+- All "field is null but purpose unknown" questions → one area
+
+Assign a priority to each group and cap the output at **{max_areas} areas**. If more groups remain, merge the lowest-priority ones or drop nice-to-have items with the least use-case impact.
+
+---
+
+## Priority levels
 
 - **blocking**: would cause the use case to fail or produce fundamentally incorrect results
-- **important**: use case can proceed but specific details may be wrong
+- **important**: use case can proceed but output may have wrong details
 - **nice_to_have**: edge cases or optional details that rarely matter
 
-### Output format
+---
 
-Identify where information is missing from the perspective of successfully executing the use case described in the KB's Overview section.
+## Readiness threshold
+
+Set `ready_for_generation` to true only when no unresolved blocking or important gaps remain after Step 2. When in doubt, return false.
+
+---
+
+## Output format
 
 Return ONLY valid JSON (no markdown fences, no extra text):
 {{
-  "summary": "2-3 sentence assessment of the KB state",
+  "summary": "2-3 sentence assessment: how many gaps were resolved and written vs still need user input",
   "ready_for_generation": true or false,
   "areas": [
     {{
       "id": "a1",
       "priority": "blocking | important | nice_to_have",
       "title": "Short descriptive title",
-      "what_we_have": "What the KB currently documents about this area",
-      "what_we_need": "What is missing and why it affects the use case — be specific about what is unknown",
+      "what_we_have": "What the KB and artifacts currently show about this area",
+      "what_we_need": "What is still unknown and why it affects the use case",
       "suggested_sources": "Type of doc/URL/explanation that would fill this gap"
     }}
   ]

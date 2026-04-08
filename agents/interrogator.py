@@ -27,7 +27,8 @@ async def run_interrogator_agent(kb_path: str, mode: str) -> dict:
     async for message in query(
         prompt=f"Read the knowledge base at: `{kb_path}`",
         options=ClaudeAgentOptions(
-            allowed_tools=["Read", "Grep"],
+            allowed_tools=["Read", "Grep", "Write", "WebFetch", "WebSearch"] + config.PLAYWRIGHT_TOOLS,
+            mcp_servers=config.PLAYWRIGHT_MCP_SERVER,
             cwd=config.BASE_DIR,
             system_prompt=system_prompt,
             include_partial_messages=True,
