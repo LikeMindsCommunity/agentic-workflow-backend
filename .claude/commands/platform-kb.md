@@ -195,7 +195,7 @@ If you resolve a gap, integrate the answer into the KB, remove it from Known Gap
 
 ### 4.2 — Present remaining gaps to the user
 
-Take only the unresolved gaps. Group them by topic so the user can answer a cluster with one response. Display them in this format:
+Take only the unresolved gaps. Display **all of them at once**. Every gap gets its own individually numbered entry.
 
 ```
 I found N knowledge gaps. Addressing these will improve the KB.
@@ -205,14 +205,22 @@ I found N knowledge gaps. Addressing these will improve the KB.
      We need: <what is still unknown and why it matters>
      Best source: <where the answer might be found>
 
-[G2] IMPORTANT — <Title>
+[G2] BLOCKING — <Title>
      We have: ...
      We need: ...
      Best source: ...
 
-[G3] NICE TO HAVE — <Title>
+[G3] IMPORTANT — <Title>
+     We have: ...
+     We need: ...
+     Best source: ...
+
+[G4] NICE TO HAVE — <Title>
      ...
 ```
+
+**Rules for gap presentation:**
+- Each gap has its own [Gn] label, priority tag, We have / We need / Best source block
 
 Then say:
 > For each gap: paste a URL and I'll fetch it, point me to a file, or just explain it here. You can address multiple gaps in one message. Type **done** when you have nothing more to add.
