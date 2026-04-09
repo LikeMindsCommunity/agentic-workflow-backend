@@ -30,9 +30,9 @@ For each item, record:
 - What it appears to describe (high-level summary)
 - Approximate size and complexity (number of top-level elements, nesting depth)
 
-### 1.2 — Detect mode
+### 1.2 — Detect mode and use case
 
-Assess what you have and adapt your strategy:
+**Material mode** — assess what you have:
 
 | Condition | Mode | Strategy |
 |---|---|---|
@@ -42,7 +42,21 @@ Assess what you have and adapt your strategy:
 | Only a prompt (maybe with URLs) | `prompt_only` | Fetch URLs if present. Write a skeleton. Every section should have `Needs Verification`. Known Gaps should be the longest section. |
 | Nothing at all | `error` | Tell the user to provide inputs and stop. |
 
-Tell the user: inferred platform/domain name, mode, artifact count, doc count.
+**Use-case classification** — determine what kind of platform/integration this is. This drives which KB sections you will write in Phase 3. Classify into one or more of:
+
+| Use Case | Signals | Example Platforms |
+|---|---|---|
+| `component-flow` | Nodes, steps, blocks, transitions, wiring, visual flows | IVR builders, workflow engines, no-code/low-code, pipeline builders |
+| `api-sdk` | REST/GraphQL endpoints, SDK methods, request/response schemas, auth tokens | Twilio SDK, Stripe API, Salesforce REST API |
+| `artifact-generator` | Output files with strict schemas (JSON, XML, YAML), field classification, validation rules | Config generators, template engines, schema-driven code gen |
+| `event-driven` | Webhooks, callbacks, event payloads, subscriptions, triggers | Webhook platforms, event buses, notification systems |
+| `data-platform` | Entities, relationships, queries, CRUD operations, data models | CRMs, databases, data warehouses, analytics platforms |
+| `config-system` | Complex configuration hierarchies, feature flags, environment-specific settings | Infrastructure platforms, deployment tools, feature management |
+| `custom` | Does not clearly match any of the above categories | Niche tools, hybrid platforms, novel integrations |
+
+A platform can match multiple use cases (e.g., an IVR builder is both `component-flow` AND `artifact-generator`). Select all that apply. If `custom`: skip the catalog's Use-Case Sections entirely and propose a bespoke KB structure in Phase 3.1 based on what the materials actually contain.
+
+Tell the user: inferred platform/domain name, mode, use-case classification(s), artifact count, doc count.
 
 ### 1.3 — Load and fetch inputs
 
@@ -50,6 +64,11 @@ Tell the user: inferred platform/domain name, mode, artifact count, doc count.
 - Read all artifact files provided or found in input directories
 - Read all documentation files (.md, .txt, .json, .yaml, .yml, .xml, .html)
 - Skip hidden files and `.DS_Store`
+
+**Large file handling — never skip a file because of size:**
+- If a file is too large to read in one call, read it in chunks using offset/limit (e.g., 1500 lines per chunk). Continue reading until you have consumed the entire file.
+- Every input file the user provided MUST be fully read. A partially-read artifact means a partially-correct KB — the largest, most complex files are usually the ones with the most patterns and edge cases.
+- After loading all files, confirm to the user: "Read N files (all fully loaded)" or flag any file that could not be read and why.
 
 **Web research — only if the user provides URLs or explicitly asks for it:**
 If the user provides URLs (starting with `http`) or asks you to search the web:
@@ -94,15 +113,31 @@ For structured artifacts (JSON, XML, YAML, etc.):
 
 ## PHASE 2: Coverage Inventory (mandatory before writing)
 
-Before writing a single word of the KB, build a complete inventory of every distinct entity variant present in the materials. This prevents the most common KB failure: documenting 12 out of 17 things because you started writing before you knew how many things existed.
+Before writing a single word of the KB, build a complete inventory of every distinct entity, resource, endpoint, or variant present in the materials. This prevents the most common KB failure: documenting 12 out of 17 things because you started writing before you knew how many things existed.
 
-### 2.1 — Identify discriminator fields
+**What to inventory depends on your use-case classification:**
 
-A **discriminator field** is any field whose value determines what kind of entity an object is. Common names: `type`, `kind`, `alias`, `category`, `action`, `event`, `class`, `nodeType`, `method`, `resource`, `schema`, `format`, `mode`. The field name varies by platform — identify it by finding the field that takes different string values across otherwise similarly-shaped objects.
+| Use Case | What to Inventory |
+|---|---|
+| `component-flow` | Every distinct component/node type, every event type, every connection type |
+| `api-sdk` | Every API endpoint/method, every resource type, every authentication method, every error code category |
+| `artifact-generator` | Every distinct entity variant, every field type/category, every output format |
+| `event-driven` | Every event type, every webhook type, every payload schema variant |
+| `data-platform` | Every entity/model type, every relationship type, every query operation |
+| `config-system` | Every config section, every option group, every environment-specific override |
+| `custom` | Determine what the primary "things" are in this platform and inventory every distinct type/variant of each |
 
-For each artifact file:
-1. Find every object that has a discriminator field
-2. Collect every unique value of that field across all files
+### 2.1 — Identify categorization fields
+
+Find the fields or attributes whose values determine what kind of thing an entity is. These are **categorization fields** (also called discriminators, type fields, or kind fields).
+
+Common names: `type`, `kind`, `alias`, `category`, `action`, `event`, `class`, `nodeType`, `method`, `resource`, `schema`, `format`, `mode`, `endpoint`, `operation`.
+
+For structured artifacts: find every object with a categorization field and collect every unique value across all files.
+
+For documentation: extract every named resource, endpoint, component, or entity type mentioned.
+
+For API specs: extract every path, method, resource, and operation.
 
 ### 2.2 — Build the inventory table
 
@@ -110,49 +145,83 @@ Produce an inventory table before writing:
 
 ```
 ENTITY INVENTORY
-Discriminator field: <field name>
+Category: <what is being inventoried, e.g., "Component Types", "API Endpoints", "Event Types">
+Categorization field: <field name, if applicable>
 Total distinct values: N
 
   value_1  — seen in: file_a.json, file_b.json  (N occurrences)
   value_2  — seen in: file_b.json               (N occurrences)
-  value_3  — seen in: file_a.json               (N occurrences)
+  value_3  — seen in: docs section "API Reference"
   ...
 ```
 
-If there are multiple discriminator fields (e.g., one for entity type and one for event type), produce one inventory table per field.
+Produce one inventory table per category. Most platforms have multiple categories to inventory.
 
 ### 2.3 — Use the inventory as a mandatory checklist
 
 Every item in the inventory **must appear** in the KB as a documented section or subsection. Do not start writing until you have the complete inventory. After drafting, verify each inventory item has been covered.
 
 A value is only "covered" if:
-- Its discriminator value is **explicitly named** in the KB (not just implied or grouped)
-- Its schema, fields/attributes, and at least one example are present
+- It is **explicitly named** in the KB (not just implied or grouped)
+- Its schema/attributes/parameters and at least one example are present
 
 ### 2.4 — Enumeration completeness questions
 
-Inventorying what you observed is not the same as knowing the full set. For every field that takes a fixed set of platform-defined values — including discriminator fields and any field whose values are short, recurring, and clearly platform-defined rather than user-invented — record what you saw and add a gap question asking whether the observed list is complete.
+Inventorying what you observed is not the same as knowing the full set. For every categorization field or fixed set of platform-defined values, record what you saw and add a gap question asking whether the observed list is complete.
 
 Priority for these gaps:
-- **BLOCKING** — if an unseen value means the generator would produce wrong or broken output. Entity type/kind fields are always BLOCKING.
+- **BLOCKING** — if an unseen value means a downstream agent would produce wrong or broken output. Primary entity/resource type fields are always BLOCKING.
 - **IMPORTANT** — if an unseen value would produce incorrect but non-fatal output.
-- **NICE TO HAVE** — cosmetic or rarely-used fields.
+- **NICE TO HAVE** — cosmetic or rarely-used values.
 
 ### 2.5 — Platform-provided value detection
 
-Look for any identifier or reference that is **used in the artifacts but never defined anywhere in them**. These are candidates for platform-provided built-ins (runtime-injected variables, context objects, global functions).
+Look for any identifier, constant, or reference that is **used in the materials but never defined anywhere in them**. These are candidates for platform-provided built-ins (runtime variables, SDK constants, global functions, magic strings, environment variables, default headers).
 
 Separate all observed values into two lists:
-- **User-defined** — explicitly declared or assigned somewhere in the artifacts
+- **User-defined** — explicitly declared or assigned somewhere in the materials
 - **Platform-provided candidates** — used or referenced but never declared
 
 Add a gap question asking whether the platform-provided list is complete. Priority: IMPORTANT.
 
 ---
 
-## PHASE 3: KB Draft
+## PHASE 3: KB Structure Selection & Draft
 
-Write the complete knowledge base. The KB structure and extraction depth for each section is defined in the **KB Extraction Guide** below.
+### 3.1 — Select KB sections
+
+Based on your use-case classification(s) from Phase 1.2, select which sections from the **KB Section Catalog** (below) to include. Every KB always includes:
+
+- **00-overview.md** — Domain Context (Core Section A)
+- **NN-patterns.md** — Common Patterns & Templates (Core Section B)
+- **NN-constraints.md** — Constraints & Validation Rules (Core Section C)
+- **NN-gap-log.md** — Known Gaps (Core Section D)
+
+Then add sections from the catalog based on your use-case classification(s). Use the "Use when" guidance on each catalog entry to decide.
+
+**Show the user your proposed KB structure** before writing:
+
+```
+Based on my analysis, this is a [use-case classification] platform.
+I'll create the following KB structure:
+
+  kb/
+    00-overview.md              — Domain context, glossary, platform summary
+    01-<section-name>.md        — <one-line description>
+    02-<section-name>.md        — <one-line description>
+    ...
+    NN-patterns.md              — Common patterns and templates
+    NN-constraints.md           — All numbered rules and validation requirements
+    NN-gap-log.md               — Remaining uncertainties and assumptions
+
+Does this structure look right, or should I add/remove/rename any sections?
+```
+
+Wait for user confirmation. Adjust if they request changes. Then proceed to writing.
+
+### 3.2 — Write the KB draft
+
+Write the complete knowledge base using the extraction guidance from the **KB Section Catalog** for each selected section.
 
 ### Writing rules
 
@@ -175,7 +244,7 @@ Write the complete knowledge base. The KB structure and extraction depth for eac
 
 ### Save the draft
 
-Save all KB files to the output directory (see Output Structure below). Tell the user the draft is complete and immediately proceed to Phase 4.
+Save all KB files to the output directory. Tell the user the draft is complete and immediately proceed to Phase 4.
 
 ---
 
@@ -185,17 +254,22 @@ Save all KB files to the output directory (see Output Structure below). Tell the
 
 ### 4.1 — Assess gaps
 
-Review the KB's Known Gaps section plus any new gaps surfaced during writing. For each gap, first attempt to resolve it yourself:
+Review the KB's Known Gaps section **and** the Assumptions section. Both are work items — gaps are things you don't know, assumptions are things you guessed and need confirmation on. For each item, first attempt to resolve it yourself:
 
 1. **Check the KB body** — does the KB already answer this gap somewhere else?
 2. **Check the artifacts** — search for the exact field names and patterns described in the gap
 3. **Check fetched documentation** — if URLs were provided, re-examine fetched content
 
-If you resolve a gap, integrate the answer into the KB, remove it from Known Gaps, and note what was resolved.
+If you resolve a gap or confirm an assumption, integrate the answer into the KB, remove it from Known Gaps / Assumptions, and note what was resolved.
 
 ### 4.2 — Present remaining gaps to the user
 
-Take only the unresolved gaps. Display **all of them at once**. Every gap gets its own individually numbered entry.
+Collect **all** unresolved items from three sources:
+1. **Known Gaps** — things the KB explicitly does not know
+2. **Assumptions** — things the KB guessed that need user confirmation (present these as verification questions)
+3. **Partially-read materials** — if any input files were not fully read (they should have been — see Phase 1.3), flag this as a BLOCKING gap
+
+Display **all of them at once**. Every item gets its own individually numbered entry. Do not silently log assumptions or unread files — surface them as questions the user can answer.
 
 ```
 I found N knowledge gaps. Addressing these will improve the KB.
@@ -215,15 +289,22 @@ I found N knowledge gaps. Addressing these will improve the KB.
      We need: ...
      Best source: ...
 
-[G4] NICE TO HAVE — <Title>
+[G4] VERIFY ASSUMPTION — <Title>
+     We assumed: <what was assumed and why>
+     Confidence: <High/Medium/Low>
+     Please confirm: <specific yes/no question for the user>
+
+[G5] NICE TO HAVE — <Title>
      ...
 ```
 
 **Rules for gap presentation:**
 - Each gap has its own [Gn] label, priority tag, We have / We need / Best source block
+- Assumptions use the `VERIFY ASSUMPTION` tag with a clear yes/no confirmation question
+- Every assumption from the gap log must appear — do not silently accept Medium or Low confidence assumptions
 
 Then say:
-> For each gap: paste a URL and I'll fetch it, point me to a file, or just explain it here. You can address multiple gaps in one message. Type **done** when you have nothing more to add.
+> For each gap: paste a URL and I'll fetch it, point me to a file, or just explain it here. For assumptions, just confirm or correct. You can address multiple gaps in one message. Type **done** when you have nothing more to add.
 
 - If no blocking/important gaps remain, prefix with: `No blocking gaps remain — but here are areas you could still improve:`
 - If there are blocking gaps, prefix with: `I found N gaps that need filling before the KB is usable:`
@@ -278,20 +359,79 @@ Needs Verification:    <count> unverified items
 
 ---
 
-## KB Extraction Guide
+## KB Section Catalog
 
-This defines what to extract for each section of the KB. Be exhaustive — a downstream AI agent will have ONLY what you write here and cannot ask follow-up questions.
+This catalog defines the available KB sections. **Be exhaustive** — a downstream AI agent will have ONLY what you write here and cannot ask follow-up questions.
 
-### A. Domain Context (→ 00-overview.md)
+Select sections based on your use-case classification from Phase 1.2. Every section includes a "Use when" indicator and detailed extraction guidance.
+
+---
+
+### Core Sections (always include)
+
+#### CORE-A: Domain Context (→ 00-overview.md)
+
+**Always included.** This is the first file any downstream agent reads.
+
+Extract:
 - What domain does this platform operate in?
 - What is the platform's core value proposition?
 - Who are the end users? (business users, developers, both)
 - What business problems does it solve?
 - Glossary of every domain-specific term, abbreviation, and acronym — include both official terms and informal terms found in code/artifacts
+- High-level architecture: what are the major parts of the platform and how do they relate?
 
-### B. Platform Building Blocks (→ 01-building-blocks.md)
+#### CORE-B: Common Patterns & Templates (→ NN-patterns.md)
 
-For each distinct building block (component, node, widget, module, step, action, block, operator, etc.):
+**Always included.** Patterns are the highest-leverage content in the KB — they give downstream agents ready-made solutions.
+
+For each recurring pattern:
+- **Pattern Name**: Descriptive name
+- **When to Use**: What in a requirement signals this pattern?
+- **Frequency**: Every use, most uses, edge case?
+- **Step-by-step Structure**: The concrete sequence of actions, calls, components, or configuration steps
+- **Required Elements**: Including "glue" elements that are easy to forget
+- **Configuration Details**: Key settings with exact values
+- **Variations**: Simplest → most complex, what's optional
+- **Anti-patterns**: What NOT to do and WHY it fails
+- **Reuse Rules**: What is shared/singleton vs. duplicated per instance
+
+#### CORE-C: Constraints & Validation Rules (→ NN-constraints.md)
+
+**Always included.** Number each constraint with a stable ID (C1, C2, ...).
+
+Constraint categories to look for (include all that apply to the platform):
+- **Structural Constraints**: Required elements, ordering, cardinality, nesting limits
+- **Identity Constraints**: ID uniqueness, format, reference integrity
+- **Naming Constraints**: Character limits, reserved words, uniqueness, conventions
+- **Data Constraints**: Type restrictions, value ranges, format requirements
+- **Dependency Constraints**: Required co-occurrences, ordering dependencies
+- **Rate/Quota Constraints**: Limits, throttling, size caps
+- **Cross-Reference Consistency**: Same value required in multiple places
+
+For each constraint: the rule, the consequence of violating it, a CORRECT example, a WRONG example.
+
+#### CORE-D: Known Gaps (→ NN-gap-log.md)
+
+**Always included.** This is the last file and feeds back into Phase 4.
+
+- Every assumption made, its basis, and confidence level
+- Enumeration completeness questions from Phase 2.4
+- Platform-provided value questions from Phase 2.5
+- Areas where materials were ambiguous or contradictory
+- Scenarios the KB may not handle well
+- Recommendations for additional materials
+- Version/date of materials analyzed
+
+---
+
+### Use-Case Sections (select based on classification)
+
+#### UC-1: Building Blocks / Components
+
+**Use when:** `component-flow`, or any platform where the user assembles discrete reusable units (nodes, steps, blocks, widgets, actions, operators, modules).
+
+For each distinct building block type:
 
 **Identity:**
 - **Internal Type/Alias**: The machine-readable type identifier
@@ -334,7 +474,9 @@ Where **Required Handling** indicates whether the downstream agent MUST wire thi
 **Examples:**
 - At least one concrete example from a real artifact, every field annotated
 
-### C. Composition Rules (→ 02-composition-rules.md)
+#### UC-2: Composition & Wiring Rules
+
+**Use when:** `component-flow`, or any platform where building blocks connect to form flows, pipelines, or graphs.
 
 **Connection Mechanism:**
 - How do building blocks connect? (transitions, edges, wires, event chains, data bindings, sequence ordering)
@@ -375,7 +517,9 @@ Where **Required Handling** indicates whether the downstream agent MUST wire thi
 - What makes a composition invalid?
 - Self-loop rules, required event handlers, required start/end components
 
-### D. Output Artifact Schema (→ 03-artifact-schema.md)
+#### UC-3: Output Artifact Schema
+
+**Use when:** `artifact-generator`, or any use case where the goal is generating a file or data structure that must conform to a specific schema.
 
 **Top-Level Structure** — for each key:
 
@@ -397,7 +541,9 @@ Where **Required Handling** indicates whether the downstream agent MUST wire thi
 
 **Annotated Schema**: Full schema as a code block with inline comments on every field.
 
-### E. Variables & Data Flow (→ 04-variables-and-data.md)
+#### UC-4: Variables & Data Flow
+
+**Use when:** `component-flow`, or any platform with a variable system, expression engine, or embedded scripting language.
 
 **Variable System:**
 - Declaration mechanism, data structure, scoping rules
@@ -429,66 +575,195 @@ For each pattern, provide a concrete annotated example.
 - Exact syntax, operator precedence, string vs. numeric comparison, combining conditions, statement termination
 - Examples for every observed comparison operator
 
-### F. Common Patterns & Templates (→ 05-patterns.md)
+#### UC-5: API Reference
 
-For each recurring pattern:
+**Use when:** `api-sdk`, or any platform where the downstream agent needs to make API calls.
 
-- **Pattern Name**: Descriptive name
-- **When to Use**: What in a requirement signals this pattern?
-- **Frequency**: Every artifact, most artifacts, edge case?
-- **Flow Structure**: Step-by-step component sequence
-- **Required Components**: Including "glue" components
-- **Configuration Details**: Key attribute settings
-- **Variations**: Simplest → most complex, what's optional
-- **Anti-patterns**: What NOT to do and WHY it fails
-- **Component Reuse Rules**: Singletons vs. duplicated per branch
+For each API endpoint or SDK method:
 
-### G. Constraints & Validation Rules (→ 06-constraints.md)
+**Endpoint Identity:**
+- Method + Path (e.g., `POST /v2/calls/{callId}/transfer`)
+- SDK method name (e.g., `client.calls.transfer()`)
+- Description: what it does in one sentence
 
-Number each constraint with a stable ID (C1, C2, ...).
+**Parameters** — table:
 
-- **Structural Constraints**: Required elements, ordering, cardinality, nesting limits, required start/end
-- **Identity Constraints**: ID uniqueness, format, reference integrity
-- **Naming Constraints**: Character limits, uniqueness, conventions
-- **Connection Constraints**: Self-loops, required event handlers, specific event-to-component rules, mirrored handling
-- **Data Constraints**: Type restrictions, value ranges, format requirements, string quoting in expressions
-- **Error Handling Constraints**: Required error paths, handler targets, visibility/default flags
-- **Cross-Component Consistency Constraints**: Same value in multiple places, variable name matching, script-to-registry consistency
+| Parameter | Location | Type | Required | Default | Description | Constraints |
+|-----------|----------|------|----------|---------|-------------|-------------|
 
-For each constraint: the rule, the consequence of violating it, a CORRECT example, a WRONG example.
+Where **Location** is: path, query, header, body, or SDK argument.
 
-### H. Visual/Layout Rules (→ 07-layout-rules.md, omit if not applicable)
+**Request Body Schema** — full annotated schema for non-trivial bodies. Show exact field names, types, nesting.
+
+**Response Schema** — annotated schema of success response. Include:
+- Status codes and their meanings
+- Response body structure
+- Pagination fields if applicable
+
+**Error Responses** — table:
+
+| Status Code | Error Code | Meaning | Common Cause | Resolution |
+|-------------|------------|---------|--------------|------------|
+
+**Rate Limits**: Requests/second, burst limits, retry-after headers.
+
+**Examples**: At least one complete request + response pair from real data.
+
+**SDK-specific notes**: Differences between raw API and SDK wrapper (auto-pagination, response unwrapping, etc.)
+
+#### UC-6: Authentication & Authorization
+
+**Use when:** `api-sdk`, or any platform where auth setup is non-trivial.
+
+- **Auth Methods**: Every supported method (API key, OAuth 2.0, JWT, session token, etc.)
+- **Credential Setup**: Step-by-step how to obtain credentials
+- **Auth Flow**: For OAuth/SAML — full flow with redirect URIs, scopes, token refresh
+- **Header/Parameter Format**: Exact format (e.g., `Authorization: Bearer <token>`, `X-API-Key: <key>`)
+- **Scopes & Permissions**: What each scope grants access to
+- **Token Lifecycle**: Expiration, refresh mechanism, revocation
+- **Service Accounts / Machine Auth**: If different from user auth
+- **Common Auth Errors**: Error codes, causes, fixes
+
+#### UC-7: Data Model & Entity Schemas
+
+**Use when:** `data-platform`, `api-sdk`, or any platform with a rich data model the downstream agent needs to understand.
+
+For each entity/model type:
+
+**Entity Identity:**
+- Name, API resource name, internal type identifier
+- Relationships to other entities (parent, child, reference, many-to-many)
+
+**Field Schema** — table:
+
+| Field | Type | Required | Writable | Description | Constraints |
+|-------|------|----------|----------|-------------|-------------|
+
+Where **Writable** indicates whether the field can be set via API/config or is read-only/computed.
+
+**Lifecycle:**
+- States/statuses the entity goes through
+- Transitions between states (what triggers them)
+- Creation requirements vs. update requirements
+
+**Query/Filter:**
+- How to list/search this entity type
+- Available filter fields and operators
+- Sort options
+- Pagination mechanism
+
+#### UC-8: Event System & Webhooks
+
+**Use when:** `event-driven`, or any platform with webhooks, callbacks, pub/sub, or event streams.
+
+**Event Catalog** — table:
+
+| Event Type | Trigger | Payload Schema | Delivery Method | Retry Policy |
+|------------|---------|----------------|-----------------|-------------|
+
+**Webhook Configuration:**
+- Registration mechanism (API, UI, config file)
+- Required fields (URL, events, secret)
+- Signature verification: algorithm, header name, validation logic
+- Delivery guarantees: at-least-once, at-most-once, exactly-once
+
+**Payload Schemas:**
+- Full annotated schema per event type
+- Common envelope fields (timestamp, event ID, version)
+- Nested object resolution (are related objects embedded or just IDs?)
+
+**Subscription Management:**
+- How to list, update, pause, delete subscriptions
+- Filtering/routing rules
+
+#### UC-9: Configuration Reference
+
+**Use when:** `config-system`, or any platform with complex, multi-layered configuration.
+
+**Configuration Hierarchy:**
+- What layers exist? (global → organization → project → environment → instance)
+- Override/inheritance rules between layers
+
+**Configuration Sections** — for each logical section:
+- Section name and purpose
+- All options with types, defaults, allowed values, descriptions
+- Dependencies between options (if option A is set, option B is required)
+- Environment variable overrides (if applicable)
+
+**File Format:**
+- Expected format (YAML, JSON, TOML, INI, etc.)
+- Schema validation (JSON Schema, custom)
+- Annotated example of a complete config file
+
+**Secret/Sensitive Values:**
+- Which config values are sensitive
+- How they should be provided (env vars, secret managers, not inline)
+
+#### UC-10: Visual / Layout Rules
+
+**Use when:** Artifacts have spatial or visual layout properties (coordinates, positions, canvas placement). Omit if not applicable.
 
 - Coordinate system, spacing, branch layout, flow direction, execution order reflection
-
-### I. Known Gaps (→ 08-gap-log.md)
-
-- Every assumption made, its basis, and confidence level
-- Enumeration completeness questions from Phase 2.4
-- Platform-provided value questions from Phase 2.5
-- Areas where materials were ambiguous or contradictory
-- Scenarios the KB may not handle well
-- Recommendations for additional materials
-- Version/date of materials analyzed
 
 ---
 
 ## Output Structure
 
-Create a directory called `kb/` (or use a name the user specifies):
+Create a directory called `kb/` (or use a name the user specifies).
 
+The file list is **dynamic** — determined by the sections you selected in Phase 3.1. Always use numbered prefixes for ordering. The structure always starts with `00-overview.md` and always ends with `NN-gap-log.md`.
+
+**Example for a `component-flow` + `artifact-generator` platform:**
 ```
 kb/
   00-overview.md              # Domain context, glossary, platform summary
-  01-building-blocks.md       # All platform components — identity, attributes, events, examples
+  01-building-blocks.md       # All components — identity, attributes, events, examples
   02-composition-rules.md     # How components connect — transitions, conditions, hierarchy
-  03-artifact-schema.md       # Complete output artifact schema (annotated, field-classified)
-  04-variables-and-data.md    # Variable system, data flow, scripting language, expression syntax
-  05-patterns.md              # Common patterns and templates with anti-patterns
+  03-artifact-schema.md       # Output artifact schema (annotated, field-classified)
+  04-variables-and-data.md    # Variable system, data flow, scripting, expressions
+  05-patterns.md              # Common patterns and templates
   06-constraints.md           # All numbered rules and validation requirements
-  07-layout-rules.md          # Visual/coordinate rules (if applicable, omit if not)
-  08-gap-log.md               # Remaining uncertainties, assumptions made, and their basis
+  07-layout-rules.md          # Visual/coordinate rules (if applicable)
+  08-gap-log.md               # Remaining uncertainties and assumptions
 ```
+
+**Example for an `api-sdk` platform:**
+```
+kb/
+  00-overview.md              # Domain context, glossary, platform summary
+  01-authentication.md        # Auth methods, flows, credentials, scopes
+  02-data-model.md            # Entities, fields, relationships, lifecycle
+  03-api-reference.md         # Endpoints, parameters, request/response schemas
+  04-events-webhooks.md       # Event catalog, webhook setup, payload schemas
+  05-patterns.md              # Common integration patterns and recipes
+  06-constraints.md           # Rate limits, validation rules, error handling
+  07-gap-log.md               # Remaining uncertainties and assumptions
+```
+
+**Example for a `config-system` platform:**
+```
+kb/
+  00-overview.md              # Domain context, glossary, platform summary
+  01-configuration.md         # Config hierarchy, all options, defaults, overrides
+  02-data-model.md            # Entities managed by the system
+  03-patterns.md              # Common config patterns and recipes
+  04-constraints.md           # Validation rules, dependencies, limits
+  05-gap-log.md               # Remaining uncertainties and assumptions
+```
+
+**Example for a `custom` platform:**
+```
+kb/
+  00-overview.md              # Domain context, glossary, platform summary
+  01-<whatever-fits>.md       # Sections derived from what the materials actually contain
+  02-<whatever-fits>.md       # Not constrained to catalog entries
+  ...
+  NN-patterns.md              # Common patterns and templates
+  NN-constraints.md           # Validation rules, limits, error handling
+  NN-gap-log.md               # Remaining uncertainties and assumptions
+```
+
+Choose the structure that fits your materials. You are not limited to these examples — create whatever sections the platform needs.
 
 ### File Format Requirements
 
@@ -510,28 +785,29 @@ Each markdown file must:
 
 The KB is successful if a downstream AI agent can:
 1. Understand the platform's domain without prior knowledge of the industry
-2. Identify the correct building blocks for any given requirement
-3. Configure every attribute on every building block correctly
-4. Compose building blocks into valid configurations with all connections wired
-5. Generate output artifacts that pass platform validation — structurally and semantically
+2. Identify the correct resources, components, endpoints, or entities for any given requirement
+3. Configure every parameter, attribute, or option correctly using documented schemas
+4. Compose elements into valid structures (flows, API call sequences, configs, artifacts) with all connections/references wired
+5. Produce outputs that pass platform validation — structurally and semantically
 6. Apply the right patterns for common scenarios without reinventing them
 7. Avoid all known anti-patterns and constraint violations
 8. Handle edge cases using the constraints and rules documented
-9. Write valid embedded code/expressions using the documented scripting language
-10. Maintain cross-reference integrity across all IDs in the generated artifact
+9. Write valid embedded code, expressions, queries, or request bodies using the documented syntax
+10. Maintain cross-reference integrity across all IDs, keys, and references
 
 ## Critical Rules
 
-- **Be exhaustive, not summary.** Every field, every value, every event, every rule matters. A downstream agent cannot ask follow-up questions — it only has what you write.
-- **Preserve exact values.** If a field must be `"nodeflow.script.interpreter.js"`, write exactly that. Never paraphrase or generalize technical values. Never say "use the appropriate value" — state the value.
+- **Be exhaustive, not summary.** Every field, every value, every event, every endpoint, every rule matters. A downstream agent cannot ask follow-up questions — it only has what you write.
+- **Preserve exact values.** If a field must be `"nodeflow.script.interpreter.js"` or a header must be `Authorization: Bearer`, write exactly that. Never paraphrase or generalize technical values. Never say "use the appropriate value" — state the value.
 - **Show, don't just tell.** Every rule needs a concrete CORRECT example and a WRONG example.
 - **Inventory before writing.** Never start drafting until the coverage inventory is complete. The inventory is your checklist — every item must appear in the KB.
-- **Diff your artifacts.** If you have multiple artifacts, the differences between them are more informative than any single artifact. What's fixed, what varies, and what's optional — this is what the downstream agent needs most.
-- **Trace every reference.** If ID `abc-123` appears in three places across the artifact, document all three places and the consistency rule that binds them.
-- **Document the invisible.** Some fields are required in the artifact but invisible in the UI (error transitions, back-references, metadata). These are the #1 source of bugs for downstream agents. Make them prominent.
-- **Separate universal from specific.** Attributes that appear on every building block type should be documented once and referenced, not repeated 30 times. But type-specific attributes need full per-type documentation.
+- **Diff your materials.** If you have multiple artifacts or examples, the differences between them are more informative than any single one. What's fixed, what varies, and what's optional — this is what the downstream agent needs most.
+- **Trace every reference.** If an ID, key, or name appears in multiple places, document all locations and the consistency rule that binds them.
+- **Document the invisible.** Some fields, headers, or parameters are required but not obvious (error handlers, back-references, implicit defaults, required headers). These are the #1 source of bugs for downstream agents. Make them prominent.
+- **Separate universal from specific.** Attributes/parameters that appear on every entity type should be documented once and referenced, not repeated. But type-specific details need full per-type documentation.
 - **Number your constraints.** Downstream agents need to cite specific rules. Use stable IDs (C1, C2, ...).
-- **Cross-reference aggressively.** Building blocks reference composition rules, which reference variables, which reference constraints. Link them with markdown anchors.
-- **Embedded code is first-class.** If components contain scripts/expressions/queries, the scripting language reference is as important as the component schema. Document syntax, built-ins, patterns, and pitfalls.
+- **Cross-reference aggressively.** Sections reference each other — link them with markdown anchors.
+- **Embedded code is first-class.** If the platform uses scripts, expressions, queries, templates, or request bodies with specific syntax, the language reference is as important as the API/schema. Document syntax, built-ins, patterns, and pitfalls.
+- **Adapt structure to the platform.** The KB Section Catalog is a menu, not a rigid template. Select sections that fit, skip those that don't, and create custom sections when the catalog doesn't cover what the platform needs.
 - **Never skip the gap loop.** Every draft MUST be followed by a gap assessment. Every enrichment MUST be followed by a re-assessment. The loop only ends when the user says `done`.
-- **Observed ≠ Complete.** Every enumeration you document from artifacts is what you *saw*, not what *exists*. Always label it and always ask.
+- **Observed ≠ Complete.** Every enumeration you document from materials is what you *saw*, not what *exists*. Always label it and always ask.
