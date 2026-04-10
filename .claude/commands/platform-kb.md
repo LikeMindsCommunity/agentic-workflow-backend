@@ -109,11 +109,13 @@ If `llms-full.txt` exists and covers the use case well, you can skip individual 
 
 **Step 2 — Fetch each page (try in order):**
 1. **WebFetch** — try first.
-2. **Playwright stealth browser** — when WebFetch returns a JS shell, 403, Cloudflare challenge, empty body, or fewer than 500 chars of real content:
+2. **Playwright stealth browser** — when WebFetch returns a JS shell, 403, Cloudflare challenge, empty body, fewer than 500 chars of real content, **or a 404**:
+   - Many documentation sites are SPAs (single-page apps) that return a 404 HTTP status on direct requests to deep URLs, but the JS router renders the correct content once the app loads. Always try Playwright before treating a 404 as a dead URL.
    - Set a realistic user agent before the first navigate (`mcp__playwright__playwright_custom_user_agent`).
    - Navigate to the URL (`mcp__playwright__playwright_navigate`). If it times out, retry once.
-   - Extract visible text (`mcp__playwright__playwright_get_visible_text`).
-3. **WebSearch fallback** — if the URL is dead (404) or both WebFetch and Playwright fail, search for the topic and fetch an equivalent page.
+   - Wait for the page to finish rendering, then extract visible text (`mcp__playwright__playwright_get_visible_text`).
+   - If the rendered content contains "Page not found" or fewer than 200 chars of real content, only then treat the URL as dead.
+3. **WebSearch fallback** — only if Playwright also confirms the page is dead (renders an error or fewer than 200 chars). Search for the topic and fetch an equivalent page.
 
 Only ask the user to paste content as a last resort — after all three methods have failed.
 
@@ -391,7 +393,7 @@ Then say:
 ## PHASE 5: Enrich
 
 Process the user's response:
-- **URL** (starts with `http`) → fetch using the same fallback chain as Phase 1.3: WebFetch first → Playwright stealth browser on 403/JS shell/thin content → WebSearch fallback on 404. Only ask the user for an alternative after all three methods fail.
+- **URL** (starts with `http`) → fetch using the same fallback chain as Phase 1.3: WebFetch first → Playwright stealth browser on 403/JS shell/thin content/**404** (SPAs return 404 HTTP but render correctly in browser) → WebSearch fallback only after Playwright also confirms the page is dead. Only ask the user for an alternative after all three methods fail.
 - **File reference** → read the file(s)
 - **Text explanation** → use as-is
 
