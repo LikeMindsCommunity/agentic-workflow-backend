@@ -50,7 +50,8 @@
       "TodoWrite",
       "WebSearch",
       "WebFetch",
-      "mcp__playwright__playwright_evaluate"
+      "mcp__playwright__playwright_evaluate",
+      "mcp__playwright__playwright_get_visible_html"
     ]
   },
   "enableAllProjectMcpServers": true,
