@@ -6,16 +6,169 @@ Builds a structured markdown knowledge base (KB) from a client's platform artifa
 
 ---
 
-## Setup
+## Quick Start (Claude Code)
 
-### 1. Install dependencies
+The primary way to use this tool is the **`/platform-kb`** skill in Claude Code.
+
+### 1. Open the project in Claude Code
+
+```bash
+cd agentic-workflow-backend
+claude
+```
+
+### 2. Drop your input materials
+
+| Folder | What to put here |
+|---|---|
+| `inputs/sample_artifacts/` | Platform-generated files (JSON, XML, YAML, config files, etc.) |
+| `inputs/docs/` | Documentation in any format (markdown, PDF, Word, Excel, PowerPoint, HTML, images) |
+
+Both folders are optional. You can also pass file paths, URLs, or context directly as arguments.
+
+### 3. Run the skill
+
+```
+/platform-kb
+```
+
+Or with arguments:
+
+```
+/platform-kb Here are Exotel IVR flow JSONs in inputs/sample_artifacts/ and API docs at https://developer.exotel.com/api/nodeflows
+```
+
+That's it. The skill handles everything from there.
+
+---
+
+## What `/platform-kb` Does
+
+The skill runs a self-contained loop inside a single Claude Code session:
+
+```
+Phase 1 — INVENTORY & ANALYSIS
+  Catalog all provided materials (artifacts, docs, URLs, screenshots, transcripts)
+  Auto-detect mode (artifacts+docs, artifacts-only, docs-only, prompt-only)
+  Classify use case (component-flow, api-sdk, artifact-generator, event-driven, etc.)
+  Deep structural analysis of artifacts (fields, enums, ID chains, relationships)
+  Cross-reference across all materials
+  Fetch any provided URLs (WebFetch → Playwright fallback for JS/protected sites)
+
+Phase 2 — DRAFT KB
+  Write the full structured KB markdown file to outputs/
+
+Phase 3 — GAP ANALYSIS
+  Identify up to 5 missing knowledge areas
+  Present gaps grouped by priority: BLOCKING / IMPORTANT / NICE TO HAVE
+
+Phase 4 — ENRICHMENT  (loops back to Phase 3)
+  User provides: a URL, "file", or plain text explanation
+  Rewrite the KB incorporating the new info
+  Loop back to Gap Analysis until ready or user types "done"
+```
+
+### Supported input formats
+
+The skill reads everything natively — no conversion needed:
+
+- **Structured files:** JSON, XML, YAML, HTML
+- **Documents:** PDF, Word (.docx), Excel (.xlsx/.csv), PowerPoint (.pptx), plain text, markdown
+- **Images:** PNG, JPG, GIF, WebP (screenshots, architecture diagrams, flow charts)
+- **Specs:** OpenAPI/Swagger, Postman collections
+- **Other:** Call transcripts, SOW documents, meeting notes
+
+### Use-case classification
+
+The skill auto-detects what kind of platform you're working with:
+
+| Use Case | Signals | Examples |
+|---|---|---|
+| `component-flow` | Nodes, steps, blocks, transitions, visual flows | IVR builders, workflow engines, no-code tools |
+| `api-sdk` | REST/GraphQL endpoints, SDK methods, auth tokens | Twilio, Stripe, Salesforce API |
+| `artifact-generator` | Output files with strict schemas, validation rules | Config generators, template engines |
+| `event-driven` | Webhooks, callbacks, event payloads, triggers | Event buses, notification systems |
+| `data-platform` | Entities, relationships, CRUD, data models | CRMs, databases, analytics platforms |
+| `config-system` | Config hierarchies, feature flags, env-specific settings | Infrastructure platforms, deployment tools |
+
+A platform can match multiple use cases (e.g., an IVR builder is both `component-flow` and `artifact-generator`).
+
+### Responding to gaps
+
+After each gap analysis round you can:
+
+| Input | What happens |
+|---|---|
+| A URL | Agent fetches and reads it (Playwright used if blocked) |
+| `file` | Agent re-reads `inputs/docs/` for anything newly added |
+| Text explanation | Used directly to fill the gaps |
+| `done` | Ends the loop, saves the final KB |
+
+### Web research
+
+When you provide URLs, the skill follows a smart fetch pipeline:
+
+1. **Check for AI-friendly indexes** — `llms-full.txt`, `llms.txt`, `sitemap.xml` at the docs origin
+2. **WebFetch** — try direct fetch first
+3. **Playwright stealth browser** — fallback for JS-rendered sites, 403s, Cloudflare challenges, SPAs that 404 on direct requests
+4. **WebSearch** — last resort if the page is genuinely dead
+
+Playwright MCP is pre-configured in `.mcp.json` and activates automatically when Claude Code starts in this directory.
+
+---
+
+## Input Modes
+
+The skill auto-detects what you provided and adapts accordingly:
+
+| Mode | Inputs available | Agent approach |
+|---|---|---|
+| `artifacts_and_docs` | Artifacts + docs/URLs | Maps every artifact element to docs; writes with authority |
+| `artifacts_only` | Artifacts, no docs | Reverse-engineers structure; liberal "Needs Verification" callouts |
+| `docs_only` | Docs/URLs, no artifacts | Extracts schema from docs; notes no artifact was validated |
+| `prompt_only` | Prompt only | Fetches any URLs in prompt; writes skeleton with gaps if none |
+
+---
+
+## Output
+
+Each run produces versioned `.md` files in `outputs/`:
+
+```
+outputs/
+  <platform>/
+    kb/
+      kb_<platform>_draft.md         <- initial draft
+      kb_<platform>_r1.md            <- after round 1 enrichment
+      kb_<platform>_r2.md            <- after round 2 enrichment
+      kb_<platform>_FINAL.md         <- final deliverable
+```
+
+---
+
+## Related Skills
+
+The `/platform-kb` skill is the all-in-one workflow. These sub-skills exist for advanced use but are normally called internally:
+
+| Skill | Purpose |
+|---|---|
+| `/build-kb` | Orchestrator — older version, drives the same pipeline loop |
+| `/build-kb-draft` | Draft sub-agent only |
+| `/build-kb-interrogate` | Gap analysis sub-agent only (read-only) |
+| `/build-kb-enrich` | Enrichment sub-agent only |
+
+---
+
+## Python SDK (Alternative)
+
+The same pipeline is also available as a Python SDK implementation for embedding in larger pipelines or when you need programmatic control.
+
+### Setup
 
 ```bash
 python -m venv venv && source venv/bin/activate
 pip install -r requirements.txt
 ```
-
-### 2. Configure credentials
 
 Copy `.env.example` to `.env` and fill in your credentials:
 
@@ -35,7 +188,7 @@ ANTHROPIC_FOUNDRY_API_KEY=<your-foundry-key>
 ANTHROPIC_FOUNDRY_RESOURCE=<your-foundry-resource>
 ```
 
-### 3. Configure your task
+### Configure your task
 
 Edit `inputs/input_config.yaml`:
 
@@ -46,100 +199,48 @@ prompt: |
   Documentation: https://developer.exotel.com/api/nodeflows
 ```
 
-Write naturally — include the platform name, what you want to automate, and any documentation URLs. The agent infers the rest.
-
-### 4. Add optional inputs
-
-| Folder | What to put here |
-|---|---|
-| `inputs/sample_artifacts/` | Sample/reference output files (JSON, XML, config files) |
-| `inputs/docs/` | Local documentation (markdown, PDF, YAML, HTML) |
-
-Both folders are optional. The agent adapts based on what's present. Files can be added mid-run.
-
----
-
-## Running
-
-### Python SDK
+### Run
 
 ```bash
 python main.py
 ```
 
-### Claude Code
+### How the SDK works
 
-Open the project in Claude Code and run:
-
-```
-/build-kb
-```
-
-Playwright MCP (for accessing bot-protected docs) is pre-configured in `.mcp.json` and activates automatically when Claude Code starts in this directory.
-
----
-
-## How It Works
-
-The pipeline runs three phases in a loop:
+Python owns the loop. Three agents are called in sequence via `claude_agent_sdk`. Each is a single `query()` call with its own system prompt and tool set.
 
 ```
-Phase 1 — DRAFT
-  Read input_config.yaml + detect input mode
-  Read all artifacts and local docs
-  Fetch any URLs from the prompt (Playwright fallback for 403-protected sites)
-  Write the initial KB markdown file
-
-Phase 2 — GAP ANALYSIS
-  Read the current KB
-  Identify up to 5 knowledge areas still missing
-  Present gaps grouped by priority: BLOCKING / IMPORTANT / NICE TO HAVE
-
-Phase 3 — ENRICHMENT  (loops back to Phase 2)
-  User provides: a URL, "file", or plain text explanation
-  Rewrite the KB incorporating the new info
-  Loop back to Gap Analysis until ready or user types "done"
+orchestrator.py
+  | run_draft_agent()          -> writes KB to outputs/
+  | run_interrogator_agent()   -> returns JSON gap report
+  | display gaps (CLI)
+  <- user input
+  | run_enrichment_agent()     -> rewrites KB
+  | run_interrogator_agent()   -> re-reviews
+  (repeat until ready or user types "done")
+  | copy latest -> kb_FINAL.md
 ```
 
-### Responding to gaps
+The Interrogator returns structured JSON which Python parses to drive loop control:
 
-After each gap analysis round you can:
-
-| Input | What happens |
-|---|---|
-| A URL | Agent fetches and reads it (Playwright used if blocked) |
-| `file` | Agent re-reads `inputs/docs/` for anything newly added |
-| Text explanation | Used directly to fill the gaps |
-| `done` | Ends the loop, saves the final KB |
-
-One response per round — URLs, files, and text can all be combined in one message.
-
----
-
-## Input Modes
-
-The agent auto-detects what you provided and adapts accordingly:
-
-| Mode | Inputs available | Agent approach |
-|---|---|---|
-| `artifacts_and_docs` | Artifacts + docs/URLs | Maps every artifact element to docs; writes with authority |
-| `artifacts_only` | Artifacts, no docs | Reverse-engineers structure; liberal "Needs Verification" callouts |
-| `docs_only` | Docs/URLs, no artifacts | Extracts schema from docs; notes no artifact was validated |
-| `prompt_only` | Prompt only | Fetches any URLs in prompt; writes skeleton with gaps if none |
-
----
-
-## Output
-
-Each run produces versioned `.md` files in `outputs/`:
-
+```json
+{
+  "summary": "...",
+  "ready_for_generation": false,
+  "areas": [
+    {
+      "id": "a1",
+      "priority": "blocking",
+      "title": "...",
+      "what_we_have": "...",
+      "what_we_need": "...",
+      "suggested_sources": "..."
+    }
+  ]
+}
 ```
-outputs/
-  kb_<platform>_draft.md         ← initial draft
-  kb_<platform>_r1.md            ← after round 1 enrichment
-  kb_<platform>_r2.md            ← after round 2 enrichment
-  kb_<platform>_FINAL.md         ← final deliverable
-```
+
+**Best for:** Reliable runs, token/timing visibility, embedding in a larger pipeline.
 
 ---
 
@@ -147,8 +248,8 @@ outputs/
 
 ```
 agentic-workflow-backend/
-  main.py                        # thin entrypoint (anyio.run)
-  orchestrator.py                # main loop: draft → gap analysis → enrich
+  main.py                        # Python SDK entrypoint (anyio.run)
+  orchestrator.py                # Python loop: draft -> gap analysis -> enrich
   config.py                      # paths, model, MCP server config, env vars
 
   agents/
@@ -176,7 +277,8 @@ agentic-workflow-backend/
   .claude/
     settings.json                # Claude Code model settings
     commands/
-      build-kb.md                # Orchestrator — drives the full pipeline loop
+      platform-kb.md             # Primary skill — full KB generation workflow
+      build-kb.md                # Orchestrator — drives the pipeline loop
       build-kb-draft.md          # Draft sub-agent instructions
       build-kb-interrogate.md    # Interrogator sub-agent instructions
       build-kb-enrich.md         # Enrichment sub-agent instructions
@@ -184,81 +286,15 @@ agentic-workflow-backend/
 
 ---
 
-## Two Implementations
+## Comparison
 
-The same pipeline runs in two forms. Both produce identical KB output using the same structure, writing rules, and scope boundaries.
-
-### Claude Code (`/build-kb`)
-
-**Entry point:** `/build-kb` in Claude Code
-**Files:** `.claude/commands/build-kb*.md`
-
-The orchestrator (`build-kb.md`) spawns focused sub-agents for each phase using the Agent tool. Each sub-agent reads its own command file and runs in isolation:
-
-| Sub-agent | Command file | Tools |
+| | `/platform-kb` (Claude Code) | Python SDK |
 |---|---|---|
-| Draft | `build-kb-draft.md` | Read, Glob, Write, WebFetch, WebSearch, Playwright MCP |
-| Interrogator | `build-kb-interrogate.md` | Read, Grep (read-only) |
-| Enrichment | `build-kb-enrich.md` | Read, Glob, Write, WebFetch, WebSearch |
-
-The orchestrator parses each sub-agent's output, displays results, collects user input, and drives the loop.
-
-**Playwright MCP** is registered via `.mcp.json` and available to sub-agents for accessing bot-protected documentation sites.
-
-**Best for:** Interactive use, no Python setup needed.
-
----
-
-### Python SDK (`python main.py`)
-
-**Entry point:** `python main.py` → `orchestrator.py`
-**Files:** `orchestrator.py`, `agents/*.py`, `agents/prompts.py`
-
-Python owns the loop. Three agents are called in sequence via `claude_agent_sdk`. Each is a single `query()` call with its own system prompt and tool set.
-
-```
-orchestrator.py
-  ↓ run_draft_agent()          → writes KB to outputs/
-  ↓ run_interrogator_agent()   → returns JSON gap report
-  ↓ display gaps (CLI)
-  ← user input
-  ↓ run_enrichment_agent()     → rewrites KB
-  ↓ run_interrogator_agent()   → re-reviews
-  (repeat until ready or user types "done")
-  ↓ copy latest → kb_FINAL.md
-```
-
-The Interrogator returns structured JSON which Python parses to drive loop control:
-
-```json
-{
-  "summary": "...",
-  "ready_for_generation": false,
-  "areas": [
-    {
-      "id": "a1",
-      "priority": "blocking",
-      "title": "...",
-      "what_we_have": "...",
-      "what_we_need": "...",
-      "suggested_sources": "..."
-    }
-  ]
-}
-```
-
-**Best for:** Reliable runs, token/timing visibility, embedding in a larger pipeline.
-
----
-
-### Comparison
-
-| | Claude Code | Python SDK |
-|---|---|---|
-| **Entry point** | `/build-kb` | `python main.py` |
-| **Agent model** | Orchestrator + 3 sub-agents | 3 dedicated agent functions |
-| **Loop control** | Orchestrator agent | Python `while True` |
-| **Playwright MCP** | Available (via `.mcp.json`) | Available (via `config.py`) |
-| **Gap output** | Prose formatted by orchestrator | JSON parsed by Python |
+| **Entry point** | `/platform-kb` | `python main.py` |
+| **How it runs** | Single self-contained Claude session | Python orchestrator + 3 agent calls |
+| **Input formats** | All (PDF, DOCX, XLSX, PPTX, images, etc.) | Text-based formats |
+| **Web research** | WebFetch + Playwright + WebSearch | WebFetch + Playwright |
+| **Loop control** | Skill drives the loop internally | Python `while True` |
+| **Gap output** | Prose presented inline | JSON parsed by Python |
 | **Observability** | Chat transcript | Token counts, timing, tool logs |
 | **Setup** | Claude Code only | Python + virtualenv + `.env` |
