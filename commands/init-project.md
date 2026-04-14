@@ -125,14 +125,34 @@ Status values: PENDING_REVIEW | APPROVED | REJECTED
 |--------|----------|------------|----------------------|---------------|----------|------------|-------------|---------------|
 ```
 
-## Stage 11 — Update .gitignore
+If `comparison_sheet.md` already exists, do NOT overwrite it.
+If it does not exist, create it at the repo root:
+
+```
+# Comparison Sheet
+
+Status values: PENDING_REVIEW | APPROVED | REJECTED
+
+| Comp ID | Reported | Category | Location (Generated) | Location (Expected) | Expected Content | Actual Content | KB Rule Violated | Risk | Source File | Should Fix | Reviewed By | Linked Bug ID |
+|---------|----------|----------|---------------------|---------------------|-----------------|----------------|-----------------|------|-------------|------------|-------------|---------------|
+```
+
+## Stage 11 — Create comparison input folders
+Create the following directories if they do not already exist:
+```
+inputs/compare/generated/
+inputs/compare/expected/
+```
+These are used by `/find-bugs` to store files for comparison.
+
+## Stage 12 — Update .gitignore
 Read `.gitignore`. If `.claude/worktrees/` is not already listed, append:
 ```
 # Claude Code worktrees (transient, auto-generated)
 .claude/worktrees/
 ```
 
-## Stage 12 — Print Completion Summary
+## Stage 13 — Print Completion Summary
 Print exactly:
 
 ```
@@ -142,6 +162,9 @@ Generated:
   → CLAUDE.md ([N] sections)
   → approval_sheet.md [created / already existed — skipped]
   → bug_backlog.md [created / already existed — skipped]
+  → comparison_sheet.md [created / already existed — skipped]
+  → inputs/compare/generated/ [created / already existed]
+  → inputs/compare/expected/ [created / already existed]
   → .gitignore updated [or: already had .claude/worktrees/]
 
 Next steps:
@@ -149,4 +172,5 @@ Next steps:
   2. Fill in the ## Constraints section with files/APIs that should never be modified
   3. For vague bugs: /triage-bug <vague description> → review bug_backlog.md → /process-backlog
   4. For clear bugs:  /fix-bug <specific description> → review approval_sheet.md → /apply-fixes
+  5. For file comparison: /find-bugs → review comparison_sheet.md → /process-comparison → /apply-fixes
 ```
