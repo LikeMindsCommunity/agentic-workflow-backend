@@ -1,3 +1,54 @@
+# Claude Code Bug-Fix System
+
+Automated bug diagnosis and fix tracking using Claude Code.
+Works with any project, any tech stack.
+
+## Install
+
+Clone and run:
+
+    git clone https://github.com/LikeMindsCommunity/claude-skill-auto-bugfix.git
+    cd claude-skill-auto-bugfix
+    ./install.sh
+
+## Setup
+
+Add the following to your project's `.gitignore` to keep generated files out of version control:
+
+    # Claude Code worktrees (transient, auto-generated)
+    .claude/*
+
+    # Claude bug-fix mechanism (local only, not for version control)
+    bug_backlog.md
+    approval_sheet.md
+    CLAUDE.md
+
+## Usage
+
+In any project:
+
+    cd /path/to/your-project
+    claude
+    > /init-project                # one-time setup, generates CLAUDE.md, bug_backlog.md and approval_sheet.md
+    > /triage-bug <desc>           # enrich a vague bug report and add to bug_backlog.md
+    > /process-backlog             # move approved backlog bugs into approval_sheet.md
+    > /fix-bug <bug desc>          # diagnose a single bug and propose fix
+    > /batch-fix                   # process multiple bugs with interaction analysis
+    > /review-approval-sheet       # summarize approval sheet status
+    > /apply-fixes                 # apply all approved fixes and create a git commit
+
+## Commands
+
+| Command | What it does |
+|---------|-------------|
+| `/init-project` | Scans repo, generates `CLAUDE.md` and `approval_sheet.md` |
+| `/triage-bug` | Enriches a vague bug report and adds it to `bug_backlog.md` |
+| `/process-backlog` | Moves all APPROVED bugs from backlog into approval sheet |
+| `/fix-bug` | Diagnoses a bug, proposes fix, writes to approval sheet |
+| `/batch-fix` | Processes multiple bugs with interaction analysis |
+| `/review-approval-sheet` | Summarizes current approval sheet status |
+| `/apply-fixes` | Applies all APPROVED fixes and creates a git commit |
+
 # LikeMinds Layer 1 — Platform Knowledge Base Builder
 
 Builds a structured markdown knowledge base (KB) from a client's platform artifacts and documentation. The KB captures everything a downstream system needs to automatically generate valid configuration files, integrations, or workflows for that platform from natural language.
