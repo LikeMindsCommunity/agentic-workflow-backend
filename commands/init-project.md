@@ -146,10 +146,20 @@ inputs/compare/expected/
 These are used by `/find-bugs` to store files for comparison.
 
 ## Stage 12 — Update .gitignore
-Read `.gitignore`. If `.claude/worktrees/` is not already listed, append:
+Read `.gitignore`. For each of the following entries, check if it is already present. If NOT present, append it. Do NOT duplicate entries that already exist.
+
 ```
 # Claude Code worktrees (transient, auto-generated)
-.claude/worktrees/
+.claude/*
+
+# Claude bug-fix mechanism (local only, not for version control)
+bug_backlog.md
+approval_sheet.md
+comparison_sheet.md
+CLAUDE.md
+
+# Comparison inputs (user-specific, not for version control)
+inputs/*
 ```
 
 ## Stage 13 — Print Completion Summary
