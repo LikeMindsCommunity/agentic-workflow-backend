@@ -247,7 +247,8 @@ Based on your use-case classification(s) from Phase 1.2, select which sections f
 - **00-overview.md** — Domain Context (Core Section A)
 - **NN-patterns.md** — Common Patterns & Templates (Core Section B)
 - **NN-constraints.md** — Constraints & Validation Rules (Core Section C)
-- **NN-gap-log.md** — Known Gaps (Core Section D)
+- **NN-input-checklist.md** — Input Readiness Checklist (Core Section D)
+- **NN-gap-log.md** — Known Gaps (Core Section E)
 
 Then add sections from the catalog based on your use-case classification(s). Use the "Use when" guidance on each catalog entry to decide.
 
@@ -264,6 +265,7 @@ Creating KB structure:
     ...
     NN-patterns.md              — Common patterns and templates
     NN-constraints.md           — All numbered rules and validation requirements
+    NN-input-checklist.md       — Per-instance fields downstream agents must collect from input
     NN-gap-log.md               — Remaining uncertainties and assumptions
 ```
 
@@ -283,7 +285,7 @@ Write the complete knowledge base using the extraction guidance from the **KB Se
 - Rules and constraints must state both the rule AND the consequence of violating it. Include a CORRECT and a WRONG example for each.
 - Common Patterns must be complete, ready-to-use — no placeholders.
 - Number all constraints with stable IDs (C1, C2, ...) for downstream agent reference.
-- **Pre-save checklist**: Before saving, run through your inventory one final time. For each item, confirm a section exists. Confirm every completeness question from 2.4 and 2.5 appears in Known Gaps.
+- **Pre-save checklist**: Before saving, run through your inventory one final time. For each item, confirm a section exists. Confirm every completeness question from 2.4 and 2.5 appears in Known Gaps. Confirm every per-instance variable referenced in patterns/use-case sections appears in the Input Readiness Checklist (CORE-D) with a tier classification — placeholders without a checklist entry are forbidden.
 
 ### Mode-specific behaviour
 
@@ -482,7 +484,52 @@ Constraint categories to look for (include all that apply to the platform):
 
 For each constraint: the rule, the consequence of violating it, a CORRECT example, a WRONG example.
 
-#### CORE-D: Known Gaps (→ NN-gap-log.md)
+#### CORE-D: Input Readiness Checklist (→ NN-input-checklist.md)
+
+**Always included.** This is the contract the KB exposes to **downstream agents** (document generators, automation builders, code generators, etc.). It answers the question: "When a downstream agent receives a per-instance input (a meeting note, a request payload, a config draft, a user prompt), what fields must be present in that input before the agent can safely do its job — and which fields can the KB safely default?"
+
+This file exists so downstream agents can run a hard-gate input audit BEFORE doing any work, instead of silently substituting KB defaults for missing input data and producing fabricated output.
+
+**This section is fully domain-agnostic.** A "field" can be: a parameter to extract from a meeting note, a property required in a config artifact, a runtime argument expected by an API, an answer to a discovery question, a piece of branding data, a routing rule — anything the downstream agent needs per instance and cannot reliably invent.
+
+**How to derive the checklist (do this exhaustively):**
+
+1. **Collect every per-instance variable** the KB references. Walk through:
+   - **Patterns (CORE-B)**: every `{{placeholder}}`, every "depends on the requirement" note, every variation switch
+   - **Use-case sections**: every attribute marked Required, every parameter without a default, every field whose value comes from "the user", "the client", "the request", or similar external source
+   - **Constraints (CORE-C)**: every constraint that references an input value (e.g., "must match the client name", "must equal the requested ID")
+   - **Sample artifacts**: every value that varied between samples — if it changes per instance, it is a per-instance field
+
+2. **For each field, classify it** into exactly one of three buckets. The exact label set is up to the KB writer (e.g., BLOCKING/IMPORTANT/OPTIONAL, or REQUIRED/RECOMMENDED/NICE-TO-HAVE), but every field must fall into exactly one tier:
+   - **Tier 1 (downstream MUST halt if missing)**: there is no sane default; substituting KB boilerplate would produce fabricated output. Examples: the entity being acted on, the destination/target system, any value referenced in multiple places that must agree.
+   - **Tier 2 (downstream should warn but may proceed if user authorizes)**: a weak default exists or the field can be deferred to a later iteration. Examples: timeline, optional features, secondary contacts.
+   - **Tier 3 (safe to default)**: the KB has a strong, well-documented default and proceeding without the input value will not produce fabricated content. Examples: file format conventions, standard boilerplate language.
+
+3. **For each field, write an entry** with this structure:
+
+   ```
+   ### <field-name>
+   - **Tier**: <Tier 1 / Tier 2 / Tier 3 — using whatever label set the KB uses>
+   - **Why required**: <what breaks downstream if this is missing — be specific>
+   - **Where it appears**: <which KB sections / patterns / constraints reference this field>
+   - **What to extract from input**: <how a downstream agent recognizes this field in raw input — keywords, signals, typical phrasing>
+   - **Acceptable forms**: <enumerate valid value shapes if relevant>
+   - **Default (if Tier 3)**: <the exact default value the KB authorizes>
+   - **Example PRESENT**: <a short snippet showing this field clearly satisfied in a hypothetical input>
+   - **Example MISSING**: <a snippet showing the gap — useful for downstream pattern matching>
+   ```
+
+4. **Group fields by category** (e.g., Identity, Scope, Routing, Integration, Branding, Compliance) — pick whatever categories make sense for the platform; do not impose a fixed taxonomy.
+
+5. **Cross-reference with CORE-B patterns**: every `{{placeholder}}` in a pattern template MUST appear as a field in the checklist. If a placeholder has no checklist entry, either add the entry or remove the placeholder.
+
+6. **Front-matter the file** with a one-paragraph statement of how downstream agents should consume this checklist:
+
+   > Downstream agents that consume this KB MUST run an input-readiness audit before generating any output. For every Tier 1 field listed below, verify the field is unambiguously PRESENT in the per-instance input. If ANY Tier 1 field is missing, ambiguous, or deferred, the downstream agent must HALT and ask the user — it must NOT substitute KB defaults, use placeholders, or generate "best guess" content. Tier 2 fields should warn but may proceed with explicit user authorization. Tier 3 fields may use the documented default silently.
+
+The checklist should err on the side of being **too strict** — false halts are easy to override; fabricated output is not.
+
+#### CORE-E: Known Gaps (→ NN-gap-log.md)
 
 **Always included.** This is the last file and feeds back into Phase 4.
 
