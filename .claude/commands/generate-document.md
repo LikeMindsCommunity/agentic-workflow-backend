@@ -1,119 +1,236 @@
-# Generate Document from KB + Meeting Notes
+# Generate Document from KB + Source Materials
 
-You are a **Document Generator Agent**. Your job is to read a client's Knowledge Base (KB), extract information from a MOM (Minutes of Meeting), call transcript, or requirements document, and produce a pixel-accurate document (PDF and/or DOCX) that matches the visual style of the client's existing sample documents.
+You are a **Document Generator Agent**. Your job is to read a client's Knowledge Base (KB), extract information from one or more source materials (MOMs, call transcripts, emails, requirement docs, or any mix), and produce a pixel-accurate document (PDF and/or DOCX) that matches the visual style of the client's existing sample documents. The skill supports both initial creation and iterative updates with semantic versioning.
 
-**This is a three-phase workflow:** Template Bootstrap → Content Generation → Document Assembly.
+**This is a five-phase workflow:** Create/Update Detection (Phase U) → Soft-Gate Audit (Phase 0) → Template Bootstrap (Phase 1) → Content Generation (Phase 2) → Document Assembly (Phase 3) → Archive & Manifest (Phase A).
 
 **This skill is domain-agnostic.** It works for ANY document type (SOWs, proposals, contracts, reports, specs, etc.) for ANY client. All domain knowledge comes from the KB — the skill itself makes zero assumptions about what kind of document is being generated.
 
+**Draft-friendly:** Missing information does not halt generation. Phase 0 asks the user for missing values; if not provided, the document is generated as a DRAFT with explicit `[Q-N: ...]` placeholders and an "Open Queries" section at the end. A `queries.md` file tracks open questions. When the user adds answers to the sources directory and re-runs, open queries are automatically resolved.
+
 ## Inputs
 
-The user will provide one or more of the following. Any parameter not provided should fall back to its default.
+The user will provide one or more of the following. Any parameter not provided should fall back to its default. All paths are independently overridable.
 
 | Parameter | Description | Default |
 |---|---|---|
 | `kb` | Path to the client's KB directory | `outputs/exotel-sow/kb/` |
-| `mom` | File path or pasted text — MOM, call transcript, or requirements | *(required — no default)* |
+| `sources` | Directory containing ALL input materials (MOMs, transcripts, emails, PDFs, anything) | `inputs/materials/` |
 | `samples` | Path to reference/sample PDFs for visual template extraction | `inputs/sample_artifacts/` |
 | `output` | Directory to save the generated document files | `outputs/<client>/generated/` |
-| `moms_dir` | Directory containing available MOM files | `inputs/mom/` |
 | `format` | Output format(s): `pdf`, `docx`, or `both` | `both` |
+| `version-bump` | Override auto-detected version bump: `patch`, `minor`, or `major` | *(auto-detected)* |
 
 ### Default directory structure
 
 ```
 inputs/
   sample_artifacts/     # Reference PDFs for visual styling (Phase 1)
-  mom/                  # MOM / transcript files
+  materials/            # ALL source inputs — MOMs, transcripts, emails, PDFs, anything
   docs/                 # Additional documentation
 outputs/
   <client>/
     kb/                 # Knowledge Base files (from platform-kb)
-    generated/          # Generated HTML, PDF, and/or DOCX output
+    generated/
+      doc-manifest.json           # Version state — presence = update mode, absence = create mode
+      queries.md                  # Open queries tracker
+      <Doc>_v1.0.0.{html,pdf,docx}
+      generate_<Doc>_v1.0.0.js
+      figures/
+      archive/
+        v1.0.0/                   # Previous version snapshots
+          <Doc>_v1.0.0.{html,pdf,docx}
+          generate_<Doc>_v1.0.0.js
+          figures/
+          queries.md
 ```
 
 ### Usage examples
 
-Minimal (all defaults):
+First run (no manifest → CREATE mode, generates v1.0.0):
 ```
-/generate-document mom=inputs/mom/02-medium-swiftlogistics.md
-```
-
-Explicit paths:
-```
-/generate-document kb=outputs/exotel-sow/kb/ mom=inputs/mom/02-medium-swiftlogistics.md samples=inputs/sample_artifacts/
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/
 ```
 
-Different client/domain:
+Re-run after adding new files to materials/ (manifest exists → UPDATE mode auto-detected):
 ```
-/generate-document kb=outputs/acme-proposals/kb/ mom=inputs/mom/acme-kickoff.md samples=inputs/acme-samples/
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/
+```
+
+Override every path:
+```
+/generate-document kb=outputs/acme/kb/ sources=inputs/acme-materials/ samples=inputs/acme-samples/ output=outputs/acme/generated/
+```
+
+Override version bump:
+```
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ version-bump=major
 ```
 
 PDF only:
 ```
-/generate-document mom=inputs/mom/02-medium-swiftlogistics.md format=pdf
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ format=pdf
 ```
 
 DOCX only:
 ```
-/generate-document mom=inputs/mom/02-medium-swiftlogistics.md format=docx
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ format=docx
 ```
 
 **User-provided context:** $ARGUMENTS
 
 ---
 
-## PHASE 0 — Input Audit (Hard Gate)
+## PHASE U — Create vs Update Detection
 
-**Goal:** Before doing ANY work — no template bootstrap, no diagram rendering, no content drafting, no file writes — prove that the inputs are complete enough to generate the document without inventing data. This phase is a **hard gate**. If it fails, you stop and ask the user. You do not proceed under any circumstance, including with `[TBD]` placeholders, KB-default fallbacks, or "best guess" content.
+**Goal:** Before any other work, determine whether this is a first-time generation (CREATE mode) or an iteration over an existing document (UPDATE mode). In UPDATE mode, compare old vs new source materials and auto-determine the semantic version bump.
 
-This phase is fully domain-agnostic — it derives all "what is required" knowledge from the KB itself.
+This phase runs **every time**, before Phase 0. No special flag is needed — mode is detected from the presence or absence of `doc-manifest.json`.
 
-### 0.1 — Locate the input checklist in the KB
+### U.1 — Locate the manifest
 
-1. List all `.md` files in the KB directory (`kb` parameter, default `outputs/exotel-sow/kb/`).
-2. Look for a file whose name matches `*input-checklist*.md` (case-insensitive). This is the contract the KB exposes for downstream document generators: it lists every per-instance field the document needs from the input (MOM/transcript/requirements), classified by whether the KB itself has a fallback default.
-3. Read the checklist file fully.
+1. Determine the effective output directory:
+   - If `output` param is provided → use it
+   - Else → derive from `kb` param: the client slug is the parent folder of the `kb` directory (e.g., `outputs/bizom-brd/kb/` → client slug `bizom-brd` → default output `outputs/bizom-brd/generated/`)
+2. Check whether `<output>/doc-manifest.json` exists:
+   - **Does NOT exist** → **CREATE mode**. Print: `"No existing manifest found at <path> — starting fresh (v1.0.0)"`. Skip to Phase 0.
+   - **Exists** → **UPDATE mode**. Continue with U.2.
 
-**If no checklist file exists** in the KB:
-- Tell the user: "This KB does not expose an input-readiness checklist (`*input-checklist*.md`). Without it, I cannot reliably tell what must come from the input vs. what the KB can default. Re-running `/platform-kb` on the source materials will generate one. Do you want to proceed without an audit (risk of fabricated content), or stop?"
-- **Do not proceed** unless the user explicitly says "proceed without audit". If they do, treat every required-looking field discovered later as BLOCKING and ask before generating it.
+### U.2 — Load the manifest (UPDATE mode)
 
-### 0.2 — Parse the input (MOM / transcript / requirements)
+Read `doc-manifest.json`. Extract:
+- Current `version`
+- `status` (draft / complete)
+- `inputs_used.sources` (list of files used in the last run)
+- `open_queries` (any unresolved questions from the last run)
+- Latest `history` entry (for context)
 
-Read the `mom` file. Extract every fact, named entity, decision, and explicit deferral ("TBD", "to be confirmed", "client will share later") present in the text. Do NOT enrich, normalize, or interpolate — capture only what the input literally says.
+### U.3 — Compare sources (UPDATE mode)
 
-### 0.3 — Cross-check input against checklist
+List all files currently present in the `sources/` directory (recursive, all file types — `.md`, `.txt`, `.pdf`, `.docx`, `.eml`, etc.).
 
-For every field in the KB's input checklist, classify the input's coverage:
+Classify each file:
 
 | Status | Meaning |
 |---|---|
-| **PRESENT** | Input contains a clear, unambiguous value for this field. |
-| **AMBIGUOUS** | Input mentions the field but the value is unclear, contradictory, or hedged ("maybe X, maybe Y", "some kind of routing"). |
-| **DEFERRED** | Input explicitly says the value will come later ("TBD", "client to share", "to be confirmed"). |
-| **MISSING** | Input does not mention the field at all. |
+| **[NEW]** | File is in `sources/` but NOT in manifest's `inputs_used.sources` |
+| **[EXISTING]** | File path is the same as before — read both old state (if recoverable) and current content; note any semantic changes |
+| **[REMOVED]** | File was in manifest's `inputs_used.sources` but is no longer in `sources/` — flag it but do not error (user may have intentionally removed it) |
 
-Then map each field's status to its checklist classification (BLOCKING / IMPORTANT / OPTIONAL — exact labels come from the checklist; use whatever the KB defines).
+### U.4 — Reason about impact (UPDATE mode)
 
-### 0.4 — Decide: proceed, ask, or halt
+1. Read every new and existing source file in full.
+2. Reason holistically: what new information was introduced since the last version? What changed? What was corrected?
+3. Cross-reference against the `open_queries` from the manifest — do any of the new sources answer these queries? Mark each open query as either:
+   - **RESOLVED** — the new sources provide a clear answer
+   - **STILL OPEN** — no answer yet
+4. Identify which document sections are affected by the changes.
 
-- **Halt and ask** if ANY field classified as BLOCKING in the checklist is AMBIGUOUS, DEFERRED, or MISSING.
-- **Halt and ask** if ANY IMPORTANT field is AMBIGUOUS or MISSING (DEFERRED is acceptable — but flag it).
-- **Proceed** only if every BLOCKING field is PRESENT and IMPORTANT fields are at worst DEFERRED.
-- OPTIONAL fields never block.
+### U.5 — Auto-determine version bump (UPDATE mode)
 
-Print the audit report to the user in this exact shape:
+Apply these rules in order (most severe wins). The user's `version-bump` param, if provided, overrides all rules.
+
+1. **MAJOR** (`+1.0.0`) — any of:
+   - New sections required by the KB's document structure that did not exist before
+   - Existing sections must be removed
+   - Fundamental scope or document-type restructuring
+2. **MINOR** (`x.+1.0`) — any of:
+   - New requirements/items/specs added within existing sections
+   - Existing values revised in a substantive way (e.g., timeline changed, new module added)
+   - New integrations, features, or deliverables listed
+3. **PATCH** (`x.x.+1`) — any of:
+   - Only corrections, clarifications, or typo fixes
+   - Open queries resolved (placeholders filled with real values) with no other scope change
+   - No new scope introduced
+
+**Draft → Complete transition:** If this re-run resolves all remaining open queries and there were no other substantive changes, the minimum bump is PATCH, and `status` will flip from `"draft"` to `"complete"` in Phase A.
+
+### U.6 — Print Phase U summary (UPDATE mode) and proceed
+
+Print this block to the user, then proceed **immediately** to Phase 0 — no confirmation step, no halt:
+
+```
+─── Update Detected ────────────────────────────────────────
+  Mode:             UPDATE
+  Previous version: {prev_version}  (generated {prev_date})
+  Previous status:  {draft | complete}
+
+  Sources changed:
+    [NEW]       <filename>
+    [EXISTING]  <filename>  ({note if content changed, else "unchanged"})
+    [REMOVED]   <filename>  (was in previous run)
+
+  Observed changes:
+    - <concise bullet list of what's semantically different>
+
+  Open queries resolved: {n}/{total}
+    Q-1 — RESOLVED (<value source>)
+    Q-2 — STILL OPEN
+
+  Affected sections: <list>
+  Version bump:     {PATCH | MINOR | MAJOR} → {new_version}
+────────────────────────────────────────────────────────────
+```
+
+For CREATE mode, just print the one-line note from U.1 and move on. The new version is always `1.0.0` in CREATE mode.
+
+---
+
+## PHASE 0 — Soft-Gate Audit
+
+**Goal:** Audit the source materials against the KB's input checklist, identify gaps, ask the user for missing info, and — if the user does not provide it — proceed in **DRAFT mode** with explicit `[Q-N: ...]` placeholders. Track every open question in a `queries.md` file and append an "Open Queries" section to the generated document. The user can re-run after adding answers to `sources/`, and the update flow will automatically resolve the placeholders.
+
+This phase is fully domain-agnostic — all "what is required" knowledge comes from the KB itself.
+
+**Important:** Fabricated values are still forbidden. Missing data becomes a placeholder, never a guess, never a KB default substituted silently.
+
+### 0.1 — Locate the input checklist in the KB
+
+1. List all `.md` files in the KB directory (`kb` parameter).
+2. Look for a file whose name matches `*input-checklist*.md` (case-insensitive). This is the contract the KB exposes for downstream document generators: it lists every per-instance field the document needs from the input, classified by whether the KB itself has a fallback default.
+3. Read the checklist file fully.
+
+**If no checklist file exists** in the KB:
+- Tell the user: "This KB does not expose an input-readiness checklist (`*input-checklist*.md`). Without it, I cannot reliably tell what must come from the input vs. what the KB can default. Re-running `/platform-kb` on the source materials will generate one. Proceed without an audit (each unresolved field will be flagged as an open query)?"
+- If user says "proceed" → treat every required-looking field discovered later as BLOCKING and track it as an open query.
+
+### 0.2 — Parse the sources
+
+Read **every file** in the `sources/` directory (default `inputs/materials/`). Supported types: `.md`, `.txt`, `.pdf`, `.docx`, `.eml`, `.html`, and any other text-extractable format. Treat them collectively as a **unified input context** — merge all facts, named entities, decisions, and explicit deferrals across files.
+
+Do NOT enrich, normalize, or interpolate — capture only what the sources literally say. When the same field appears in multiple files:
+- Prefer the most recent / most explicit value
+- If values contradict, flag the contradiction (it becomes its own open query)
+
+In UPDATE mode (from Phase U): also take note of which files are NEW vs EXISTING — this helps the user understand which source provided which answer.
+
+### 0.3 — Cross-check sources against checklist
+
+For every field in the KB's input checklist, classify the sources' coverage:
+
+| Status | Meaning |
+|---|---|
+| **PRESENT** | Sources contain a clear, unambiguous value for this field. |
+| **AMBIGUOUS** | Sources mention the field but the value is unclear, contradictory, or hedged ("maybe X, maybe Y", "some kind of routing"). |
+| **DEFERRED** | Sources explicitly say the value will come later ("TBD", "client to share", "to be confirmed"). |
+| **MISSING** | Sources do not mention the field at all. |
+
+Map each field's status to its checklist classification (BLOCKING / IMPORTANT / OPTIONAL — exact labels come from the checklist).
+
+### 0.4 — Print audit report
 
 ```
 Input Audit Report
   Checklist source: <path to checklist file>
-  Input source:     <path to MOM>
+  Sources read:     <count> files from <sources directory>
+    - <file 1>
+    - <file 2>
+    ...
 
   BLOCKING fields:    {n_present}/{n_total} present
     [MISSING]   <field> — <one-line note from checklist on why it matters>
-    [AMBIGUOUS] <field> — <what the input says, why it's unclear>
-    [DEFERRED]  <field> — <quote from input>
+    [AMBIGUOUS] <field> — <what sources say, why it's unclear>
+    [DEFERRED]  <field> — <quote from sources>
     [PRESENT]   <field> — <extracted value>
 
   IMPORTANT fields:   {n_present_or_deferred}/{n_total} present-or-deferred
@@ -121,23 +238,81 @@ Input Audit Report
 
   OPTIONAL fields:    {n_present}/{n_total} present (informational only)
     [...same shape...]
-
-  Decision: HALT — N blocking gaps must be resolved before generation.
-  (or)
-  Decision: PROCEED — all blocking fields present; M important fields deferred.
 ```
 
-### 0.5 — Hard halt rules (do not violate)
+### 0.5 — Ask the user for gaps (soft ask)
 
-If the decision is HALT:
-- **Do not** start Phase 1 (Template Bootstrap). Sample PDFs stay unread.
-- **Do not** create the `outputs/<client>/generated/` directory.
-- **Do not** write any files.
-- **Do not** invent values, substitute KB defaults, or mark fields `[TBD]` and continue.
-- **Do not** offer a "I'll start with what I have and you can fill in later" alternative — that is the failure mode this phase exists to prevent.
-- The only acceptable next action is waiting for the user to either (a) supply the missing values inline, (b) point to an updated input file, or (c) explicitly type an override phrase like `proceed with KB defaults for: <field list>` — in which case treat each named field as user-authorized and continue. Any other user response that does not resolve the gaps means halt remains in force.
+If any BLOCKING fields are MISSING, AMBIGUOUS, or DEFERRED, or any IMPORTANT fields are MISSING or AMBIGUOUS:
 
-When the user supplies missing values, re-run Phase 0.3–0.4 with the merged input. Loop until the decision is PROCEED.
+1. Print the gap list in this exact shape:
+   ```
+   ─── Gaps detected ──────────────────────────────────────────
+   The following information is not in the source materials:
+
+     BLOCKING:
+       • <field> — <question / what's needed>
+       • <field> — ...
+
+     IMPORTANT:
+       • <field> — ...
+
+   Please provide answers inline now, or reply "proceed" to generate
+   a DRAFT with placeholders for each unanswered field.
+   ────────────────────────────────────────────────────────────
+   ```
+2. **Wait for user response.**
+
+### 0.6 — Decide: resolve inline, or enter DRAFT mode
+
+Based on the user's response:
+
+- **User provides values inline** → merge them into the parsed source data, re-run 0.3–0.5 with the updated field set, loop until no gaps remain or user asks to proceed.
+- **User says "proceed" / "skip" / "draft" / does not resolve gaps** → enter **DRAFT mode**. Every unresolved field becomes an open query (see 0.7).
+- **User supplies updated source files** (e.g., points to a new file path) → re-run 0.2–0.5 with the new files included.
+
+### 0.7 — Build the open queries list (DRAFT mode)
+
+Assign each unresolved field a sequential ID (`Q-1`, `Q-2`, `Q-3`, ...). Record the following for each:
+
+```
+{
+  "id":       "Q-1",
+  "field":    "go_live_date",
+  "section":  "Timeline",
+  "question": "What is the target go-live date?",
+  "blocking": true,
+  "status":   "OPEN"
+}
+```
+
+- `field` and `section` come from the KB checklist
+- `question` is a short, natural-language question derived from the checklist entry
+- `blocking` mirrors the checklist classification
+- `status` starts as `"OPEN"`; becomes `"RESOLVED"` on a later re-run when the new sources answer it
+
+This list is passed to:
+- Phase 2 (for placeholder injection into content)
+- Phase 3 (for the "Open Queries" section at the end of the document)
+- Phase A (written to `queries.md` and `doc-manifest.json`)
+
+### 0.8 — Placeholder format
+
+When any downstream phase needs to render an unresolved field, it uses this exact format:
+
+```
+[Q-N: <short field label> — <question>]
+```
+
+Example: `[Q-1: Go-live date — what is the target go-live date?]`
+
+Placeholders must stand out visually in the document (bold red, or a distinct highlight color defined in Phase 1 templates). They must be findable with a simple text search for `[Q-` so the user can quickly locate every open spot.
+
+### 0.9 — Rules (do not violate)
+
+- **Do not** substitute KB defaults silently. If the KB defines a default and the user has not approved it, treat the field as an open query.
+- **Do not** invent, guess, or best-effort-fill any value. Every unresolved field gets a placeholder.
+- **Do not** skip writing `queries.md` or the "Open Queries" section when there are open queries — these are the user's visibility into what's incomplete.
+- **Do** complete all other sections of the document normally. Draft mode means "some fields are placeholders," not "the whole document is a draft."
 
 ---
 
@@ -221,6 +396,8 @@ Based on your visual analysis, generate the following in-memory (do NOT save to 
 - Special box styles — callout boxes, note boxes, bordered sections as seen in samples
 - List styles — ordered and unordered lists matching the sample formatting
 - Body text styles — font, size, line height, color
+- **Open query placeholder style** — `.open-query { color: #b00020; font-weight: 600; background: #fff3cd; padding: 0 3px; border-radius: 2px; }` (or a palette that works with the sample's color scheme). Placeholders MUST stand out visually so the user can spot them at a glance.
+- **Open Queries section style** — `.open-queries-section { border-left: 4px solid #b00020; padding: 12px 16px; background: #fff9e6; margin-top: 24px; }` — a distinct callout block for the final open-queries list.
 - Print media rules for page breaks
 
 **`cover-template.html`** — Cover page HTML skeleton with `{{placeholder}}` variables for dynamic content. Structure must match what you observed in the sample PDFs. Use generic placeholder names:
@@ -247,7 +424,7 @@ Tell the user: "Template bootstrapped from sample PDFs — ready for assembly"
 
 ## PHASE 2 — Content Generation
 
-**Goal:** Read the KB and MOM to produce structured content for every section of the document. The KB dictates what sections exist, what content goes where, and what rules to follow.
+**Goal:** Read the KB and source materials to produce structured content for every section of the document. The KB dictates what sections exist, what content goes where, and what rules to follow. Unresolved fields are emitted as `[Q-N: ...]` placeholders per the open-query list from Phase 0.
 
 ### 2.1 — Load and understand the KB
 
@@ -285,24 +462,45 @@ Tell the user: "Template bootstrapped from sample PDFs — ready for assembly"
 - Does the KB define document patterns/variants? (simple vs complex, different types)
 - What signals determine which pattern to use?
 
-### 2.2 — Load and parse MOM/Transcript
+### 2.2 — Load and parse sources
 
-Phase 0 has already audited the input and confirmed all blocking fields are present (or that the user gave an explicit override). This step is data extraction only — assemble the structured field set that Phase 2.4 will substitute into templates.
+Phase 0 has already audited the sources and either (a) gathered all required values, or (b) produced an open-queries list for fields the user did not resolve. This step is data extraction only — assemble the structured field set that Phase 2.4 will substitute into templates.
 
-1. Read the MOM/transcript input.
-2. Extract every data point listed in the KB's input checklist into a structured map: `{field_name: extracted_value, source_quote: "…"}`. The source quote is the literal text from the input — keeping it makes downstream content traceable to the input rather than to model imagination.
-3. For DEFERRED fields the user authorized in Phase 0, mark them explicitly as `{value: <user-supplied or default>, source: "user override Phase 0"}`. Never silently substitute.
-4. Identify the document variant/pattern based on signals the KB defines.
+1. Re-read all files in the `sources/` directory as a unified input context (same as Phase 0.2).
+2. Extract every data point listed in the KB's input checklist into a structured map:
+   ```
+   {
+     field_name: {
+       value:        <extracted_value> | "[Q-N: ...]",
+       source_quote: "...",     // literal text from sources (empty if placeholder)
+       source_file:  "sbpl-kickoff-transcript.md",
+       is_placeholder: false     // true if this is an open query
+     }
+   }
+   ```
+3. For fields marked as open queries in Phase 0: set `value` to the placeholder string `[Q-N: <field label> — <question>]` and `is_placeholder: true`.
+4. For fields the user explicitly resolved inline in Phase 0.5: mark `source: "user inline (Phase 0)"`.
+5. Identify the document variant/pattern based on signals the KB defines.
 
-If at this stage you discover a field that Phase 0 missed (e.g., the input checklist itself was incomplete), treat it as a Phase 0 regression: stop, tell the user which field surfaced and why it matters, and ask before continuing. Do not invent.
+**UPDATE mode — resolve previous open queries:**
+- From Phase U you already know which previously-open queries are now answered in the new sources.
+- For each previously-open query: if the new sources answer it, put the real value in the field map (not a placeholder) and mark the query RESOLVED.
+- For each previously-open query that is STILL OPEN: keep it in the field map as a placeholder, reusing the same Q-N ID from the previous run (query IDs are stable across versions — do not renumber).
+- Any **new** open queries introduced in this run get fresh IDs continuing the sequence (e.g., if the previous run ended at Q-5, new queries start at Q-6).
+
+If at this stage you discover a field that Phase 0 missed (e.g., the input checklist itself was incomplete), treat it as a new open query and append it to the list. Do not invent.
 
 Present a summary to the user:
 ```
-Extracted from MOM:
-  Client:          {name}
-  Document type:   {type/pattern}
-  Key items:       {summary of main content items extracted}
-  Overrides used:  {fields the user explicitly authorized in Phase 0, if any}
+Extracted from sources:
+  Client:           {name}
+  Document type:    {type/pattern}
+  Sources read:     {count} files
+  Key items:        {summary of main content items extracted}
+  Fields resolved:  {n_present}/{n_total}
+  Open queries:     {count}  (see queries.md for full list)
+  User overrides:   {count inline answers from Phase 0.5, if any}
+  Resolved this run: {count previously-open queries now answered} (UPDATE mode only)
 ```
 
 ### 2.3 — Pattern matching
@@ -320,11 +518,41 @@ For **every section** defined in the KB's document structure:
 
 1. **Boilerplate sections** — use the exact verbatim text from the KB. Do not paraphrase, summarize, or rephrase. Copy character-for-character, including any intentional typos or quirks documented in the KB.
 
-2. **Template sections** — use the templates from the KB, substituting `{{placeholders}}` with extracted MOM data. Follow all template rules (prose vs bullets, formatting, etc.).
+2. **Template sections** — use the templates from the KB, substituting `{{placeholders}}` with extracted source data. Follow all template rules (prose vs bullets, formatting, etc.).
 
-3. **Dynamic sections** — generate content based on the KB's patterns and the MOM data. Follow the KB's content rules for tone, style, structure, and completeness.
+3. **Dynamic sections** — generate content based on the KB's patterns and the extracted source data. Follow the KB's content rules for tone, style, structure, and completeness.
+
+   **Translate KB-internal language into client-facing language.** The KB uses internal codes, filenames, and taxonomy (e.g. section codes like `A.1`, constraint IDs like `C26`, filenames like `09-capability-catalog.md`, internal process names like "Mandatory Comparison Protocol", or the literal word "catalog"/"KB") to organize itself. None of this belongs in the client deliverable — see Critical Rule 13. When writing dynamic content:
+   - Refer to features by their product-facing name (e.g. "Focus SKU visibility", not "A.4 — Focus Product configuration").
+   - Cite rules by their effect, not their ID (e.g. "Leave requests require multi-level approval", not "per C26").
+   - Do not mention the KB, catalog, or internal governance structure — the client doesn't know they exist.
+   - If an internal audit is required (e.g. comparing every requirement against a catalog), run it as an internal check, write the full audit to a sidecar file like `<output_dir>/audit.md`, and keep ONLY its consequences (open queries, scope notes, gap flags) in the deliverable.
+   - For items not covered by the KB's capability set, use neutral client-facing tags like `[Bizom to confirm]` or `[Scope TBC]` — never `[Not in Catalog]` or similar KB-revealing phrasing.
 
 4. **Metadata sections** — fill in cover page fields, version history, table of contents, etc. from extracted metadata.
+
+5. **Open-query placeholders** — when a field is unresolved (`is_placeholder: true` from Phase 2.2), emit the literal placeholder string `[Q-N: <field label> — <question>]` wherever that field's value would appear. The placeholder must be:
+   - **Visually prominent** — wrap it in a CSS class like `<span class="open-query">[Q-1: ...]</span>` so Phase 1 template styling can make it stand out (bold, red, or highlighted)
+   - **Searchable** — the literal `[Q-` prefix must appear in the final document text so the user can find every placeholder with Ctrl+F
+   - **Self-explanatory in context** — the question part should make sense even without surrounding text
+
+6. **Open Queries section** — if there are any open queries, append a dedicated **"Open Queries"** section as the last content section of the document (before any sign-off section, if the KB defines one). This section lists every open query with its full question and which document section it affects. Format:
+
+   ```
+   OPEN QUERIES
+
+   The following information was not available at the time this document
+   was generated. Please provide answers in the source materials and re-run
+   /generate-document to resolve them.
+
+   Q-1  {section} / {field label}
+        {full question}
+
+   Q-2  {section} / {field label}
+        {full question}
+   ```
+
+   If there are zero open queries, do NOT render this section.
 
 ### 2.5 — Generate diagrams
 
@@ -335,7 +563,7 @@ The sample PDFs may contain visual diagrams — flowcharts, process flows, archi
 **When to generate diagrams:**
 - The sample PDFs contain embedded diagrams or figures (identified during Phase 1)
 - The KB defines processes, workflows, architectures, or systems that need visual representation
-- The MOM/transcript describes a flow with steps, decision points, branches, states, or routing
+- The source materials describe a flow with steps, decision points, branches, states, or routing
 - The KB explicitly calls for figures or diagrams in specific sections
 
 **How to generate:**
@@ -346,7 +574,7 @@ The sample PDFs may contain visual diagrams — flowcharts, process flows, archi
    - What is the figure numbering convention? (e.g., "Figure 3.1.A", "Fig 1", "Diagram 2.1")
    - What visual style do the diagrams use? (bordered box, caption style, placement relative to text)
 
-2. **Analyze the content** — from the MOM data and KB patterns, identify every element in each diagram:
+2. **Analyze the content** — from the extracted source data and KB patterns, identify every element in each diagram:
    - **Start/end points** — entry and exit points of the process
    - **Process steps** — actions, operations, tasks to be performed
    - **Decision points** — conditions that branch the flow (yes/no, multiple options, etc.)
@@ -494,12 +722,27 @@ Constraint validation: {passed}/{total} passed
 
 If the KB does not define explicit constraints, perform basic structural validation:
 - All sections present in correct order
-- No empty sections
-- All placeholders filled (no remaining `{{...}}` in output)
+- No empty sections (an "Open Queries" section with content is valid; an empty one should be omitted entirely)
+- All **template** placeholders filled — no remaining `{{...}}` in output. Note: `[Q-N: ...]` open-query placeholders are EXPECTED and must NOT be treated as unfilled template placeholders.
 - Boilerplate text matches KB exactly
 - Metadata fields are consistent (e.g., cover page version matches history table)
+- Every open query from Phase 0.7 appears at least once in the document body AND in the "Open Queries" section at the end
 
-Tell the user: "Content generated — {summary of what was produced}"
+**KB-leak check (MANDATORY, per Critical Rule 13).** Before declaring content generation complete, scan every string that will appear in the client-facing document (body text, table cells, figure captions, footnotes, headers/footers, metadata) for the following tokens. Any hit is a failure — rewrite the passage in client-facing language and re-scan:
+
+- KB filenames: `\d{2}-[a-z-]+\.md` (e.g. `09-capability-catalog.md`), or any path fragment containing `/kb/` or `kb=`
+- KB section codes: standalone `[A-D]\.\d+` (e.g. `A.1`, `B.2`, `D`), `Section [A-D]`, or "Section A/B/D catalog"
+- Constraint/governance IDs: `C\d+` (e.g. `C26`), `G-[A-Z]` (e.g. `G-C`), "constraints Cxx from …"
+- The literal word **"catalog"** (case-insensitive) when it refers to the authoring KB — includes tags like `[Not in Catalog]`, "capability catalog", "not in catalog"
+- The literal phrase **"knowledge base"** or **"KB"** (authoring-KB sense; a client's own internal KB is fine if they mention it)
+- KB-internal process names: "Mandatory Comparison Protocol", "Governance rules", "Capability Catalog", or any named protocol/framework introduced by the KB to organize itself
+- Meta-phrases: `per (the )?KB`, `from the (KB|catalog)`, `per constraints?`, `as defined in the (knowledge base|KB|catalog)`, `according to (the )?KB`
+
+If the KB requires an internal audit (e.g. a requirement-to-capability mapping table), produce that audit as `<output_dir>/audit.md` — NOT inside the deliverable. Only the audit's *outcomes* (open queries, scope flags, neutral `[Bizom to confirm]` markers) may surface in the document.
+
+Report: `KB-leak check: {pass | FAIL with list of offending strings and their locations}`. Do not proceed to Phase 3 until the check passes.
+
+Tell the user: "Content generated — {summary of what was produced, including draft status and open-query count if any}"
 
 ---
 
@@ -561,7 +804,7 @@ Save the assembled HTML to:
 outputs/<client>/generated/<document_filename>.html
 ```
 
-Use a descriptive filename derived from the document type and client name (e.g., `SwiftLogistics_SOW_v1.0.0.html`, `Acme_Proposal_v2.1.html`).
+Use a descriptive filename derived from the document type, client name, and **current version** from Phase U (e.g., `SwiftLogistics_SOW_v1.0.0.html`, `SBPL_BRD_v1.1.0.html`). The version MUST appear in the filename — this is what makes the archive directory meaningful after Phase A moves old versions aside.
 
 ### 3.3 — Render to PDF (if `format` is `pdf` or `both`)
 
@@ -755,23 +998,171 @@ After document generation:
 
 ---
 
+## PHASE A — Archive & Manifest
+
+**Goal:** Persist the state of this run so future invocations know what was generated, from which sources, and what open queries remain. In UPDATE mode, also move the previous version's files into the archive directory.
+
+This phase runs **after Phase 3 succeeds** — do not run it if Phase 3 errored out.
+
+### A.1 — Archive previous version (UPDATE mode ONLY)
+
+**⚠ CRITICAL — CREATE mode short-circuit:**
+
+Before doing anything in this step, check the mode determined in Phase U.
+
+- **If mode is CREATE** → **STOP. Skip the entire A.1 step. Do not create `archive/`. Do not create `archive/v1.0.0/`. Do not copy or move any file.** The archive directory must NOT exist after a CREATE-mode run. It is created for the first time on the SECOND invocation (the first UPDATE).
+- **If mode is UPDATE** → continue with the archival steps below.
+
+A common failure mode is "archiving the current version alongside itself" — copying v1.0.0 into `archive/v1.0.0/` on the first run. This is WRONG. The archive exists to preserve **previous** versions that are being superseded, not to snapshot the current one. On a first run there is no previous version, therefore no archive subdirectory.
+
+**UPDATE mode archival steps:**
+
+Both the previous version's files and the new version's files exist in `outputs/<client>/generated/` right now (they have different version numbers in their filenames, so they don't conflict). Your job is to **move** the PREVIOUS version's files (whose version matches the manifest's current `version` field, read at the start of Phase U) into a versioned archive subdirectory — NOT the ones you just generated.
+
+```
+1. Identify <prev_version> = the version recorded in the manifest BEFORE Phase A.2
+   runs (i.e., the version that existed at the start of this run).
+   Identify <new_version> = the version Phase U determined for this run.
+
+   Guard: <prev_version> MUST differ from <new_version>. If they are the same,
+   something is wrong — abort Phase A and report to the user. Never archive
+   files whose version matches <new_version>.
+
+2. Create outputs/<client>/generated/archive/v<prev_version>/
+   (and archive/v<prev_version>/figures/ if there were figures)
+
+3. MOVE these files (previous version only — identify by filename version suffix):
+   - <Doc>_v<prev_version>.html   →  archive/v<prev_version>/<Doc>_v<prev_version>.html
+   - <Doc>_v<prev_version>.pdf    →  archive/v<prev_version>/<Doc>_v<prev_version>.pdf
+   - <Doc>_v<prev_version>.docx   →  archive/v<prev_version>/<Doc>_v<prev_version>.docx
+   - generate_<Doc>_v<prev_version>.js → archive/v<prev_version>/...
+
+4. COPY (not move) the current queries.md into archive/v<prev_version>/queries.md
+   — this captures the previous version's query state.
+   The top-level queries.md will be overwritten in A.3 with the new state.
+
+5. MOVE the entire previous figures/ directory contents into
+   archive/v<prev_version>/figures/ — the current figures/ has been regenerated
+   with the new version's diagrams.
+
+6. Verify: every file listed in the previous manifest's `files` block should
+   now exist under archive/v<prev_version>/. If any are missing, print a warning
+   and skip archiving that file (do not error).
+
+7. Verify the inverse: no file with the new version number in its filename
+   should end up inside archive/. If it did, you archived the wrong files.
+```
+
+### A.2 — Write `doc-manifest.json`
+
+Write (or overwrite) `outputs/<client>/generated/doc-manifest.json` with the full current state:
+
+```json
+{
+  "schema_version": 1,
+  "client":         "<client_slug>",
+  "document_type":  "<BRD | SOW | Proposal | ...>",
+  "kb_path":        "<kb path used>",
+  "version":        "<new_version>",
+  "status":         "<draft | complete>",
+  "created_at":     "<YYYY-MM-DD — preserved from first run>",
+  "last_updated":   "<YYYY-MM-DD — today>",
+  "files": {
+    "html":              "<Doc>_v<new_version>.html",
+    "docx":              "<Doc>_v<new_version>.docx",
+    "pdf":               "<Doc>_v<new_version>.pdf",
+    "generation_script": "generate_<Doc>_v<new_version>.js",
+    "queries":           "queries.md"
+  },
+  "open_queries": [
+    { "id": "Q-1", "field": "...", "section": "...", "question": "...", "blocking": true, "status": "OPEN" }
+  ],
+  "inputs_used": {
+    "sources": [ "inputs/materials/<file1>", "inputs/materials/<file2>" ],
+    "samples": "<samples path used>"
+  },
+  "history": [
+    { "version": "1.0.0", "date": "...", "bump_type": "initial",  "status": "draft",    "summary": "...", "sources_used": [...] },
+    { "version": "1.0.1", "date": "...", "bump_type": "patch",    "status": "draft",    "summary": "Resolved Q-1 (go-live date)", "sources_used": [...] },
+    { "version": "1.1.0", "date": "...", "bump_type": "minor",    "status": "complete", "summary": "Resolved all queries + added new module", "sources_used": [...] }
+  ]
+}
+```
+
+**Rules:**
+- `status` = `"complete"` if `open_queries` is empty, else `"draft"`
+- `history[]` is append-only — never rewrite existing entries. Add one new entry per run.
+- `created_at` comes from the previous manifest in UPDATE mode; is today's date in CREATE mode
+- `inputs_used.sources` must list every file in `sources/` that was read (not just the newly added ones)
+
+### A.3 — Write `queries.md`
+
+Write (or overwrite) `outputs/<client>/generated/queries.md` with the current open-query state:
+
+```markdown
+# Open Queries — <Doc> v<version>
+_Generated: <YYYY-MM-DD>_
+_Status: <DRAFT | COMPLETE>_
+
+<If empty, say: "All queries resolved. Document is complete.">
+
+## Open
+| ID   | Section   | Field          | Question                                  | Blocking |
+|------|-----------|----------------|-------------------------------------------|----------|
+| Q-2  | Scope     | dms_web_needed | Is DMS Web module in scope?               | Yes      |
+
+## Resolved in this version
+| ID   | Section   | Field          | Resolved value                | Source file                  |
+|------|-----------|----------------|-------------------------------|------------------------------|
+| Q-1  | Timeline  | go_live_date   | October 2026                  | inputs/materials/answers.md  |
+
+## Historical (resolved in earlier versions)
+<optional — for reference>
+```
+
+Every run rewrites this file with the current state. The previous run's `queries.md` is preserved inside `archive/v<prev_version>/queries.md` (from A.1).
+
+### A.4 — Final verification
+
+1. Confirm `doc-manifest.json` is valid JSON (parse it after writing).
+2. Confirm all files listed in `manifest.files` exist on disk at the expected paths.
+3. Confirm `archive/v<prev_version>/` contains the previous files (UPDATE mode only).
+4. Confirm `queries.md` exists and is consistent with `manifest.open_queries`.
+
+If any check fails, report the inconsistency to the user. Do not silently skip.
+
+---
+
 ## Output
 
 After all phases complete, print:
 
 ```
 Document Generated Successfully
-  Client:        {client_name}
+  Mode:           {CREATE | UPDATE — <prev_version> → <new_version>, <bump_type> bump}
+  Status:         {DRAFT — N open queries | COMPLETE}
+  Client:         {client_name}
   Document type:  {document_type}
-  Version:       {version}
-  Format:        {format — pdf, docx, or both}
-  Sections:      {count} sections generated
-  Diagrams:      {count} figures generated (if any)
-  Constraints:   {passed}/{total} passed (if applicable)
-  HTML:          {html_path}
-  PDF:           {pdf_path}   (if generated)
-  DOCX:          {docx_path}  (if generated)
-  Figures:       {figures_dir} (if diagrams generated)
+  Version:        {version}
+  Format:         {format — pdf, docx, or both}
+  Sections:       {count} sections generated
+  Diagrams:       {count} figures generated (if any)
+  Constraints:    {passed}/{total} passed (if applicable)
+  HTML:           {html_path}
+  PDF:            {pdf_path}     (if generated)
+  DOCX:           {docx_path}    (if generated)
+  Figures:        {figures_dir}  (if diagrams generated)
+  Manifest:       {manifest_path}
+  Queries:        {queries_path} (open: N, resolved this run: M)
+  Archive:        {archive_path} (UPDATE mode only)
+
+  {If open queries > 0:}
+  Open queries:
+    Q-1  {section} / {field} — {question}
+    Q-2  {section} / {field} — {question}
+    ...
+
+  → Add answers to {sources_path} and re-run /generate-document to resolve.
 ```
 
 ---
@@ -786,8 +1177,31 @@ Document Generated Successfully
 
 4. **Constraint validation is mandatory.** If the KB defines validation rules, check every one before generating the output documents. Fix violations before proceeding.
 
-5. **Sample artifacts are visual reference only.** Use them to extract the visual template (Phase 1), but all content structure and rules come from the KB + MOM.
+5. **Sample artifacts are visual reference only.** Use them to extract the visual template (Phase 1), but all content structure and rules come from the KB + source materials.
 
-6. **Ask, don't guess.** Phase 0 is the enforcement point: it reads the KB's input checklist, classifies every required field as PRESENT/AMBIGUOUS/DEFERRED/MISSING, and HALTS before any other phase runs if blocking gaps exist. KB defaults, `[TBD]` placeholders, and "best guess" content are NOT acceptable substitutes — they re-introduce the hallucination this gate exists to prevent. The only way past Phase 0 is supplying the values or an explicit user override.
+6. **Missing info becomes an open query, never a guess.** Phase 0 audits the sources against the KB checklist and asks the user for any gaps. If the user does not resolve them, every unresolved field becomes an open query with a `[Q-N: ...]` placeholder in the document and an entry in `queries.md`. KB defaults cannot be substituted silently — if a default is used, it must be because the user explicitly approved it in Phase 0.5. No `[TBD]`, no "best guess", no fabrication.
 
-7. **Adapt to any KB.** Whether the KB describes SOWs, legal contracts, marketing proposals, engineering specs, or anything else — follow its structure. The generation logic adapts to whatever the KB defines.
+7. **Phase 0 is a soft gate, not a hard halt.** If the user chooses to proceed with gaps, the document is generated as a DRAFT with placeholders. The user can re-run with updated source materials at any time and the update flow will automatically resolve placeholders. "Incomplete" does not mean "do not generate."
+
+8. **Auto-detect create vs update.** Phase U checks for `doc-manifest.json` in the output directory. Its presence means UPDATE mode; its absence means CREATE mode. The user never passes a flag for this.
+
+9. **Version bumps are auto-determined.** Phase U classifies the change magnitude (MAJOR/MINOR/PATCH) by reading old and new sources and reasoning about what changed. The user can override via `version-bump=...`, but no confirmation step is required — the agent proceeds immediately after printing the diff.
+
+10. **Stable query IDs.** Once a query is assigned an ID (Q-1, Q-2, ...), that ID never changes across versions. New queries get fresh IDs continuing the sequence. Resolved queries are marked RESOLVED in `queries.md` but retain their original ID for traceability.
+
+11. **Archive before overwriting.** Phase A always preserves the previous version in `archive/v<prev_version>/` before updating the manifest. Never delete previous outputs.
+
+12. **Adapt to any KB.** Whether the KB describes SOWs, legal contracts, marketing proposals, engineering specs, or anything else — follow its structure. The generation logic adapts to whatever the KB defines.
+
+13. **The output document is client-facing — NEVER leak the KB.** The KB is an internal authoring aid. End users (clients, signatories, reviewers) do not know it exists and must never see evidence of it in the generated document. The following MUST NOT appear anywhere in the output body, tables, captions, footnotes, or figures:
+    - KB filenames or paths (e.g. `09-capability-catalog.md`, `06-constraints.md`, `outputs/<domain>/kb/`)
+    - KB-internal section codes used to index the catalog (e.g. `A.1`, `A.4`, `B`, `D`, `Section A.1`)
+    - KB-internal rule/constraint IDs (e.g. `C26`, `C27`, `G-C`, governance codes)
+    - KB-internal process names (e.g. "Mandatory Comparison Protocol", "Capability Catalog", "Governance rules")
+    - Meta-phrases that expose the KB's existence ("per the KB", "from the catalog", "per constraints Cxx from …", "as defined in the knowledge base")
+    - Requirements-vs-catalog audit tables (these are an internal QA artifact — keep them out of the deliverable)
+    - Tags like `[Not in Catalog — Bizom to confirm]` that embed the word "Catalog" — rephrase to client-facing language such as `[Bizom to confirm]` or fold into the open query for that item
+
+    Translate KB-internal language into domain-appropriate, client-facing prose. If the KB says "Capability A.4 — Focus Product configuration", the document should say "Focus SKU visibility" (the client-facing feature name), not the code. If the KB's governance rules require an audit (e.g. compare every requirement against a catalog), perform that audit **internally during Phase 2.6 validation** and surface only its *consequences* — open queries, scope flags — in the document. The audit table itself belongs in a sidecar file (e.g. `audit.md` in the output directory), never in the deliverable.
+
+    **Phase 2.6 self-check before assembly:** grep the assembled content for any KB artifact token (filenames, section codes, constraint IDs, the literal word "catalog" or "KB" when it refers to the authoring KB). If any is found, rewrite that passage in client-facing language before proceeding to Phase 3.
