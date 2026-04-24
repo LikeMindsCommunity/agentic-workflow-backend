@@ -96,9 +96,87 @@ Generate `CLAUDE.md` at the repo root. Use EXACTLY these section names in this o
 # - Never modify X file without explicit instruction
 # - Never change the LLM provider
 # - Always run tests before committing
+
+# =============================================================
+# Exotel KB sections — ALL OPTIONAL.
+#
+# /find-bugs-exotel auto-derives its Exotel KB from the project's
+# own prompts, generator code, docs, and schemas (the same
+# evidence sweep that generic /find-bugs already performs). You
+# do NOT need to fill these in to run the skill.
+#
+# Fill them in ONLY when:
+#   - the project doesn't encode a rule you want enforced, OR
+#   - you want to pin a value explicitly on top of what's derived
+#     from code (e.g., to override a stale default), OR
+#   - the skill's auto-derivation missed something and you want to
+#     add it manually.
+#
+# If you do want to keep overrides in a separate file, either:
+#   (a) Fill in ## Exotel KB Reference with the file path(s), OR
+#   (b) Put a "See: path/to/file.md" line inside any specific
+#       section (e.g., ## Exotel Node Attribute Schema).
+# The skill will merge the referenced content with what it derived.
+# =============================================================
+
+## Exotel KB Reference
+# Optional. One path per line — each points to a markdown file
+# containing the Exotel KB (same section headings as below).
+# Examples:
+#   docs/exotel-kb.md
+#   - kb/exotel/nodes.md
+#   - kb/exotel/constraints.md
+# If you fill this in, you may leave the individual ## Exotel *
+# sections below empty — the skill merges the referenced file's
+# content in.
+
+## Exotel Node Taxonomy
+# Optional override. One bullet per node type if you want to augment
+# what the skill auto-derives from your prompts/code:
+# - {internalAlias}: className={...}, humanName={...}, category={routing|data|control|integration|io}
+
+## Exotel Alias Map
+# Optional override. Bidirectional: internalAlias ↔ className ↔ humanName.
+# | Internal Alias | className | humanName |
+# |----------------|-----------|-----------|
+
+## Exotel Node Attribute Schema
+# Optional override. One subsection (###) per node type with this table:
+# | Attribute | Type | Required | Default | Allowed Values | Dynamic | Description |
+# Mark script-bearing attributes with Type=script or a Description flag.
+
+## Exotel Universal Attributes
+# Optional override. Attributes every node carries. Same table format as above.
+
+## Exotel Event Catalog
+# Optional override. One subsection (###) per node type:
+# | Event | Trigger | Typical Next | Required Handling |
+
+## Exotel Composition Rules
+# Optional override. Transition schema, port rules, condition-expression grammar,
+# parent-child back-reference locations (every place that must be updated
+# when a node is wired to a sub-flow).
+
+## Exotel Scripting Language
+# Optional override. Built-ins, variable-reference syntax (e.g. {{var}}),
+# error-handling requirements.
+
+## Exotel Patterns
+# Optional override. Named patterns with Required Elements and Anti-patterns.
+
+## Exotel Constraints
+# Optional override. Numbered rules with stable IDs C1, C2, ...
+# For each: rule + consequence of violating + CORRECT example + WRONG example.
+
+## Exotel Strict Instructions
+# Optional override. Invariants that must hold regardless of context.
+# e.g. "Every flow must have exactly one entry node."
+
+## Exotel Layout Rules
+# Optional. Coordinate system, branch-layout conventions.
 ```
 
-IMPORTANT: Use the EXACT section heading names above (## Pipeline Steps, ## Architecture Layers, ## Prompt/Template Mapping, ## File Index, ## Constraints, ## Bug Patterns). The generic commands look for these exact names.
+IMPORTANT: Use the EXACT section heading names above (## Pipeline Steps, ## Architecture Layers, ## Prompt/Template Mapping, ## File Index, ## Constraints, ## Bug Patterns, and — if you want to override anything auto-derived by /find-bugs-exotel — the ## Exotel * sections). The generic commands look for these exact names.
 
 ## Stage 10 — Write approval_sheet.md and bug_backlog.md
 If `approval_sheet.md` already exists, do NOT overwrite it.
@@ -182,5 +260,7 @@ Next steps:
   2. Fill in the ## Constraints section with files/APIs that should never be modified
   3. For vague bugs: /triage-bug <vague description> → review bug_backlog.md → /process-backlog
   4. For clear bugs:  /fix-bug <specific description> → review approval_sheet.md → /apply-fixes
-  5. For file comparison: /find-bugs → review comparison_sheet.md → /process-comparison → /apply-fixes
+  5. For generic file comparison: /find-bugs → review comparison_sheet.md → /process-comparison → /apply-fixes
+  6. For Exotel IVR JSON comparison: /find-bugs-exotel → review comparison_sheet.md → /process-comparison → /apply-fixes
+     (The skill auto-derives the Exotel KB from your project's prompts / code / docs — no manual setup needed. Optionally pin overrides in the ## Exotel * sections of CLAUDE.md.)
 ```

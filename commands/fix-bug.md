@@ -4,6 +4,18 @@ description: Diagnose a bug and propose a fix with approval tracking
 
 You are a generic bug-fix agent. Given the bug report in $ARGUMENTS, do the following:
 
+## Scope — this command PROPOSES fixes, it does NOT apply them
+
+`/fix-bug` only: (a) diagnoses, (b) writes one row with `Status = PENDING` to `approval_sheet.md`, and (c) prints a summary. The user then reviews, flips `Status` to `APPROVED` or `REJECTED`, and runs `/apply-fixes` — which is the **only** command allowed to modify source files or create commits.
+
+While this command is running you MUST NOT:
+- Use `Edit`, `Write`, or `NotebookEdit` on any file other than `approval_sheet.md`.
+- Run any `git` command that changes repository state (`add`, `commit`, `checkout`, `reset`, `stash`, `push`, etc.). Read-only `git status` / `git log` / `git diff` are fine for diagnosis.
+- Create, rename, or delete files anywhere in the repo.
+- Mark the row with any `Status` other than `PENDING` — not `APPROVED`, not `APPLIED`, not `CONFLICT`.
+
+If you notice a trivial one-line fix while diagnosing, STILL do not apply it — write the row, stop, and let the user approve. The approval step exists even for "obvious" fixes.
+
 ## Step 1 — Read Project Context
 Read `CLAUDE.md` in the current directory. Extract:
 - `## Architecture Layers` or `## Pipeline Steps` section → use as classification taxonomy
@@ -39,7 +51,9 @@ Assign **Confidence**:
 - MEDIUM — likely root cause, has caveats or edge cases
 - HIGH — root cause confirmed, fix is deterministic
 
-## Step 5 — Propose Fix
+## Step 5 — Propose Fix (text only — no file edits)
+This step produces text for the `Fix Description` column only. Do not edit the files you read.
+
 For each affected file: provide the file path, line range, and a plain text description of what to change.
 No before/after code blocks. If both code and prompt/template files need changes, list both separately with their own file paths and line ranges.
 Respect ALL rules listed in the `## Constraints` section of CLAUDE.md.
@@ -64,6 +78,19 @@ Append a new row to the table with these columns:
 - Status = `PENDING`
 - Reviewed By = `_pending_`
 
-## Step 7 — Print Summary
-Print: Bug ID assigned, classification (which layer from CLAUDE.md), risk, confidence, affected files with line numbers.
-Remind the user: open `approval_sheet.md` and change Status to `APPROVED` or `REJECTED`.
+## Step 7 — Print Summary & Stop
+Print: Bug ID assigned, classification (which layer from CLAUDE.md), risk, confidence, affected files with line numbers, and this exact line:
+
+`Proposed fix written to approval_sheet.md with Status=PENDING. No source files were modified. Review and set Status=APPROVED, then run /apply-fixes.`
+
+Then stop. Do not take any further action in this turn.
+
+---
+
+## Important Rules
+
+1. **Propose-only contract.** Only `approval_sheet.md` may be written in this command. Every other file is read-only for the duration of the run.
+2. **Status is always `PENDING`.** The human reviewer owns the transition to `APPROVED` / `REJECTED`. `/apply-fixes` owns the transition to `APPLIED` / `CONFLICT`.
+3. **No git writes.** No staging, committing, branching, or pushing. If you discover mid-diagnosis that a fix is urgent, say so in the `Fix Description` — do not act on it.
+4. **Dual-layer fixes still propose-only.** Even if both a prompt file and a code file need changes, describe both in `Fix Description` with separate file paths and line ranges — do not edit either.
+5. **One row per bug.** Do not split a single bug into multiple approval rows; do not merge distinct bugs into one row.

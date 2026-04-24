@@ -43,7 +43,8 @@ claude
 > /process-backlog             # move approved backlog bugs into approval_sheet.md
 > /fix-bug <bug desc>          # diagnose a single bug and propose fix
 > /batch-fix                   # process multiple bugs with interaction analysis
-> /find-bugs                   # compare generated vs expected files
+> /find-bugs                   # compare generated vs expected files (generic)
+> /find-bugs-exotel            # Exotel IVR JSON comparison (wraps /find-bugs + Exotel KB checks)
 > /process-comparison          # process approved comparisons into fix proposals
 > /review-approval-sheet       # summarize approval sheet status
 > /apply-fixes                 # apply all approved fixes and create a git commit
@@ -60,6 +61,7 @@ claude
 | `/fix-bug`               | Diagnoses a bug, proposes fix, writes to approval sheet                            |
 | `/batch-fix`             | Processes multiple bugs with interaction analysis                                  |
 | `/find-bugs`             | Compares generated vs expected file, writes discrepancies to `comparison_sheet.md` |
+| `/find-bugs-exotel`      | Exotel IVR JSON comparison — wraps `/find-bugs` and adds per-node schema, default, alias, composition, script, pattern, and numbered-constraint checks using Exotel KB sections in `CLAUDE.md` |
 | `/process-comparison`    | Processes approved comparison items into `approval_sheet.md` with full RCA         |
 | `/review-approval-sheet` | Summarizes current approval sheet status                                           |
 | `/apply-fixes`           | Applies all APPROVED fixes and creates a git commit                                |
@@ -95,6 +97,47 @@ The optional `source=` parameter tells the system which file (HTML template, JSO
 /process-comparison     # runs full RCA on approved items → writes to approval_sheet.md
                         # review approval_sheet.md, mark APPROVED / REJECTED
 /apply-fixes            # applies all approved fixes
+```
+
+## Exotel IVR Comparison (`/find-bugs-exotel`)
+
+A sub-skill of `/find-bugs` specialised for Exotel IVR flow JSONs. It runs every generic check first, then layers Exotel-specific checks on top using the Exotel KB inline in `CLAUDE.md`.
+
+**What it adds on top of `/find-bugs`:**
+
+- **Per-node schema validation** — every node's type resolved via the bidirectional Alias Map; every attribute checked against the KB Attribute Schema (type, required, allowed values, dynamic-flag).
+- **Per-key default-value verification** — if the KB documents `retryCount` default as `5` and the generated JSON has `5000`, a row is logged with `Expected Content = 5`, `Actual Content = 5000`. Conditional defaults (e.g. "`timeout` defaults to 0 when `nodeType = HANGUP`") are honoured.
+- **Value-form validation** — every attribute passes through a literal-vs-dynamic-vs-`staticValue`-struct check. Variable references (`{{var}}`, `$var`, `context.var`) must resolve to a declared variable (Built-in, upstream output, or upstream `preScript`/`script` assignment).
+- **Exhaustive script walk** — `script`, `preScript`, `postScript`, `preFunction`, `postFunction`, `expression`, `handler`, `onEnter`, `onExit`, `onError`, any `staticValue.value` marked as script/json, and any heuristically-detected code string — all parsed for syntax, unknown built-ins, unresolved variables, missing error handling, and cross-script type inconsistency.
+- **JSON-in-string** — when a script body or `staticValue.value` contains a JSON literal, it is `JSON.parse`d and walked key-by-key against any KB-declared schema.
+- **Composition & wiring** — broken transitions, unknown events, missing required event handlers, invalid ports, unmet parent-child back-references, invalid condition expressions.
+- **Pattern compliance** — named patterns from `## Exotel Patterns` verified; anti-patterns scanned.
+- **Numbered constraints** — every `C1, C2, …` in `## Exotel Constraints` checked; citations like `Exotel C7` in `KB Rule Violated`.
+- **Strict instructions** — global invariants from `## Exotel Strict Instructions` applied across the flow.
+
+**What it never flags (free-form, identity, or auto-generated):**
+
+`nodeflow.name`, `flow.name`, `node.name`, `node.displayName`, `node.label`, `node.description`, `node.comments`, `createdAt`, `updatedAt`, `createdBy`, `updatedBy`, any regenerated `id` / `nodeId` / `flowId` / `uuid` / `revisionId`, plus any attribute whose KB Attribute Schema row is absent.
+
+### Setup
+
+`/find-bugs-exotel` auto-derives the Exotel KB from your project's own prompts, generator code, schemas, and docs — the same artefacts `/find-bugs` already sweeps in Step 1.3. Node types, per-node defaults, alias maps, event catalog, composition rules, scripting language, and numbered constraints are extracted directly from your code. **No manual KB population is needed.** Just run `/find-bugs-exotel` right after `/init-project`.
+
+If the skill's derivation is sparse (e.g., your code doesn't name every node type explicitly), you can optionally pin overrides or add rules the code doesn't encode by filling in any of the `## Exotel *` sections of `CLAUDE.md`:
+
+- `## Exotel Node Taxonomy`, `## Exotel Alias Map`, `## Exotel Node Attribute Schema`, `## Exotel Event Catalog`, `## Exotel Composition Rules`, `## Exotel Constraints` — augment the derived KB.
+- Optional: `## Exotel Universal Attributes`, `## Exotel Scripting Language`, `## Exotel Patterns`, `## Exotel Strict Instructions`, `## Exotel Layout Rules`.
+- Or use `## Exotel KB Reference` (or a `See: path/to/file.md` inside any section) to point at an external file.
+
+Every section is optional. If the derived KB and an override disagree, both sources are cited in the resulting comparison-sheet row — no silent resolution.
+
+### Workflow
+
+```
+/find-bugs-exotel       # runs /find-bugs + Exotel KB checks → comparison_sheet.md
+                        # review rows, mark APPROVED / REJECTED
+/process-comparison     # RCA on approved items → approval_sheet.md
+/apply-fixes            # apply all approved fixes
 ```
 
 # LikeMinds Layer 1 — Platform Knowledge Base Builder
