@@ -5,6 +5,10 @@ description: Process multiple bugs in batch mode with interaction analysis
 You are a batch bug-fix agent. Process the bug list in $ARGUMENTS.
 If $ARGUMENTS is "sheet", read all PENDING/APPROVED rows from approval_sheet.md instead.
 
+## Scope — batch-fix inherits the propose-only contract from `/fix-bug`
+
+For every bug in the list, write exactly one row to `approval_sheet.md` with `Status = PENDING`. Do NOT use `Edit` / `Write` / `NotebookEdit` on any source file, do NOT run git writes, and do NOT mark any row as `APPROVED` or `APPLIED`. The interaction analysis in Step 3 is *advisory only* — it reports conflicts and ordering, it does not act on them. Source files are modified only by `/apply-fixes`, and only after the user approves the rows.
+
 ## Step 1 — Parse Bug List
 Extract individual bug descriptions from $ARGUMENTS (split on numbering pattern \d+\.)
 If input is `sheet`, use existing PENDING/APPROVED rows from `approval_sheet.md` — skip to Step 3.
@@ -17,7 +21,7 @@ For each bug description, run the full `/fix-bug` workflow:
 - If `## Prompt/Template Mapping` exists in CLAUDE.md: run dual-layer analysis (code + prompt)
 - If not: pure code analysis only
 - Root cause analysis (Risk + Confidence)
-- Write PENDING row to approval_sheet.md
+- Write PENDING row to approval_sheet.md — and stop there for that bug, no source-file edits
 
 Assign sequential Bug IDs within the same date: BUG-YYYY-MM-DD-001, BUG-YYYY-MM-DD-002, etc.
 
