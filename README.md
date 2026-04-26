@@ -48,6 +48,8 @@ claude
 > /process-comparison          # process approved comparisons into fix proposals
 > /review-approval-sheet       # summarize approval sheet status
 > /apply-fixes                 # apply all approved fixes and create a git commit
+> /platform-kb                 # build a structured KB from platform artifacts and docs
+> /generate-document           # generate a versioned PDF/DOCX from a KB + source materials
 ```
 
 ## Commands
@@ -65,6 +67,8 @@ claude
 | `/process-comparison`    | Processes approved comparison items into `approval_sheet.md` with full RCA         |
 | `/review-approval-sheet` | Summarizes current approval sheet status                                           |
 | `/apply-fixes`           | Applies all APPROVED fixes and creates a git commit                                |
+| `/platform-kb`           | Builds a structured Knowledge Base (KB) from platform artifacts and docs           |
+| `/generate-document`     | Generates a versioned PDF/DOCX document from a KB + source materials               |
 
 ## File Comparison (`/find-bugs`)
 
@@ -296,17 +300,32 @@ outputs/
 
 ---
 
-## Related Skills
+# Document Generator (`/generate-document`)
 
-The `/platform-kb` skill is the all-in-one workflow. These sub-skills exist for advanced use but are normally called internally:
+Generates a pixel-accurate PDF and/or DOCX document from a KB and one or more source materials (MOMs, transcripts, emails, requirement docs, etc.). Domain-agnostic — works for SOWs, BRDs, proposals, contracts, reports, or any document type defined by the KB.
 
+### Inputs
 
-| Skill                   | Purpose                                                     |
-| ----------------------- | ----------------------------------------------------------- |
-| `/build-kb`             | Orchestrator — older version, drives the same pipeline loop |
-| `/build-kb-draft`       | Draft sub-agent only                                        |
-| `/build-kb-interrogate` | Gap analysis sub-agent only (read-only)                     |
-| `/build-kb-enrich`      | Enrichment sub-agent only                                   |
+| Parameter      | Description                                                          | Default                       |
+| -------------- | -------------------------------------------------------------------- | ----------------------------- |
+| `kb`           | Path to the client's KB directory                                    | `outputs/exotel-sow/kb/`      |
+| `sources`      | Directory of input materials (MOMs, transcripts, emails, PDFs, etc.) | `inputs/materials/`           |
+| `samples`      | Reference PDFs for visual template extraction                        | `inputs/sample_artifacts/`    |
+| `output`       | Directory for generated files                                        | `outputs/<client>/generated/` |
+| `format`       | `pdf`, `docx`, or `both`                                             | `both`                        |
+| `version-bump` | Override auto-detected bump: `patch`, `minor`, or `major`            | *(auto-detected)*             |
 
+### Workflow
+
+The skill auto-detects CREATE vs UPDATE mode from the presence of `doc-manifest.json` and runs five phases: source/manifest diff → input audit (asks for missing fields, otherwise proceeds in DRAFT mode with `[Q-N: ...]` placeholders) → template bootstrap from sample PDFs → content generation against the KB → assembly to HTML/PDF/DOCX → archive previous version and write the manifest. Open queries are tracked in `queries.md` and auto-resolved on re-run when the source materials answer them.
+
+### Usage examples
+
+```
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ format=pdf
+/generate-document kb=outputs/acme/kb/ sources=inputs/acme-materials/ samples=inputs/acme-samples/
+/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ version-bump=major
+```
 
 ---
