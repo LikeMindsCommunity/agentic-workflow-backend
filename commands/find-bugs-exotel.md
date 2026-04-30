@@ -51,11 +51,21 @@ If the skill finds zero discrepancies, still write the header and append a singl
 
 ## What the skill checks
 
-Ten baseline check classes, plus an open-ended "anything else the project context mandates" class. **All run on every invocation.** Each class emits rows into the single canonical table.
+Twelve baseline check classes (A–L) plus the manifest-driven open-ended class K. Class G builds the rule manifest exhaustively from every KB file; every other class consumes it. **All classes run on every invocation.** Each class emits rows into the single canonical table.
 
-### A — `staticValue` default mismatch (alias-map comment driven)
+### A — `staticValue` default mismatch (alias-map comment driven, exhaustive)
 
-For every attribute carried as `staticValue: Y` on a generated node, look up the attribute's `#` comment in `ivr-alias-json-map.json` under the node's alias. If the comment contains `use default value: X` (or `default: X` / `else use default value: X`) and `Y != X` → row. `Category = WRONG_CONTENT`, `Risk = HIGH` for required attrs, `MEDIUM` otherwise. `KB Rule Violated = Default: {alias}.{attr} — alias map comment "{verbatim snippet}" (source: ivr-alias-json-map.json → {alias} → {attr})`.
+After step 4 builds `defaultMap[alias][attr]`, the skill MUST iterate every generated node and, for every attribute whose alias-map entry carries a `# use default value: X` (or `# default: X` / `# else use default value: X`) comment, compare the generated `staticValue` to X. Any difference → row.
+
+The defaultMap walk is exhaustive across the whole alias map first (no per-attribute branching by relevance), so the skill is forced to enumerate every defaulted attribute and confirm whether each generated node carries the expected value, the explicit override, or nothing. Print:
+
+```
+Class A coverage: {default-bearing attrs} × {nodes touched} = {checks run}
+```
+
+`KB Rule Violated = Default: {alias}.{attr} — alias map comment "{verbatim snippet}" → expected "{X}", generated "{Y}" (source: ivr-alias-json-map.json → {alias} → {attr})`.
+
+`Category = WRONG_CONTENT` for value drift, `MISSING_CONTENT` if the defaulted attribute is absent on the generated node. `Risk = HIGH` for required attrs (no `# Optional` marker), `MEDIUM` otherwise.
 
 ### B — `promptName` missing / inappropriate
 
@@ -74,14 +84,26 @@ For every `*PromptName` attribute (`promptName`, `playFilePromptName`, `retryFil
 - Extra events (in generated, not in expected) → `EXTRA_CONTENT`, MEDIUM.
 - Transition ID reused across different events → `WRONG_CONTENT`, HIGH.
 
-### D — Variables & data flow
+### D — Variables & data flow (conditions-block aware)
 
-Build a flow-wide variable registry from `variables` blocks, `digitVariable` / `ttsVariable` / `storeVariable` outputs, and assignments inside populated scripts. Then:
+Build a flow-wide variable registry from:
+- `nodeflowInfo.variables` declarations (name → declaration site)
+- `digitVariable` / `ttsVariable` / `storeVariable` outputs from node attributes
+- assignments inside populated script bodies (`var X = …`, bare `X = …`)
+- platform defaults (`srcPhone`, `dstPhone`, `campaignId`, `callResult`, `systemDisposition`, `talkTime`, `ivrTime`, `userAssociations`) — always available
 
-- Undeclared variable reference (`from.variableName` / condition RHS / `{{var}}` interpolation pointing at a name that's never declared) → `WRONG_CONTENT`, HIGH.
-- Duplicate `digitVariable` across multiple `node.digit.collection` nodes → `WRONG_CONTENT`, HIGH.
-- Unreferenced declaration → `EXTRA_CONTENT`, LOW.
-- Variable used with inconsistent types across scripts → `WRONG_CONTENT`, MEDIUM.
+Then walk:
+
+1. **Conditions block** — for every entry in `conditions{}`, tokenise the condition expression and resolve every identifier on LHS/RHS. Any identifier not in the registry → `WRONG_CONTENT`, HIGH. KB cite from the variable-scope rule in `ivr-variables.md` and the conditional-transition instructions in step2 prompt.
+2. **`from.variableName`** references — same check on every attribute.
+3. **`{{var}}` interpolations** in any body-bearing string — same check.
+4. **Same name declared multiple times** in `nodeflowInfo.variables` (different `variableId`s) → `WRONG_CONTENT`, HIGH.
+5. **Same name reused for semantically different purposes** — heuristic: identifier assigned in two distinct script bodies whose surrounding node names indicate different menus → `WRONG_CONTENT`, MEDIUM.
+6. **Duplicate `digitVariable` across `node.digit.collection` nodes** → `WRONG_CONTENT`, HIGH.
+7. **Unreferenced declaration** → `EXTRA_CONTENT`, LOW.
+8. **Variable used with inconsistent types across scripts** → `WRONG_CONTENT`, MEDIUM.
+
+The conditions-block walk MUST run on every flow even if zero conditions exist (in which case it emits `0 conditions evaluated` in the summary).
 
 ### E — Structural completeness (generated vs expected)
 
@@ -96,16 +118,66 @@ Build a flow-wide variable registry from `variables` blocks, `digitVariable` / `
 - Unreachable node (no transition points at it, not an entry) → `EXTRA_CONTENT`, MEDIUM.
 - Broken parent→child back-references → `MISSING_CONTENT`, HIGH.
 
-### G — Critical / strict instructions (from prompt files + agent code)
+### G — Rule manifest (exhaustive extraction across the entire project context)
 
-During the project-context sweep, the skill extracts every directive tagged with any of: `STRICT INSTRUCTIONS`, `CRITICAL`, `CRITICAL INSTRUCTIONS`, `IMPORTANT`, `MUST`, `MUST NOT`, `DO NOT`, `NEVER`, `ALWAYS`, `REQUIRED`; inline `**CRITICAL:**` / `**MUST:**` / `⚠️` / `❗` / `NOTE:`; `assert` statements with explanatory messages; `raise` calls with `CRITICAL`/`MUST`/`INVARIANT` prefixes; `CRITICAL:` / `IMPORTANT:` / `STRICT:` / `INVARIANT:` comments; docstring `Raises:` / `Invariants:` sections.
+Before any per-node check runs, the skill builds a single in-memory **rule manifest** by walking every file collected in step 3 and emitting one entry per discoverable rule. A "rule" is any sentence, bullet, numbered item, table row, alias-map comment, schema constraint, `assert`, `raise`-with-message, or docstring requirement that constrains what the generated IVR JSON may or may not contain. Tag words (CRITICAL / STRICT / MUST / NEVER / etc.) are HINTS that elevate priority — they are NOT prerequisites for extraction.
 
-For each extracted directive:
-1. Translate it into a concrete predicate over the generated file (node types, attribute presence/values, transition wiring, script bodies).
-2. Evaluate. Violation → `WRONG_CONTENT`, `Risk = HIGH`, `KB Rule Violated = Strict: {verbatim directive} (source: {file}:{line})`.
-3. If the directive is ambiguous and cannot be mechanically evaluated, emit an **advisory row**: `Risk = MEDIUM`, `KB Rule Violated = Strict (manual check): {directive} — could not evaluate automatically`.
+**Extraction sources (every one mandatory):**
 
-The evaluated count plus advisory count must equal the total extracted count, or the skill has a bug.
+1. **Numbered/lettered instructions** in every prompt file — e.g. `prompts/ivr-prompt-nodes-generation-step2.md` items 1–32. Each numbered item becomes one or more manifest entries (a single item may carry multiple sub-rules).
+2. **Bulleted sub-rules** under any numbered item. Each bullet is its own entry.
+3. **Section-introduced rules** in IVR docs (`ivr-nodes.md`, `ivr-transition.md`, `ivr-variables.md`, `ivr-child-nodeflow.md`, `ivr-coordinates.md`, `ivr-default-nodeflow-patterns.md`). Walk every `### ` and `#### ` section; any sentence that says "must" / "should" / "only" / "never" / "always" / "required to" / "expected to" or that describes default behaviour becomes an entry.
+4. **Alias-map `#` comments** — every `# use default value: X` becomes a Class A default-check entry. Every other comment that constrains the attribute ("must be …", "comma-separated list of …", "expects a variable with the SAME name", "fixed", "to be created by agent", etc.) becomes a Class K semantic-check entry.
+5. **Pattern definitions** in `ivr-default-nodeflow-patterns.md` — every named pattern becomes a Class H entry with its Required Elements list and Anti-patterns list.
+6. **Validator agent prompt** (`prompts/ivr-prompt-validation.md`) — every invariant the validator is supposed to enforce becomes a Class J entry.
+7. **Embedded prompt strings inside agent `.py` files** — multi-line string literals in `add_transitions_agent.py`, `nodes_generation.py`, `validation_agent.py`, `output_generation_agent.py` often contain rule text the same shape as the prompt files. Read the strings (do NOT just grep keyword lines) and extract entries from them too.
+8. **`raise` / `assert` calls with messages** in any code file — each one is a constraint entry.
+
+Each manifest entry has the shape:
+
+```
+{
+  rule_id: "{file-stem}-{seq}",       # e.g. "step2-26", "ivr-vars-12"
+  source: "{path}:{line}",
+  text: "{verbatim sentence or block}",
+  tag_priority: HIGH | MEDIUM | LOW,  # HIGH if any of CRITICAL/MUST/NEVER tags
+                                       # are present, else MEDIUM, LOW for advisories
+  predicate: "{plain-language spec of what to check on the generated JSON}",
+  evaluable: true | false              # false → emits an advisory row, not a
+                                       #   gated finding
+}
+```
+
+The model writes the manifest in-memory and prints the count by file in the step-3 coverage block:
+
+```
+Rule manifest extracted:
+  prompts/ivr-prompt-nodes-generation-step2.md       → {N} rules
+  prompts/ivr-prompt-validation.md                   → {N} rules
+  ivr-transition.md                                  → {N} rules
+  ivr-variables.md                                   → {N} rules
+  ivr-nodes.md                                       → {N} rules
+  ivr-default-nodeflow-patterns.md                   → {N} patterns / {M} anti-patterns
+  ivr-alias-json-map.json                            → {N} default-checks, {M} semantic-checks
+  agents/add_transitions_agent.py                    → {N} embedded-rule entries
+  ...
+  TOTAL                                              → {grand total}
+```
+
+If any KB file produces fewer than 5 rules, the skill flags it: `⚠️ low extraction count from {file} — re-read and extract` and re-runs the extractor for that file. (A 798-line `ivr-variables.md` returning 3 rules means extraction is broken; force re-read.)
+
+Then run **every** manifest entry against the generated JSON. The accounting arithmetic must hold:
+
+```
+total = evaluated_pass + evaluated_violation + advisory + skipped_with_reason
+```
+
+`skipped_with_reason` must be 0 in normal runs; non-zero here is a skill bug.
+
+**Per-entry execution:**
+1. Translate the entry's `predicate` into a concrete check over the generated file (node types, attribute presence/values, transition wiring, script bodies, condition expressions).
+2. Evaluate. Violation → `WRONG_CONTENT` (or appropriate Category), `Risk` per `tag_priority`, `KB Rule Violated = {class-prefix}: {verbatim text snippet} (source: {file}:{line})`. The `class-prefix` is `Strict`, `Default`, `Variable`, `Transition`, `Pattern`, `Constraint`, `Other`, etc. — pick whichever class the rule semantically belongs to (manifest entries flow into A–L + K open-ended).
+3. If the predicate is ambiguous and cannot be mechanically evaluated, emit an **advisory row**: `Risk = MEDIUM`, `KB Rule Violated = {class-prefix} (manual check): {text} — could not evaluate automatically (source: {file}:{line})`.
 
 ### H — Pattern compliance (from `llm_docs/ivr-default-nodeflow-patterns.md` and prompt patterns)
 
@@ -176,25 +248,65 @@ The following are never discrepancies regardless of value differences:
 
 ---
 
+### Bundling — collapse duplicate findings before writing the sheet
+
+After every check class has populated the in-memory findings pool but BEFORE writing `comparison_sheet.md`, run a bundling pass.
+
+**Group by `(rule_id from manifest, Expected Content, Actual Content shape, Category, Risk)`.** Two findings bundle iff:
+- Same originating manifest rule (same `rule_id`).
+- Same `Expected Content` value (or same expected pattern when expected is a default like "valid UUIDv4").
+- Same `Actual Content` kind (e.g. both "non-hex chars", both "duplicate digitVariable", both "staticValue populated for prompt-name slot when language menu present").
+- Same `Category` and same `Risk`.
+
+When a group has N≥2 entries, emit ONE bundled row:
+- `Comp ID` — next sequential ID.
+- `Location (Generated)` — up to 5 representative locations followed by `+ {N-5} more` if N>5. Format: `path1; path2; …; +{X} more`.
+- `Location (Expected)` — mirrors the same.
+- `Expected Content` and `Actual Content` keep their canonical values.
+- `KB Rule Violated` keeps the rule citation and gains a suffix `[bundled: {N} occurrences]` so the reviewer knows.
+- `Risk` — max of the group.
+
+When a group has N=1, emit the row as today.
+
+**Do NOT bundle across distinct manifest rules** (a Class A default mismatch never merges with a Class C transition row, even if the messages look similar).
+
+**Do NOT bundle when `Actual Content` differs in substantive content** — e.g. two undeclared-variable references with different variable names ARE separate rows (the variable name is the actionable detail). Two UUID-format violations both saying "contains non-hex chars" with different IDs CAN bundle because the rule and the remediation are identical and the IDs go into `Location`.
+
+The summary gains:
+
+```
+Bundling: {raw} raw findings collapsed to {bundled} rows ({groups} groups bundled, {singletons} singletons)
+```
+
+---
+
 ## Execution order
 
 1. **Locate inputs.** Generated JSON from `inputs/compare/generated/` (or `generated=<path>` arg). Expected JSON from `inputs/compare/expected/` (or `expected=<path>`). If the generated input ends in `.anfx`, treat as a zip archive — extract in-memory and use the inner `nodeflow.json`. `source=<path>` optional.
 
 2. **Load `ivr-alias-json-map.json`.** Search `agentic_core/llm_docs/`, repo root, `inputs/`, `config/`, `data/`, `kb/`, or adjacent to generator code. If missing, STOP: `❌ ivr-alias-json-map.json not found`.
 
-3. **Exhaustive CLAUDE.md File Index sweep.** Walk `CLAUDE.md`'s `## File Index` and open every entry:
+3. **Exhaustive CLAUDE.md File Index sweep.** Walk `CLAUDE.md`'s `## File Index` and open every entry. Read mode is decided by **content type**, not by file size:
 
-   - **Small files (<50 KB, no `⚠️ LARGE FILE` flag)** → read end-to-end. This covers every prompt under `agentic_core/llm_docs/prompts/`, every IVR domain doc (`ivr-nodeflow.md`, `ivr-nodes.md`, `ivr-transition.md`, `ivr-variables.md`, `ivr-child-nodeflow.md`, `ivr-coordinates.md`, `ivr-default-nodeflow-patterns.md`), every small agent file (`ivr_flow_generator.py`, `add_variables_agent.py`, `add_coordinates_agent.py`, `child_nodeflow_merge_agent.py`, `diff_sow_extractor_agent.py`, `document_analyzer_agent.py`, `project_name_extractor_agent.py`), all utils, and the whole `app/` tree.
-   - **`⚠️ LARGE FILE`** (`orchestrator.py`, `nodes_generation.py`, `add_transitions_agent.py`, `validation_agent.py`, `output_generation_agent.py`) → grep-scan with the full rule-extraction pattern set: `default|DEFAULT|prompt|promptName|playFilePrompt|retryFilePrompt|invalidDigit|staticValue|from\.variableName|alias|node\.|transition|event|variable|digitVariable|STRICT|CRITICAL|IMPORTANT|MUST|MUST NOT|NEVER|ALWAYS|REQUIRED|INVARIANT|raise |assert |pattern|anti-pattern|validator`. Capture matches with `file:line`.
+   - **KB documentation files** — every file under `agentic_core/llm_docs/` and `agentic_core/llm_docs/prompts/` MUST be read end-to-end, regardless of size. Grep-scan is FORBIDDEN for these files. The KB is the source of truth for what counts as a bug; the skill cannot extract rules from a file it hasn't actually read.
+   - **Alias map (`ivr-alias-json-map.json`)** — parse the full JSON, then for every node alias enumerate every attribute and capture (a) the `# use default value: X` comment if present, (b) the role/semantic comment text, (c) the static type. Build `defaultMap[alias][attr]` and `commentMap[alias][attr]` exhaustively before any node walk runs. Skipping any attribute in any alias is a skill bug.
+   - **Agent code files** under `agentic_core/agents/` — read end-to-end if ≤80 KB. For files >80 KB (`add_transitions_agent.py`, `output_generation_agent.py`, `nodes_generation.py`, `orchestrator.py`, `validation_agent.py`), read in ordered chunks (Read tool with `offset`/`limit`) covering the full file; do NOT rely on grep alone. The skill must inspect every embedded prompt string and every assertion. Grep is allowed as an INDEX into the file (to find the chunks worth reading first), never as a substitute for reading.
+   - **App layer + utils + root** — read end-to-end at default chunk size.
    - **Binary** (`.pdf`, `.docx`, `.xlsx`, `.pptx`, images) → dispatch to `/docx`, `/xlsx`, `/pptx`, or the PDF reader.
    - **Unreadable / unsupported** → record skip reason; no silent omissions.
 
-   Build a single `projectContext` cache of `{path, classification, read_mode, extracted_rules}`. The extracted rules feed classes **G (strict)**, **H (patterns)**, **I (scripting language)**, **J (constraints)**, and **K (other)** — and also supplement classes A–F when the alias map is silent.
+   Build a single `projectContext` cache of `{path, classification, read_mode, extracted_rules}`. The extracted rules feed classes **G (manifest)**, **H (patterns)**, **I (scripting language)**, **J (constraints)**, and **K (other)** — and also supplement classes A–F when the alias map is silent.
 
    Print the coverage:
    ```
-   File Index coverage: {A} full / {B} grep / {C} readers / {D} skipped / total {N}
-     Skipped:
+   File Index coverage:
+     KB markdowns full-read:        {N}/{N}    (grep count MUST be 0)
+     Alias map fully parsed:        yes/no
+     Agent code full-read (≤80KB):  {N}/{N}
+     Agent code chunk-read (>80KB): {N}/{N}
+     App + utils + root full-read:  {N}/{N}
+     Binary readers dispatched:     {N}
+     Skipped with reason:           {N}
        - {path} ({reason})
    ```
    The totals must add up. No silent omissions.
@@ -213,37 +325,59 @@ The following are never discrepancies regardless of value differences:
 
 6. **Plausibility check.** Before concluding, verify:
    - Every File Index entry was touched (totals add up).
-   - Every extracted `strict` directive was either evaluated (row emitted on violation) or recorded as advisory.
+   - **KB markdown files were all read end-to-end** (grep-scan count for files under `agentic_core/llm_docs/` and `agentic_core/llm_docs/prompts/` MUST be 0).
+   - **Rule manifest exists in memory**, per-file count printed, and no file produced fewer than 5 rules unless explicitly empty (intro stubs).
+   - **Every manifest entry has been evaluated, advised, or accounted for** under `skipped_with_reason`. Skipped count must be 0.
+   - **defaultMap walk is exhaustive**: every alias × every defaulted attribute × every generated node was visited. Class A coverage line printed.
+   - **Conditions block was walked**: identifier-vs-registry cross-check ran for every condition expression (or recorded "0 conditions evaluated" if the flow has none).
    - No check class was silently skipped.
    - For every node that has a body-bearing attribute (script / preScript / postScript / columnNames / etc.), at least one class-L record exists in the in-memory findings pool — pass or flag. If a body-bearing attribute appears on a generated node and the walk produced zero class-L records for it, that's a walker bug; re-run the class-L walk for that node before writing the sheet.
+   - **Bundling pass ran exactly once** and the row count written equals `bundled` from the summary.
+
    If any of the above fails, re-run the missing part before writing the sheet.
 
 7. **Print the summary:**
    ```
    /find-bugs-exotel complete.
-     File Index coverage:         {A} full / {B} grep / {C} readers / {D} skipped
-     Nodes checked:               {N}
-     Attributes checked:          {M}
-     Findings by category:
+     File Index coverage:
+       KB markdowns full-read:        {N}/{N}    (grep count: 0)
+       Alias map fully parsed:        yes
+       Agent code full-read (≤80KB):  {N}/{N}
+       Agent code chunk-read (>80KB): {N}/{N}
+       App + utils + root full-read:  {N}/{N}
+       Binary readers dispatched:     {N}
+       Skipped with reason:           {N}
+     Rule manifest:
+       Total rules extracted:         {grand total}
+       By file (top 10):              step2.md → {N}, ivr-transition.md → {N}, ivr-variables.md → {N}, ivr-nodes.md → {N}, validation.md → {N}, ivr-default-nodeflow-patterns.md → {N}, alias-map → {N}, …
+       Evaluated as predicates:       {evaluated}
+       Advisory (manual review):      {advisory}
+       Skipped:                       {skipped}        (must be 0)
+     Class A coverage:                {default-bearing attrs} × {nodes} = {checks}
+     Conditions evaluated:            {N}
+     Nodes checked:                   {N}
+     Attributes checked:              {M}
+     Findings by category (post-bundling):
        MISSING_CONTENT  {a}
        WRONG_CONTENT    {b}
        EXTRA_CONTENT    {c}
        FORMATTING       {d}
-     Findings by check class:
+     Findings by check class (post-bundling):
        A staticValue defaults:     {a1}
        B promptName issues:        {b1}
        C transitions & events:     {c1}
-       D variables:                {d1}
+       D variables / conditions:   {d1}
        E structural completeness:  {e1}
        F flow sequence:            {f1}
-       G critical instructions:    {g1} evaluated, {g2} advisory of {gt} total
+       G manifest-driven strict:   {g1} evaluated, {g2} advisory of {gt} total
        H pattern compliance:       {h1}
        I embedded scripts:         {i1}
        J constraints:              {j1}
        K other project-context:    {k1}
        L body-bearing attrs:       {l1} verbatim comparisons ({lok} ok / {ldiff} differ / {lempty} empty-in-generated)
      Body-bearing attributes extracted verbatim: {total body attrs touched}
-     Rows written to comparison_sheet.md: {total}
+     Bundling: {raw} raw findings collapsed to {bundled} rows ({groups} groups bundled, {singletons} singletons)
+     Rows written to comparison_sheet.md: {bundled}
    ```
 
 ---
@@ -252,13 +386,13 @@ The following are never discrepancies regardless of value differences:
 
 1. **Canonical single-table format.** Every finding goes in the one 13-column table. Never split tables. Downstream (`/process-comparison`, `/apply-fixes`) depends on the exact schema.
 
-2. **All check classes run on every invocation.** A through K — minimum. Classes may emit zero rows if a category has no applicable data, but must still run to completion. Silently skipping a class is a skill-side bug.
+2. **All check classes run on every invocation.** A through L — minimum, with class K (open-ended) absorbing every manifest entry not naturally claimed by A–L. Classes may emit zero rows if a category has no applicable data, but must still run to completion. Silently skipping a class is a skill-side bug.
 
-3. **Open-ended scope via class K.** Rules, constraints, patterns, and critical instructions surfaced by the project-context sweep that don't fit A–J still get evaluated and emit rows under class K. The listed classes are the floor, not the ceiling.
+3. **Open-ended scope via class K and the manifest.** Class G builds the rule manifest exhaustively; every entry not naturally absorbed by A–L flows into class K. The listed classes are the floor, not the ceiling. Class K rows are emitted from the manifest, not ad-hoc.
 
 4. **Alias map is the primary authority.** `ivr-alias-json-map.json` comments are authoritative for defaults and `*PromptName` slot roles. Hard-fail if the file is missing.
 
-5. **Exhaustive File Index read.** Every file listed in CLAUDE.md's `## File Index` is opened (full / grep / reader). Every prompt, IVR doc, agent module, util, app-layer file, and root file. The coverage arithmetic must hold: `full + grep + readers + skipped == total`. No silent omissions.
+5. **Exhaustive File Index read.** Every KB markdown under `agentic_core/llm_docs/` and `agentic_core/llm_docs/prompts/` is opened end-to-end (no grep). Every agent `.py` file is full-read if ≤80 KB or chunk-read if larger (grep allowed only as an INDEX into chunks, never as a substitute for reading). Every app/util/root file is read end-to-end. Binary files dispatch to the appropriate reader. The coverage arithmetic must hold; no silent omissions.
 
 6. **Free-form fields are never flagged.** Display names, timestamps, regenerated UUIDs, coordinates, and structural metadata (`alias`, `type`, `version`, `visible`, `uiProps.*`) are never discrepancies.
 
@@ -272,10 +406,14 @@ The following are never discrepancies regardless of value differences:
 
 11. **No SOW.** Never reads, looks for, or requests a Statement of Work file. The expected JSON is the reference for what the flow should contain.
 
-12. **Empty-result sanity.** "No discrepancies found" is valid only when every check class A–K ran to completion and every project-context directive was either evaluated or recorded as advisory. Never silently under-report.
+12. **Empty-result sanity.** "No discrepancies found" is valid only when every manifest entry has been evaluated against the generated JSON, every KB file was full-read, and the manifest's per-file extraction count is non-trivial. Never silently under-report.
 
-13. **Every extracted strict / constraint / pattern must be processed.** Not sampled. Not skipped for verbosity. The total evaluated-plus-advisory count must equal the total extracted count printed in the summary.
+13. **Every extracted strict / constraint / pattern must be processed.** Not sampled. Not skipped for verbosity. The total `evaluated_pass + evaluated_violation + advisory + skipped_with_reason` count must equal the total extracted count printed in the summary; `skipped_with_reason` must be 0 in normal runs.
 
 14. **Body-bearing attributes are extracted verbatim, never summarised.** For every attribute whose name is in the body-bearing list (`script`, `preScript`, `postScript`, `preFunction`, `postFunction`, `expression`, `handler`, `onEnter`, `onExit`, `onError`, `columnNames`, `columnNamesList`, `headers`, `headerList`, `payload`, `body`, `requestBody`, `queryParams`, `conditionExpression`, `filterExpression`), the skill must copy the literal string value (or JSON literal, or resolved `from.variableName` value) into the finding record, compare it character-for-character against the expected file's corresponding slot, and emit class-L rows on any drift. Descriptions like "preScript contains logic to …" or "columnNames lists approximately N entries" are forbidden — they are always replaced by a row carrying the verbatim content in `Expected Content` / `Actual Content`. Truncation at 2 KB is permitted but the truncated prefix must still be verbatim.
 
 15. **Body-bearing attribute coverage is audited.** The Step 6 plausibility check counts the body-bearing attributes present on generated nodes and verifies that each one produced at least one class-L record in the in-memory findings pool. A gap here means the walker silently summarised; re-run class L for the missing nodes before writing the sheet.
+
+16. **Bundling is mandatory.** Identical-rule, identical-shape findings collapse to one row per the Bundling section. Reviewers must never see N near-identical rows when the rule and remediation are the same. The bundling pass runs exactly once, after all check classes complete and before the sheet is written.
+
+17. **No tag-gated extraction.** Class G / J / K do not skip rules because they lack `CRITICAL` / `MUST` / `NEVER` / `STRICT` tags. Tag words are priority hints (`tag_priority` field on the manifest entry), not extraction prerequisites. A 798-line `ivr-variables.md` returning 3 manifest rules is a bug — re-read and re-extract.
