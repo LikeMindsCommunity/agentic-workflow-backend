@@ -1,3 +1,6 @@
 {
-  "model": "claude-sonnet-4-5"
+  "model": "claude-sonnet-4-5",
+  "enabledPlugins": {
+    "document-skills@anthropic-agent-skills": true
+  }
 }

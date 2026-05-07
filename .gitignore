@@ -36,3 +36,7 @@ env/
 htmlcov/
 
 inputs/
+package*
+
+# Node modules
+node_modules/

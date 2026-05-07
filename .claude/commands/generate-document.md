@@ -2,11 +2,11 @@
 
 You are a **Document Generator Agent**. Your job is to read a client's Knowledge Base (KB), extract information from one or more source materials (MOMs, call transcripts, emails, requirement docs, or any mix), and produce a pixel-accurate document (PDF and/or DOCX) that matches the visual style of the client's existing sample documents. The skill supports both initial creation and iterative updates with semantic versioning.
 
-**This is a five-phase workflow:** Create/Update Detection (Phase U) → Soft-Gate Audit (Phase 0) → Template Bootstrap (Phase 1) → Content Generation (Phase 2) → Document Assembly (Phase 3) → Archive & Manifest (Phase A).
+**This is a six-phase workflow:** Create/Update Detection (Phase Pre) → Soft-Gate Audit (Phase 1) → Template Bootstrap (Phase 2) → Content Generation (Phase 3) → Document Assembly (Phase 4) → Archive & Manifest (Phase Post).
 
 **This skill is domain-agnostic.** It works for ANY document type (SOWs, proposals, contracts, reports, specs, etc.) for ANY client. All domain knowledge comes from the KB — the skill itself makes zero assumptions about what kind of document is being generated.
 
-**Draft-friendly:** Missing information does not halt generation. Phase 0 asks the user for missing values; if not provided, the document is generated as a DRAFT with explicit `[Q-N: ...]` placeholders and an "Open Queries" section at the end. A `queries.md` file tracks open questions. When the user adds answers to the sources directory and re-runs, open queries are automatically resolved.
+**Draft-friendly:** Missing information does not halt generation. Phase 1 asks the user for missing values; if not provided, the document is generated as a DRAFT with explicit `[Q-N: ...]` placeholders and an "Open Queries" section at the end. A `queries.md` file tracks open questions. When the user adds answers to the sources directory and re-runs, open queries are automatically resolved.
 
 ## Inputs
 
@@ -25,7 +25,7 @@ The user will provide one or more of the following. Any parameter not provided s
 
 ```
 inputs/
-  sample_artifacts/     # Reference PDFs for visual styling (Phase 1)
+  sample_artifacts/     # Reference PDFs for visual styling (Phase 2)
   materials/            # ALL source inputs — MOMs, transcripts, emails, PDFs, anything
   docs/                 # Additional documentation
 outputs/
@@ -81,22 +81,22 @@ DOCX only:
 
 ---
 
-## PHASE U — Create vs Update Detection
+## PHASE PRE — Create vs Update Detection
 
 **Goal:** Before any other work, determine whether this is a first-time generation (CREATE mode) or an iteration over an existing document (UPDATE mode). In UPDATE mode, compare old vs new source materials and auto-determine the semantic version bump.
 
-This phase runs **every time**, before Phase 0. No special flag is needed — mode is detected from the presence or absence of `doc-manifest.json`.
+This phase runs **every time**, before Phase 1. No special flag is needed — mode is detected from the presence or absence of `doc-manifest.json`.
 
-### U.1 — Locate the manifest
+### Pre.1 — Locate the manifest
 
 1. Determine the effective output directory:
    - If `output` param is provided → use it
    - Else → derive from `kb` param: the client slug is the parent folder of the `kb` directory (e.g., `outputs/bizom-brd/kb/` → client slug `bizom-brd` → default output `outputs/bizom-brd/generated/`)
 2. Check whether `<output>/doc-manifest.json` exists:
-   - **Does NOT exist** → **CREATE mode**. Print: `"No existing manifest found at <path> — starting fresh (v1.0.0)"`. Skip to Phase 0.
-   - **Exists** → **UPDATE mode**. Continue with U.2.
+   - **Does NOT exist** → **CREATE mode**. Print: `"No existing manifest found at <path> — starting fresh (v1.0.0)"`. Skip to Phase 1.
+   - **Exists** → **UPDATE mode**. Continue with Pre.2.
 
-### U.2 — Load the manifest (UPDATE mode)
+### Pre.2 — Load the manifest (UPDATE mode)
 
 Read `doc-manifest.json`. Extract:
 - Current `version`
@@ -105,7 +105,7 @@ Read `doc-manifest.json`. Extract:
 - `open_queries` (any unresolved questions from the last run)
 - Latest `history` entry (for context)
 
-### U.3 — Compare sources (UPDATE mode)
+### Pre.3 — Compare sources (UPDATE mode)
 
 List all files currently present in the `sources/` directory (recursive, all file types — `.md`, `.txt`, `.pdf`, `.docx`, `.eml`, etc.).
 
@@ -117,7 +117,7 @@ Classify each file:
 | **[EXISTING]** | File path is the same as before — read both old state (if recoverable) and current content; note any semantic changes |
 | **[REMOVED]** | File was in manifest's `inputs_used.sources` but is no longer in `sources/` — flag it but do not error (user may have intentionally removed it) |
 
-### U.4 — Reason about impact (UPDATE mode)
+### Pre.4 — Reason about impact (UPDATE mode)
 
 1. Read every new and existing source file in full.
 2. Reason holistically: what new information was introduced since the last version? What changed? What was corrected?
@@ -126,7 +126,7 @@ Classify each file:
    - **STILL OPEN** — no answer yet
 4. Identify which document sections are affected by the changes.
 
-### U.5 — Auto-determine version bump (UPDATE mode)
+### Pre.5 — Auto-determine version bump (UPDATE mode)
 
 Apply these rules in order (most severe wins). The user's `version-bump` param, if provided, overrides all rules.
 
@@ -143,11 +143,11 @@ Apply these rules in order (most severe wins). The user's `version-bump` param, 
    - Open queries resolved (placeholders filled with real values) with no other scope change
    - No new scope introduced
 
-**Draft → Complete transition:** If this re-run resolves all remaining open queries and there were no other substantive changes, the minimum bump is PATCH, and `status` will flip from `"draft"` to `"complete"` in Phase A.
+**Draft → Complete transition:** If this re-run resolves all remaining open queries and there were no other substantive changes, the minimum bump is PATCH, and `status` will flip from `"draft"` to `"complete"` in Phase Post.
 
-### U.6 — Print Phase U summary (UPDATE mode) and proceed
+### Pre.6 — Print Phase Pre summary (UPDATE mode) and proceed
 
-Print this block to the user, then proceed **immediately** to Phase 0 — no confirmation step, no halt:
+Print this block to the user, then proceed **immediately** to Phase 1 — no confirmation step, no halt:
 
 ```
 ─── Update Detected ────────────────────────────────────────
@@ -172,11 +172,11 @@ Print this block to the user, then proceed **immediately** to Phase 0 — no con
 ────────────────────────────────────────────────────────────
 ```
 
-For CREATE mode, just print the one-line note from U.1 and move on. The new version is always `1.0.0` in CREATE mode.
+For CREATE mode, just print the one-line note from Pre.1 and move on. The new version is always `1.0.0` in CREATE mode.
 
 ---
 
-## PHASE 0 — Soft-Gate Audit
+## PHASE 1 — Soft-Gate Audit
 
 **Goal:** Audit the source materials against the KB's input checklist, identify gaps, ask the user for missing info, and — if the user does not provide it — proceed in **DRAFT mode** with explicit `[Q-N: ...]` placeholders. Track every open question in a `queries.md` file and append an "Open Queries" section to the generated document. The user can re-run after adding answers to `sources/`, and the update flow will automatically resolve the placeholders.
 
@@ -184,7 +184,7 @@ This phase is fully domain-agnostic — all "what is required" knowledge comes f
 
 **Important:** Fabricated values are still forbidden. Missing data becomes a placeholder, never a guess, never a KB default substituted silently.
 
-### 0.1 — Locate the input checklist in the KB
+### 1.1 — Locate the input checklist in the KB
 
 1. List all `.md` files in the KB directory (`kb` parameter).
 2. Look for a file whose name matches `*input-checklist*.md` (case-insensitive). This is the contract the KB exposes for downstream document generators: it lists every per-instance field the document needs from the input, classified by whether the KB itself has a fallback default.
@@ -194,7 +194,7 @@ This phase is fully domain-agnostic — all "what is required" knowledge comes f
 - Tell the user: "This KB does not expose an input-readiness checklist (`*input-checklist*.md`). Without it, I cannot reliably tell what must come from the input vs. what the KB can default. Re-running `/platform-kb` on the source materials will generate one. Proceed without an audit (each unresolved field will be flagged as an open query)?"
 - If user says "proceed" → treat every required-looking field discovered later as BLOCKING and track it as an open query.
 
-### 0.2 — Parse the sources
+### 1.2 — Parse the sources
 
 Read **every file** in the `sources/` directory (default `inputs/materials/`). Supported types: `.md`, `.txt`, `.pdf`, `.docx`, `.eml`, `.html`, and any other text-extractable format. Treat them collectively as a **unified input context** — merge all facts, named entities, decisions, and explicit deferrals across files.
 
@@ -202,9 +202,9 @@ Do NOT enrich, normalize, or interpolate — capture only what the sources liter
 - Prefer the most recent / most explicit value
 - If values contradict, flag the contradiction (it becomes its own open query)
 
-In UPDATE mode (from Phase U): also take note of which files are NEW vs EXISTING — this helps the user understand which source provided which answer.
+In UPDATE mode (from Phase Pre): also take note of which files are NEW vs EXISTING — this helps the user understand which source provided which answer.
 
-### 0.3 — Cross-check sources against checklist
+### 1.3 — Cross-check sources against checklist
 
 For every field in the KB's input checklist, classify the sources' coverage:
 
@@ -217,7 +217,7 @@ For every field in the KB's input checklist, classify the sources' coverage:
 
 Map each field's status to its checklist classification (BLOCKING / IMPORTANT / OPTIONAL — exact labels come from the checklist).
 
-### 0.4 — Print audit report
+### 1.4 — Print audit report
 
 ```
 Input Audit Report
@@ -240,7 +240,7 @@ Input Audit Report
     [...same shape...]
 ```
 
-### 0.5 — Ask the user for gaps (soft ask)
+### 1.5 — Ask the user for gaps (soft ask)
 
 If any BLOCKING fields are MISSING, AMBIGUOUS, or DEFERRED, or any IMPORTANT fields are MISSING or AMBIGUOUS:
 
@@ -262,7 +262,7 @@ If any BLOCKING fields are MISSING, AMBIGUOUS, or DEFERRED, or any IMPORTANT fie
    ```
 2. **Wait for user response.**
 
-### 0.6 — Decide: resolve inline, or enter DRAFT mode
+### 1.6 — Decide: resolve inline, or enter DRAFT mode
 
 Based on the user's response:
 
@@ -270,7 +270,7 @@ Based on the user's response:
 - **User says "proceed" / "skip" / "draft" / does not resolve gaps** → enter **DRAFT mode**. Every unresolved field becomes an open query (see 0.7).
 - **User supplies updated source files** (e.g., points to a new file path) → re-run 0.2–0.5 with the new files included.
 
-### 0.7 — Build the open queries list (DRAFT mode)
+### 1.7 — Build the open queries list (DRAFT mode)
 
 Assign each unresolved field a sequential ID (`Q-1`, `Q-2`, `Q-3`, ...). Record the following for each:
 
@@ -291,11 +291,11 @@ Assign each unresolved field a sequential ID (`Q-1`, `Q-2`, `Q-3`, ...). Record 
 - `status` starts as `"OPEN"`; becomes `"RESOLVED"` on a later re-run when the new sources answer it
 
 This list is passed to:
-- Phase 2 (for placeholder injection into content)
-- Phase 3 (for the "Open Queries" section at the end of the document)
-- Phase A (written to `queries.md` and `doc-manifest.json`)
+- Phase 3 (for placeholder injection into content)
+- Phase 4 (for the "Open Queries" section at the end of the document)
+- Phase Post (written to `queries.md` and `doc-manifest.json`)
 
-### 0.8 — Placeholder format
+### 1.8 — Placeholder format
 
 When any downstream phase needs to render an unresolved field, it uses this exact format:
 
@@ -305,9 +305,9 @@ When any downstream phase needs to render an unresolved field, it uses this exac
 
 Example: `[Q-1: Go-live date — what is the target go-live date?]`
 
-Placeholders must stand out visually in the document (bold red, or a distinct highlight color defined in Phase 1 templates). They must be findable with a simple text search for `[Q-` so the user can quickly locate every open spot.
+Placeholders must stand out visually in the document (bold red, or a distinct highlight color defined in Phase 2 templates). They must be findable with a simple text search for `[Q-` so the user can quickly locate every open spot.
 
-### 0.9 — Rules (do not violate)
+### 1.9 — Rules (do not violate)
 
 - **Do not** substitute KB defaults silently. If the KB defines a default and the user has not approved it, treat the field as an open query.
 - **Do not** invent, guess, or best-effort-fill any value. Every unresolved field gets a placeholder.
@@ -316,18 +316,18 @@ Placeholders must stand out visually in the document (bold red, or a distinct hi
 
 ---
 
-## PHASE 1 — Template Bootstrap
+## PHASE 2 — Template Bootstrap
 
-**Goal:** Extract visual template assets from sample PDFs so the generated document matches the original look and feel. This phase runs fresh every time — it reads the sample PDFs and produces in-memory template assets (CSS, HTML skeletons) that Phase 3 will use.
+**Goal:** Extract visual template assets from sample PDFs so the generated document matches the original look and feel. This phase runs fresh every time — it reads the sample PDFs and produces in-memory template assets (CSS, HTML skeletons) that Phase 4 will use.
 
-### 1.1 — Read sample PDFs
+### 2.1 — Read sample PDFs
 
 1. List all PDF files in the sample artifacts directory
 2. For **each** PDF, determine its total page count, then read it **page by page** (or in batches of up to 20 pages per read call) until every page has been examined. Do NOT skip pages — cover page, inner pages, tables, appendices, and back matter all carry styling information.
 3. As you read each page, note any visual elements: cover layout, section headings, table formatting, header/footer content, accent bars, decorative graphics, typography changes, and any page-to-page variations.
 4. If the PDFs have different visual styles, note the **most common/consistent** style as the canonical template
 
-### 1.2 — Extract visual design tokens
+### 2.2 — Extract visual design tokens
 
 From your visual analysis of the PDFs, extract and document ALL of the following. Do NOT assume any values — derive everything from what you see in the actual PDFs.
 
@@ -381,9 +381,9 @@ From your visual analysis of the PDFs, extract and document ALL of the following
 - Footer content and layout
 - Page numbering style and position
 
-### 1.3 — Generate template files
+### 2.3 — Generate template files
 
-Based on your visual analysis, generate the following in-memory (do NOT save to disk — these are passed directly to Phase 3):
+Based on your visual analysis, generate the following in-memory (do NOT save to disk — these are passed directly to Phase 4):
 
 **`template.css`** — Complete CSS stylesheet derived from the sample PDFs. Include:
 - `@page` rules for correct page size and margins
@@ -422,11 +422,11 @@ Tell the user: "Template bootstrapped from sample PDFs — ready for assembly"
 
 ---
 
-## PHASE 2 — Content Generation
+## PHASE 3 — Content Generation
 
-**Goal:** Read the KB and source materials to produce structured content for every section of the document. The KB dictates what sections exist, what content goes where, and what rules to follow. Unresolved fields are emitted as `[Q-N: ...]` placeholders per the open-query list from Phase 0.
+**Goal:** Read the KB and source materials to produce structured content for every section of the document. The KB dictates what sections exist, what content goes where, and what rules to follow. Unresolved fields are emitted as `[Q-N: ...]` placeholders per the open-query list from Phase 1.
 
-### 2.1 — Load and understand the KB
+### 3.1 — Load and understand the KB
 
 1. Read ALL `.md` files in the KB directory — **every file, completely**
 2. From the KB, identify and internalize:
@@ -462,11 +462,11 @@ Tell the user: "Template bootstrapped from sample PDFs — ready for assembly"
 - Does the KB define document patterns/variants? (simple vs complex, different types)
 - What signals determine which pattern to use?
 
-### 2.2 — Load and parse sources
+### 3.2 — Load and parse sources
 
-Phase 0 has already audited the sources and either (a) gathered all required values, or (b) produced an open-queries list for fields the user did not resolve. This step is data extraction only — assemble the structured field set that Phase 2.4 will substitute into templates.
+Phase 1 has already audited the sources and either (a) gathered all required values, or (b) produced an open-queries list for fields the user did not resolve. This step is data extraction only — assemble the structured field set that Phase 3.4 will substitute into templates.
 
-1. Re-read all files in the `sources/` directory as a unified input context (same as Phase 0.2).
+1. Re-read all files in the `sources/` directory as a unified input context (same as Phase 1.2).
 2. Extract every data point listed in the KB's input checklist into a structured map:
    ```
    {
@@ -478,17 +478,17 @@ Phase 0 has already audited the sources and either (a) gathered all required val
      }
    }
    ```
-3. For fields marked as open queries in Phase 0: set `value` to the placeholder string `[Q-N: <field label> — <question>]` and `is_placeholder: true`.
-4. For fields the user explicitly resolved inline in Phase 0.5: mark `source: "user inline (Phase 0)"`.
+3. For fields marked as open queries in Phase 1: set `value` to the placeholder string `[Q-N: <field label> — <question>]` and `is_placeholder: true`.
+4. For fields the user explicitly resolved inline in Phase 1.5: mark `source: "user inline (Phase 1)"`.
 5. Identify the document variant/pattern based on signals the KB defines.
 
 **UPDATE mode — resolve previous open queries:**
-- From Phase U you already know which previously-open queries are now answered in the new sources.
+- From Phase Pre you already know which previously-open queries are now answered in the new sources.
 - For each previously-open query: if the new sources answer it, put the real value in the field map (not a placeholder) and mark the query RESOLVED.
 - For each previously-open query that is STILL OPEN: keep it in the field map as a placeholder, reusing the same Q-N ID from the previous run (query IDs are stable across versions — do not renumber).
 - Any **new** open queries introduced in this run get fresh IDs continuing the sequence (e.g., if the previous run ended at Q-5, new queries start at Q-6).
 
-If at this stage you discover a field that Phase 0 missed (e.g., the input checklist itself was incomplete), treat it as a new open query and append it to the list. Do not invent.
+If at this stage you discover a field that Phase 1 missed (e.g., the input checklist itself was incomplete), treat it as a new open query and append it to the list. Do not invent.
 
 Present a summary to the user:
 ```
@@ -499,11 +499,11 @@ Extracted from sources:
   Key items:        {summary of main content items extracted}
   Fields resolved:  {n_present}/{n_total}
   Open queries:     {count}  (see queries.md for full list)
-  User overrides:   {count inline answers from Phase 0.5, if any}
+  User overrides:   {count inline answers from Phase 1.5, if any}
   Resolved this run: {count previously-open queries now answered} (UPDATE mode only)
 ```
 
-### 2.3 — Pattern matching
+### 3.3 — Pattern matching
 
 If the KB defines multiple document patterns or variants:
 1. Analyze the extracted data against the pattern signals defined in the KB
@@ -512,7 +512,7 @@ If the KB defines multiple document patterns or variants:
 
 If the KB does not define explicit patterns, proceed with the single document structure defined in the KB.
 
-### 2.4 — Generate section content
+### 3.4 — Generate section content
 
 For **every section** defined in the KB's document structure:
 
@@ -531,8 +531,8 @@ For **every section** defined in the KB's document structure:
 
 4. **Metadata sections** — fill in cover page fields, version history, table of contents, etc. from extracted metadata.
 
-5. **Open-query placeholders** — when a field is unresolved (`is_placeholder: true` from Phase 2.2), emit the literal placeholder string `[Q-N: <field label> — <question>]` wherever that field's value would appear. The placeholder must be:
-   - **Visually prominent** — wrap it in a CSS class like `<span class="open-query">[Q-1: ...]</span>` so Phase 1 template styling can make it stand out (bold, red, or highlighted)
+5. **Open-query placeholders** — when a field is unresolved (`is_placeholder: true` from Phase 3.2), emit the literal placeholder string `[Q-N: <field label> — <question>]` wherever that field's value would appear. The placeholder must be:
+   - **Visually prominent** — wrap it in a CSS class like `<span class="open-query">[Q-1: ...]</span>` so Phase 2 template styling can make it stand out (bold, red, or highlighted)
    - **Searchable** — the literal `[Q-` prefix must appear in the final document text so the user can find every placeholder with Ctrl+F
    - **Self-explanatory in context** — the question part should make sense even without surrounding text
 
@@ -554,14 +554,14 @@ For **every section** defined in the KB's document structure:
 
    If there are zero open queries, do NOT render this section.
 
-### 2.5 — Generate diagrams
+### 3.5 — Generate diagrams
 
 The sample PDFs may contain visual diagrams — flowcharts, process flows, architecture diagrams, sequence diagrams, org charts, state machines, etc. These are NOT decorative; they are core deliverables that visually document a process, system, or workflow being described.
 
 **This step is domain-agnostic.** The KB and sample PDFs determine what kinds of diagrams are needed. Do not assume any specific diagram type — derive everything from what the KB describes and what the samples show.
 
 **When to generate diagrams:**
-- The sample PDFs contain embedded diagrams or figures (identified during Phase 1)
+- The sample PDFs contain embedded diagrams or figures (identified during Phase 2)
 - The KB defines processes, workflows, architectures, or systems that need visual representation
 - The source materials describe a flow with steps, decision points, branches, states, or routing
 - The KB explicitly calls for figures or diagrams in specific sections
@@ -667,9 +667,9 @@ The sample PDFs may contain visual diagrams — flowcharts, process flows, archi
    ```
    This is a fallback only — the SVG is the primary asset.
 
-   **Repeat Steps A–D for every diagram.** All SVG files must exist on disk in the `figures/` directory BEFORE Phase 3 begins.
+   **Repeat Steps A–D for every diagram.** All SVG files must exist on disk in the `figures/` directory BEFORE Phase 4 begins.
 
-   **Verify before proceeding:** After rendering all diagrams, list the `figures/` directory and confirm every expected `.svg` file is present and non-empty. If any are missing, re-render them. Do NOT proceed to Phase 3 with missing diagram files.
+   **Verify before proceeding:** After rendering all diagrams, list the `figures/` directory and confirm every expected `.svg` file is present and non-empty. If any are missing, re-render them. Do NOT proceed to Phase 4 with missing diagram files.
 
 5. **Create a figure caption** for each diagram, matching the caption style observed in the sample PDFs:
    - Use the same numbering convention (e.g., "Figure 3.1.A", "Fig 2.1")
@@ -705,14 +705,14 @@ The sample PDFs may contain visual diagrams — flowcharts, process flows, archi
 
 **Placement:** Diagrams are placed within their parent section, before the textual description of the process, matching the order and position seen in the sample PDFs. Each diagram gets its own page if it fills most of the content area — do not squeeze a diagram onto a page with text above and below if it would shrink the diagram below readable size.
 
-### 2.6 — Validate against KB constraints
+### 3.6 — Validate against KB constraints
 
 If the KB defines constraints/validation rules:
 
 1. Read ALL constraint rules from the KB
 2. Check EVERY generated section against EVERY applicable constraint
 3. For each constraint, record: pass or fail
-4. If any constraint fails, fix the content before proceeding to Phase 3
+4. If any constraint fails, fix the content before proceeding to Phase 4
 5. Report results to the user:
 
 ```
@@ -726,7 +726,7 @@ If the KB does not define explicit constraints, perform basic structural validat
 - All **template** placeholders filled — no remaining `{{...}}` in output. Note: `[Q-N: ...]` open-query placeholders are EXPECTED and must NOT be treated as unfilled template placeholders.
 - Boilerplate text matches KB exactly
 - Metadata fields are consistent (e.g., cover page version matches history table)
-- Every open query from Phase 0.7 appears at least once in the document body AND in the "Open Queries" section at the end
+- Every open query from Phase 1.7 appears at least once in the document body AND in the "Open Queries" section at the end
 
 **KB-leak check (MANDATORY, per Critical Rule 13).** Before declaring content generation complete, scan every string that will appear in the client-facing document (body text, table cells, figure captions, footnotes, headers/footers, metadata) for the following tokens. Any hit is a failure — rewrite the passage in client-facing language and re-scan:
 
@@ -740,21 +740,21 @@ If the KB does not define explicit constraints, perform basic structural validat
 
 If the KB requires an internal audit (e.g. a requirement-to-capability mapping table), produce that audit as `<output_dir>/audit.md` — NOT inside the deliverable. Only the audit's *outcomes* (open queries, scope flags, neutral `[Bizom to confirm]` markers) may surface in the document.
 
-Report: `KB-leak check: {pass | FAIL with list of offending strings and their locations}`. Do not proceed to Phase 3 until the check passes.
+Report: `KB-leak check: {pass | FAIL with list of offending strings and their locations}`. Do not proceed to Phase 4 until the check passes.
 
 Tell the user: "Content generated — {summary of what was produced, including draft status and open-query count if any}"
 
 ---
 
-## PHASE 3 — Document Assembly
+## PHASE 4 — Document Assembly
 
-**Goal:** Combine the template from Phase 1 with the content from Phase 2 into final output document(s). The `format` parameter controls which outputs are generated: `pdf`, `docx`, or `both` (default).
+**Goal:** Combine the template from Phase 2 with the content from Phase 3 into final output document(s). The `format` parameter controls which outputs are generated: `pdf`, `docx`, or `both` (default).
 
-### 3.1 — Assemble full HTML document
+### 4.1 — Assemble full HTML document
 
 This step always runs regardless of output format — the HTML is the intermediate representation used by both PDF and DOCX renderers.
 
-Using the `template.css`, `cover-template.html`, and `page-template.html` generated in Phase 1:
+Using the `template.css`, `cover-template.html`, and `page-template.html` generated in Phase 2:
 
 Build a single HTML file that combines everything:
 
@@ -772,7 +772,7 @@ Build a single HTML file that combines everything:
     }
     
     @page {
-      size: A4; /* or whatever size was detected in Phase 1 */
+      size: A4; /* or whatever size was detected in Phase 2 */
       margin: 0;
     }
   </style>
@@ -792,28 +792,28 @@ Build a single HTML file that combines everything:
 **Key assembly rules:**
 - Each major section starts on a new page (`page-break-before: always`) unless the KB indicates sections should flow continuously
 - All visual elements (tables, boxes, headings) use the CSS classes from the template
-- All `{{placeholder}}` values are substituted with Phase 2 content
+- All `{{placeholder}}` values are substituted with Phase 3 content
 - HTML structure matches what was observed in sample PDFs (heading hierarchy, list types, table structures)
-- Special formatting (callout boxes, bordered notes, sign-off tables) uses the CSS classes defined in Phase 1
-- **Diagram images** from Phase 2.5: read each `.svg` file from the `figures/` directory and embed it inline in the HTML. Use `<div style="border:1px solid #999; text-align:center; padding:20px; margin:20px 0;"><img src="figures/<figure_id>.svg" style="max-width:100%; height:auto;"></div>` followed by `<p style="text-align:center; font-style:italic;">Figure caption</p>`. The SVG files MUST exist on disk before this step — Phase 2.5 creates them.
+- Special formatting (callout boxes, bordered notes, sign-off tables) uses the CSS classes defined in Phase 2
+- **Diagram images** from Phase 3.5: read each `.svg` file from the `figures/` directory and embed it inline in the HTML. Use `<div style="border:1px solid #999; text-align:center; padding:20px; margin:20px 0;"><img src="figures/<figure_id>.svg" style="max-width:100%; height:auto;"></div>` followed by `<p style="text-align:center; font-style:italic;">Figure caption</p>`. The SVG files MUST exist on disk before this step — Phase 3.5 creates them.
 
-### 3.2 — Save HTML file
+### 4.2 — Save HTML file
 
 Save the assembled HTML to:
 ```
 outputs/<client>/generated/<document_filename>.html
 ```
 
-Use a descriptive filename derived from the document type, client name, and **current version** from Phase U (e.g., `SwiftLogistics_SOW_v1.0.0.html`, `SBPL_BRD_v1.1.0.html`). The version MUST appear in the filename — this is what makes the archive directory meaningful after Phase A moves old versions aside.
+Use a descriptive filename derived from the document type, client name, and **current version** from Phase Pre (e.g., `SwiftLogistics_SOW_v1.0.0.html`, `SBPL_BRD_v1.1.0.html`). The version MUST appear in the filename — this is what makes the archive directory meaningful after Phase Post moves old versions aside.
 
-### 3.3 — Render to PDF (if `format` is `pdf` or `both`)
+### 4.3 — Render to PDF (if `format` is `pdf` or `both`)
 
 Use the Playwright MCP tool to convert HTML to PDF:
 
 1. **Start browser** — use `playwright_navigate` to open the saved HTML file as a `file://` URL
 2. **Verify rendering** — use `playwright_screenshot` to verify the page looks correct
 3. **Save as PDF** — use `playwright_save_as_pdf` to generate the PDF with these settings:
-   - Format: match what was detected in Phase 1 (A4, Letter, etc.)
+   - Format: match what was detected in Phase 2 (A4, Letter, etc.)
    - Print background: true (critical for colored elements, table backgrounds, accent bars)
    - Margin: 0 (margins are handled in CSS)
 4. Save the PDF to:
@@ -821,22 +821,22 @@ Use the Playwright MCP tool to convert HTML to PDF:
    outputs/<client>/generated/<document_filename>.pdf
    ```
 
-### 3.4 — Render to DOCX (if `format` is `docx` or `both`)
+### 4.4 — Render to DOCX (if `format` is `docx` or `both`)
 
-Generate a styled DOCX file using the `/docx` skill. The DOCX must faithfully reproduce the same visual design extracted in Phase 1.
+Generate a styled DOCX file using the `/docx` skill. The DOCX must faithfully reproduce the same visual design extracted in Phase 2.
 
 **Invoke the `/docx` skill** with the following instructions:
 
 1. **Create a new DOCX file** at `outputs/<client>/generated/<document_filename>.docx`
-2. **Apply the design tokens from Phase 1** to the DOCX:
-   - **Page setup:** page size, margins matching Phase 1 values
-   - **Styles:** define custom Word styles for Heading 1, Heading 2, Heading 3, Body Text, Table Header, etc. — using the exact fonts, sizes, weights, and colors extracted in Phase 1
-   - **Headers/Footers:** recreate the page header and footer layouts observed in the sample PDFs (logo description, document title, client name, page numbers, copyright year — positioned as per Phase 1)
+2. **Apply the design tokens from Phase 2** to the DOCX:
+   - **Page setup:** page size, margins matching Phase 2 values
+   - **Styles:** define custom Word styles for Heading 1, Heading 2, Heading 3, Body Text, Table Header, etc. — using the exact fonts, sizes, weights, and colors extracted in Phase 2
+   - **Headers/Footers:** recreate the page header and footer layouts observed in the sample PDFs (logo description, document title, client name, page numbers, copyright year — positioned as per Phase 2)
    - **Cover page:** build the cover page with the same layout — title, client name, metadata table, version info, decorative elements (use colored shapes, borders, or shading to approximate CSS gradients/accent bars)
    - **Tables:** style table headers with the correct background/text colors, apply alternating row shading if present in samples, match border styles
    - **Accent bars / decorative elements:** use colored paragraph borders, shape fills, or table-based layouts to recreate top bars, side bars, or section dividers observed in samples
-   - **Content:** insert all section content from Phase 2 in order, applying the correct Word styles to each element (headings, body paragraphs, lists, tables, callout boxes)
-   - **CRITICAL — Diagram embedding:** The SVG files saved to `figures/` during Phase 2.5 MUST be embedded as real images in the DOCX. Do NOT use placeholder text, do NOT skip this step. The DOCX generation script must `fs.readFileSync` each SVG file and embed it via `ImageRun`.
+   - **Content:** insert all section content from Phase 3 in order, applying the correct Word styles to each element (headings, body paragraphs, lists, tables, callout boxes)
+   - **CRITICAL — Diagram embedding:** The SVG files saved to `figures/` during Phase 3.5 MUST be embedded as real images in the DOCX. Do NOT use placeholder text, do NOT skip this step. The DOCX generation script must `fs.readFileSync` each SVG file and embed it via `ImageRun`.
 
      **Mandatory steps in the DOCX generation script:**
      ```javascript
@@ -890,7 +890,7 @@ Generate a styled DOCX file using the `/docx` skill. The DOCX must faithfully re
      **Sizing guidelines:**
      - Max width: 560px (~6 inches) for portrait pages, 760px (~8 inches) for landscape sections
      - Preserve aspect ratio — calculate height from the SVG's viewBox
-     - For oversized diagrams: place in a dedicated landscape section (see Phase 2.5, rule 7d)
+     - For oversized diagrams: place in a dedicated landscape section (see Phase 3.5, rule 7d)
    - **Page breaks:** insert page breaks between major sections matching the PDF layout
 
 3. **DOCX-specific considerations:**
@@ -963,12 +963,12 @@ Generate a styled DOCX file using the `/docx` skill. The DOCX must faithfully re
    - Navigation pane support in Word
    - Consistent styling via style definitions
 
-   Override the built-in Heading style definitions in the document's `styles` config to match the Phase 1 design tokens (colors, fonts, sizes). Then apply them via `heading: HeadingLevel.HEADING_1` on paragraphs.
+   Override the built-in Heading style definitions in the document's `styles` config to match the Phase 2 design tokens (colors, fonts, sizes). Then apply them via `heading: HeadingLevel.HEADING_1` on paragraphs.
 
 7. **Table widths must be explicit:**
    Always set table `width` using `WidthType.DXA` matching the content area width (page width minus left and right margins). Never use `tblW type="auto"` — it causes inconsistent table widths across viewers. For A4 with 1-inch margins: content width = 11906 - 2880 = 9026 DXA.
 
-### 3.5 — Visual QA
+### 4.5 — Visual QA
 
 After document generation:
 
@@ -998,34 +998,34 @@ After document generation:
 
 ---
 
-## PHASE A — Archive & Manifest
+## PHASE POST — Archive & Manifest
 
 **Goal:** Persist the state of this run so future invocations know what was generated, from which sources, and what open queries remain. In UPDATE mode, also move the previous version's files into the archive directory.
 
-This phase runs **after Phase 3 succeeds** — do not run it if Phase 3 errored out.
+This phase runs **after Phase 4 succeeds** — do not run it if Phase 4 errored out.
 
-### A.1 — Archive previous version (UPDATE mode ONLY)
+### Post.1 — Archive previous version (UPDATE mode ONLY)
 
 **⚠ CRITICAL — CREATE mode short-circuit:**
 
-Before doing anything in this step, check the mode determined in Phase U.
+Before doing anything in this step, check the mode determined in Phase Pre.
 
-- **If mode is CREATE** → **STOP. Skip the entire A.1 step. Do not create `archive/`. Do not create `archive/v1.0.0/`. Do not copy or move any file.** The archive directory must NOT exist after a CREATE-mode run. It is created for the first time on the SECOND invocation (the first UPDATE).
+- **If mode is CREATE** → **STOP. Skip the entire Post.1 step. Do not create `archive/`. Do not create `archive/v1.0.0/`. Do not copy or move any file.** The archive directory must NOT exist after a CREATE-mode run. It is created for the first time on the SECOND invocation (the first UPDATE).
 - **If mode is UPDATE** → continue with the archival steps below.
 
 A common failure mode is "archiving the current version alongside itself" — copying v1.0.0 into `archive/v1.0.0/` on the first run. This is WRONG. The archive exists to preserve **previous** versions that are being superseded, not to snapshot the current one. On a first run there is no previous version, therefore no archive subdirectory.
 
 **UPDATE mode archival steps:**
 
-Both the previous version's files and the new version's files exist in `outputs/<client>/generated/` right now (they have different version numbers in their filenames, so they don't conflict). Your job is to **move** the PREVIOUS version's files (whose version matches the manifest's current `version` field, read at the start of Phase U) into a versioned archive subdirectory — NOT the ones you just generated.
+Both the previous version's files and the new version's files exist in `outputs/<client>/generated/` right now (they have different version numbers in their filenames, so they don't conflict). Your job is to **move** the PREVIOUS version's files (whose version matches the manifest's current `version` field, read at the start of Phase Pre) into a versioned archive subdirectory — NOT the ones you just generated.
 
 ```
-1. Identify <prev_version> = the version recorded in the manifest BEFORE Phase A.2
+1. Identify <prev_version> = the version recorded in the manifest BEFORE Phase Post.2
    runs (i.e., the version that existed at the start of this run).
-   Identify <new_version> = the version Phase U determined for this run.
+   Identify <new_version> = the version Phase Pre determined for this run.
 
    Guard: <prev_version> MUST differ from <new_version>. If they are the same,
-   something is wrong — abort Phase A and report to the user. Never archive
+   something is wrong — abort Phase Post and report to the user. Never archive
    files whose version matches <new_version>.
 
 2. Create outputs/<client>/generated/archive/v<prev_version>/
@@ -1039,7 +1039,7 @@ Both the previous version's files and the new version's files exist in `outputs/
 
 4. COPY (not move) the current queries.md into archive/v<prev_version>/queries.md
    — this captures the previous version's query state.
-   The top-level queries.md will be overwritten in A.3 with the new state.
+   The top-level queries.md will be overwritten in Post.3 with the new state.
 
 5. MOVE the entire previous figures/ directory contents into
    archive/v<prev_version>/figures/ — the current figures/ has been regenerated
@@ -1053,7 +1053,7 @@ Both the previous version's files and the new version's files exist in `outputs/
    should end up inside archive/. If it did, you archived the wrong files.
 ```
 
-### A.2 — Write `doc-manifest.json`
+### Post.2 — Write `doc-manifest.json`
 
 Write (or overwrite) `outputs/<client>/generated/doc-manifest.json` with the full current state:
 
@@ -1095,7 +1095,7 @@ Write (or overwrite) `outputs/<client>/generated/doc-manifest.json` with the ful
 - `created_at` comes from the previous manifest in UPDATE mode; is today's date in CREATE mode
 - `inputs_used.sources` must list every file in `sources/` that was read (not just the newly added ones)
 
-### A.3 — Write `queries.md`
+### Post.3 — Write `queries.md`
 
 Write (or overwrite) `outputs/<client>/generated/queries.md` with the current open-query state:
 
@@ -1120,9 +1120,9 @@ _Status: <DRAFT | COMPLETE>_
 <optional — for reference>
 ```
 
-Every run rewrites this file with the current state. The previous run's `queries.md` is preserved inside `archive/v<prev_version>/queries.md` (from A.1).
+Every run rewrites this file with the current state. The previous run's `queries.md` is preserved inside `archive/v<prev_version>/queries.md` (from Post.1).
 
-### A.4 — Final verification
+### Post.4 — Final verification
 
 1. Confirm `doc-manifest.json` is valid JSON (parse it after writing).
 2. Confirm all files listed in `manifest.files` exist on disk at the expected paths.
@@ -1177,19 +1177,19 @@ Document Generated Successfully
 
 4. **Constraint validation is mandatory.** If the KB defines validation rules, check every one before generating the output documents. Fix violations before proceeding.
 
-5. **Sample artifacts are visual reference only.** Use them to extract the visual template (Phase 1), but all content structure and rules come from the KB + source materials.
+5. **Sample artifacts are visual reference only.** Use them to extract the visual template (Phase 2), but all content structure and rules come from the KB + source materials.
 
-6. **Missing info becomes an open query, never a guess.** Phase 0 audits the sources against the KB checklist and asks the user for any gaps. If the user does not resolve them, every unresolved field becomes an open query with a `[Q-N: ...]` placeholder in the document and an entry in `queries.md`. KB defaults cannot be substituted silently — if a default is used, it must be because the user explicitly approved it in Phase 0.5. No `[TBD]`, no "best guess", no fabrication.
+6. **Missing info becomes an open query, never a guess.** Phase 1 audits the sources against the KB checklist and asks the user for any gaps. If the user does not resolve them, every unresolved field becomes an open query with a `[Q-N: ...]` placeholder in the document and an entry in `queries.md`. KB defaults cannot be substituted silently — if a default is used, it must be because the user explicitly approved it in Phase 1.5. No `[TBD]`, no "best guess", no fabrication.
 
-7. **Phase 0 is a soft gate, not a hard halt.** If the user chooses to proceed with gaps, the document is generated as a DRAFT with placeholders. The user can re-run with updated source materials at any time and the update flow will automatically resolve placeholders. "Incomplete" does not mean "do not generate."
+7. **Phase 1 is a soft gate, not a hard halt.** If the user chooses to proceed with gaps, the document is generated as a DRAFT with placeholders. The user can re-run with updated source materials at any time and the update flow will automatically resolve placeholders. "Incomplete" does not mean "do not generate."
 
-8. **Auto-detect create vs update.** Phase U checks for `doc-manifest.json` in the output directory. Its presence means UPDATE mode; its absence means CREATE mode. The user never passes a flag for this.
+8. **Auto-detect create vs update.** Phase Pre checks for `doc-manifest.json` in the output directory. Its presence means UPDATE mode; its absence means CREATE mode. The user never passes a flag for this.
 
-9. **Version bumps are auto-determined.** Phase U classifies the change magnitude (MAJOR/MINOR/PATCH) by reading old and new sources and reasoning about what changed. The user can override via `version-bump=...`, but no confirmation step is required — the agent proceeds immediately after printing the diff.
+9. **Version bumps are auto-determined.** Phase Pre classifies the change magnitude (MAJOR/MINOR/PATCH) by reading old and new sources and reasoning about what changed. The user can override via `version-bump=...`, but no confirmation step is required — the agent proceeds immediately after printing the diff.
 
 10. **Stable query IDs.** Once a query is assigned an ID (Q-1, Q-2, ...), that ID never changes across versions. New queries get fresh IDs continuing the sequence. Resolved queries are marked RESOLVED in `queries.md` but retain their original ID for traceability.
 
-11. **Archive before overwriting.** Phase A always preserves the previous version in `archive/v<prev_version>/` before updating the manifest. Never delete previous outputs.
+11. **Archive before overwriting.** Phase Post always preserves the previous version in `archive/v<prev_version>/` before updating the manifest. Never delete previous outputs.
 
 12. **Adapt to any KB.** Whether the KB describes SOWs, legal contracts, marketing proposals, engineering specs, or anything else — follow its structure. The generation logic adapts to whatever the KB defines.
 
@@ -1202,6 +1202,6 @@ Document Generated Successfully
     - Requirements-vs-catalog audit tables (these are an internal QA artifact — keep them out of the deliverable)
     - Tags like `[Not in Catalog — Bizom to confirm]` that embed the word "Catalog" — rephrase to client-facing language such as `[Bizom to confirm]` or fold into the open query for that item
 
-    Translate KB-internal language into domain-appropriate, client-facing prose. If the KB says "Capability A.4 — Focus Product configuration", the document should say "Focus SKU visibility" (the client-facing feature name), not the code. If the KB's governance rules require an audit (e.g. compare every requirement against a catalog), perform that audit **internally during Phase 2.6 validation** and surface only its *consequences* — open queries, scope flags — in the document. The audit table itself belongs in a sidecar file (e.g. `audit.md` in the output directory), never in the deliverable.
+    Translate KB-internal language into domain-appropriate, client-facing prose. If the KB says "Capability A.4 — Focus Product configuration", the document should say "Focus SKU visibility" (the client-facing feature name), not the code. If the KB's governance rules require an audit (e.g. compare every requirement against a catalog), perform that audit **internally during Phase 3.6 validation** and surface only its *consequences* — open queries, scope flags — in the document. The audit table itself belongs in a sidecar file (e.g. `audit.md` in the output directory), never in the deliverable.
 
-    **Phase 2.6 self-check before assembly:** grep the assembled content for any KB artifact token (filenames, section codes, constraint IDs, the literal word "catalog" or "KB" when it refers to the authoring KB). If any is found, rewrite that passage in client-facing language before proceeding to Phase 3.
+    **Phase 3.6 self-check before assembly:** grep the assembled content for any KB artifact token (filenames, section codes, constraint IDs, the literal word "catalog" or "KB" when it refers to the authoring KB). If any is found, rewrite that passage in client-facing language before proceeding to Phase 4.

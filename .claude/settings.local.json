@@ -53,7 +53,9 @@
       "mcp__playwright__playwright_evaluate",
       "mcp__playwright__playwright_get_visible_html",
       "mcp__playwright__playwright_screenshot",
-      "mcp__playwright__playwright_save_as_pdf"
+      "mcp__playwright__playwright_save_as_pdf",
+      "Skill(browser-use)",
+      "Skill(browser-use:*)"
     ]
   },
   "enableAllProjectMcpServers": true,
