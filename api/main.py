@@ -17,6 +17,7 @@ import asyncio
 import io
 import json
 import os
+import re
 import zipfile
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -43,6 +44,42 @@ from .sessions import SessionManager
 
 load_dotenv()
 manager = SessionManager()
+
+# ───────────────────── skill discovery ───────────────────────
+
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+SKILL_DIRS = [
+    PROJECT_ROOT / "commands",
+    PROJECT_ROOT / ".claude" / "commands",
+]
+
+
+def _discover_skills() -> list[dict[str, str]]:
+    """Scan skill directories and return [{name, description}, ...]."""
+    seen: set[str] = set()
+    skills: list[dict[str, str]] = []
+    for d in SKILL_DIRS:
+        if not d.is_dir():
+            continue
+        for f in sorted(d.glob("*.md")):
+            name = f.stem
+            if name in seen:
+                continue
+            seen.add(name)
+            desc = ""
+            text = f.read_text(errors="replace")
+            m = re.search(r"^description:\s*(.+)$", text, re.MULTILINE)
+            if m:
+                desc = m.group(1).strip()
+            if not desc:
+                m = re.search(r"^#\s+(.+)$", text, re.MULTILINE)
+                if m:
+                    desc = m.group(1).strip()
+            skills.append({"name": name, "description": desc})
+    return skills
+
+
+SKILL_REGISTRY = _discover_skills()
 
 
 @asynccontextmanager
@@ -141,15 +178,79 @@ async def _read_uploads(files: list[UploadFile] | None) -> list[tuple[str, bytes
 
 # ───────────────────────── routes ──────────────────────────
 
+@app.get("/skills")
+async def list_skills():
+    """List all available skills with descriptions."""
+    return SKILL_REGISTRY
+
+
 @app.post("/sessions", response_model=SessionCreated, status_code=status.HTTP_201_CREATED)
 async def create_session(
     request: Request,
     skill: str = Form("platform-kb"),
     prompt: Optional[str] = Form(None),
+    project_dir: Optional[str] = Form(default=None),
     files: list[UploadFile] = File(default=[]),
+    generated_file: Optional[UploadFile] = File(default=None),
+    expected_file: Optional[UploadFile] = File(default=None),
 ):
+    import shutil
+
+    session_cwd: Optional[str] = None
+    final_prompt = prompt
+
+    if skill in ("find-bugs-exotel", "find-bugs"):
+        if not generated_file or not expected_file:
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"{skill} requires both generated_file and expected_file",
+            )
+        target_dir = Path(project_dir) if project_dir else Path.cwd()
+        if not target_dir.is_dir():
+            raise HTTPException(
+                status.HTTP_422_UNPROCESSABLE_ENTITY,
+                f"Project directory does not exist: {target_dir}",
+            )
+        session_cwd = str(target_dir)
+
+        gen_dir = target_dir / "inputs" / "compare" / "generated"
+        exp_dir = target_dir / "inputs" / "compare" / "expected"
+        for d in [gen_dir, exp_dir]:
+            if d.exists():
+                shutil.rmtree(d)
+            d.mkdir(parents=True, exist_ok=True)
+        (gen_dir / (generated_file.filename or "generated.json")).write_bytes(
+            await generated_file.read()
+        )
+        (exp_dir / (expected_file.filename or "expected.json")).write_bytes(
+            await expected_file.read()
+        )
+
+        compare_msg = (
+            f"/{skill}\n\n"
+            f"Compare the files in inputs/compare/generated/ "
+            f"against inputs/compare/expected/."
+        )
+        if prompt and prompt.strip():
+            compare_msg += "\n\nAdditional context from the user:\n" + prompt.strip()
+        final_prompt = prompt
+        first_msg = compare_msg
+    elif project_dir:
+        target_dir = Path(project_dir)
+        if target_dir.is_dir():
+            session_cwd = str(target_dir)
+        first_msg = None
+    else:
+        first_msg = None
+
     uploads = await _read_uploads(files)
-    session = await manager.create(skill=skill, files=uploads, prompt=prompt)
+    session = await manager.create(
+        skill=skill,
+        files=uploads,
+        prompt=final_prompt,
+        cwd=session_cwd,
+        first_message_override=first_msg,
+    )
     base = str(request.base_url).rstrip("/")
     return SessionCreated(
         session_id=session.id,
@@ -265,6 +366,49 @@ async def delete_session(sid: str):
     _require_session(sid)
     await manager.delete(sid)
     return None
+
+
+def _parse_md_table(file_path: Path) -> list[dict]:
+    if not file_path.exists():
+        return []
+    lines = file_path.read_text().splitlines()
+    table_lines = [l for l in lines if "|" in l]
+    if len(table_lines) < 3:
+        return []
+    headers = [h.strip() for h in table_lines[0].split("|") if h.strip()]
+    rows = []
+    for line in table_lines[2:]:
+        cells = [c.strip() for c in line.split("|")]
+        cells = cells[1:-1] if len(cells) >= 2 else cells
+        if len(cells) == len(headers):
+            rows.append(dict(zip(headers, cells)))
+    return rows
+
+
+@app.get("/sessions/{sid}/comparison-sheet")
+async def get_comparison_sheet(sid: str):
+    """Return parsed comparison_sheet.md as JSON for find-bugs-exotel sessions."""
+    session = _require_session(sid)
+    from collections import Counter
+
+    base = Path(session.cwd) if session.cwd else Path.cwd()
+    sheet_path = base / "comparison_sheet.md"
+    if not sheet_path.exists():
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "comparison_sheet.md not found yet")
+
+    rows = _parse_md_table(sheet_path)
+    by_category = dict(Counter(r.get("Category", "") for r in rows))
+    by_risk = dict(Counter(r.get("Risk", "") for r in rows))
+
+    return {
+        "session_id": sid,
+        "rows": rows,
+        "summary": {
+            "total": len(rows),
+            "by_category": by_category,
+            "by_risk": by_risk,
+        },
+    }
 
 
 @app.get("/health")

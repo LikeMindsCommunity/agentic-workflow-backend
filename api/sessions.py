@@ -25,11 +25,12 @@ SESSION_TTL_SECONDS = 60 * 60 * 6  # 6h idle
 
 
 class Session:
-    def __init__(self, sid: str, skill: str, input_dir: Path, output_dir: Path):
+    def __init__(self, sid: str, skill: str, input_dir: Path, output_dir: Path, cwd: Optional[str] = None):
         self.id = sid
         self.skill = skill
         self.input_dir = input_dir
         self.output_dir = output_dir
+        self.cwd = cwd
         self.events: list[dict[str, Any]] = []
         self._subscribers: set[asyncio.Queue] = set()
         self.status: SessionStatus = "running"
@@ -86,6 +87,8 @@ class SessionManager:
         skill: str,
         files: Iterable[tuple[str, bytes]],
         prompt: Optional[str],
+        cwd: Optional[str] = None,
+        first_message_override: Optional[str] = None,
     ) -> Session:
         sid = uuid4().hex[:16]
         input_dir = SESSIONS_INPUT_ROOT / sid
@@ -97,15 +100,18 @@ class SessionManager:
             safe_name = Path(name).name
             (input_dir / safe_name).write_bytes(content)
 
-        session = Session(sid, skill, input_dir, output_dir)
+        session = Session(sid, skill, input_dir, output_dir, cwd=cwd)
 
         async def on_event(event_type: str, data: dict[str, Any]) -> None:
             await session.push(event_type, data)
 
-        runner = AgentRunner(on_event=on_event)
+        runner = AgentRunner(on_event=on_event, cwd=cwd)
         session.runner = runner
 
-        first_message = self._compose_first_message(skill, input_dir, output_dir, prompt)
+        if first_message_override:
+            first_message = first_message_override
+        else:
+            first_message = self._compose_first_message(skill, input_dir, output_dir, prompt)
         runner.start(first_message)
 
         self._sessions[sid] = session
@@ -163,13 +169,24 @@ class SessionManager:
             session.status = "done"
         if session.runner is not None:
             await session.runner.stop()
+        self._cleanup_compare_files(session)
         # Keep the record so /result still works; cleanup happens on TTL sweep.
+
+    @staticmethod
+    def _cleanup_compare_files(session: Session) -> None:
+        if session.skill not in ("find-bugs-exotel", "find-bugs") or not session.cwd:
+            return
+        for sub in ("generated", "expected"):
+            d = Path(session.cwd) / "inputs" / "compare" / sub
+            if d.exists():
+                shutil.rmtree(d, ignore_errors=True)
 
     async def delete(self, sid: str) -> None:
         await self.close(sid)
         session = self._sessions.pop(sid, None)
         if session is None:
             return
+        self._cleanup_compare_files(session)
         for path in (session.input_dir, session.output_dir.parent):
             if path.exists():
                 shutil.rmtree(path, ignore_errors=True)

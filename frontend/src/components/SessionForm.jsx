@@ -1,22 +1,58 @@
-import { useState } from "react";
-import { createSession } from "../lib/api.js";
+import { useEffect, useState } from "react";
+import { createSession, fetchSkills } from "../lib/api.js";
 
-// Quick-pick suggestions; the field accepts any skill name your install has.
-const SKILL_SUGGESTIONS = ["platform-kb", "generate-document", "init", "review"];
+const COMPARE_SKILLS = ["find-bugs-exotel", "find-bugs"];
 
 export default function SessionForm({ onCreated }) {
+  const [skills, setSkills] = useState([]);
   const [skill, setSkill] = useState("platform-kb");
   const [prompt, setPrompt] = useState("");
+  const [projectDir, setProjectDir] = useState("");
   const [files, setFiles] = useState([]);
+  const [generatedFile, setGeneratedFile] = useState(null);
+  const [expectedFile, setExpectedFile] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
+
+  const isCompareSkill = COMPARE_SKILLS.includes(skill);
+
+  useEffect(() => {
+    fetchSkills()
+      .then((list) => {
+        setSkills(list);
+        if (list.length > 0 && !list.find((s) => s.name === skill)) {
+          setSkill(list[0].name);
+        }
+      })
+      .catch(() => setSkills([]));
+  }, []);
 
   async function onSubmit(e) {
     e.preventDefault();
     setBusy(true);
     setError(null);
+
+    if (isCompareSkill && (!generatedFile || !expectedFile)) {
+      setError("Please upload both a generated file and an expected file.");
+      setBusy(false);
+      return;
+    }
+
+    if (isCompareSkill && !projectDir.trim()) {
+      setError("Please provide the project directory path.");
+      setBusy(false);
+      return;
+    }
+
     try {
-      const session = await createSession({ skill, prompt, files });
+      const session = await createSession({
+        skill,
+        prompt,
+        projectDir: isCompareSkill ? projectDir : "",
+        files: isCompareSkill ? [] : files,
+        generatedFile: isCompareSkill ? generatedFile : null,
+        expectedFile: isCompareSkill ? expectedFile : null,
+      });
       onCreated(session);
     } catch (err) {
       setError(String(err.message || err));
@@ -42,29 +78,43 @@ export default function SessionForm({ onCreated }) {
 
       <div>
         <label className="block text-sm font-medium mb-1">Skill</label>
-        <input
-          className="border rounded px-3 py-2 w-full text-sm font-mono"
+        <select
+          className="border rounded px-3 py-2 w-full text-sm font-mono bg-white"
           value={skill}
           onChange={(e) => setSkill(e.target.value)}
-          list="skill-suggestions"
-          placeholder="my-skill"
-        />
-        <datalist id="skill-suggestions">
-          {SKILL_SUGGESTIONS.map((s) => <option key={s} value={s} />)}
-        </datalist>
-        <div className="text-xs text-slate-500 mt-1 flex flex-wrap gap-1">
-          {SKILL_SUGGESTIONS.map((s) => (
-            <button
-              key={s}
-              type="button"
-              onClick={() => setSkill(s)}
-              className="px-2 py-0.5 bg-slate-100 hover:bg-slate-200 rounded font-mono"
-            >
-              {s}
-            </button>
+        >
+          {skills.length === 0 && <option value={skill}>{skill}</option>}
+          {skills.map((s) => (
+            <option key={s.name} value={s.name}>
+              {s.name}
+              {s.description ? ` — ${s.description.slice(0, 80)}` : ""}
+            </option>
           ))}
-        </div>
+        </select>
+        {skills.length === 0 && (
+          <p className="text-xs text-slate-400 mt-1">
+            Could not load skills from API. Type a skill name manually.
+          </p>
+        )}
       </div>
+
+      {isCompareSkill && (
+        <div>
+          <label className="block text-sm font-medium mb-1">
+            Project Directory
+            <span className="text-rose-500 ml-0.5">*</span>
+          </label>
+          <input
+            className="border rounded px-3 py-2 w-full text-sm font-mono"
+            value={projectDir}
+            onChange={(e) => setProjectDir(e.target.value)}
+            placeholder="e.g. /home/user/projects/my-ivr-project"
+          />
+          <p className="text-xs text-slate-400 mt-1">
+            Absolute path to the project containing CLAUDE.md and source files. The agent will run in this directory.
+          </p>
+        </div>
+      )}
 
       <div>
         <label className="block text-sm font-medium mb-1">Prompt (optional)</label>
@@ -77,23 +127,62 @@ export default function SessionForm({ onCreated }) {
         />
       </div>
 
-      <div>
-        <label className="block text-sm font-medium mb-1">Files</label>
-        <input
-          type="file"
-          multiple
-          onChange={(e) => setFiles(Array.from(e.target.files))}
-          className="text-sm"
-        />
-        {files.length > 0 && (
-          <p className="text-xs text-slate-500 mt-1">
-            {files.length} file(s) — {files.map((f) => f.name).join(", ")}
+      {isCompareSkill ? (
+        <div className="space-y-3">
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Generated File
+              <span className="text-rose-500 ml-0.5">*</span>
+            </label>
+            <input
+              type="file"
+              onChange={(e) => setGeneratedFile(e.target.files[0] || null)}
+              className="text-sm"
+            />
+            {generatedFile && (
+              <p className="text-xs text-slate-500 mt-1">{generatedFile.name}</p>
+            )}
+            <p className="text-xs text-slate-400 mt-1">
+              The IVR JSON your system generated (stored in inputs/compare/generated/)
+            </p>
+          </div>
+          <div>
+            <label className="block text-sm font-medium mb-1">
+              Expected File
+              <span className="text-rose-500 ml-0.5">*</span>
+            </label>
+            <input
+              type="file"
+              onChange={(e) => setExpectedFile(e.target.files[0] || null)}
+              className="text-sm"
+            />
+            {expectedFile && (
+              <p className="text-xs text-slate-500 mt-1">{expectedFile.name}</p>
+            )}
+            <p className="text-xs text-slate-400 mt-1">
+              The reference/correct IVR JSON to compare against (stored in inputs/compare/expected/)
+            </p>
+          </div>
+        </div>
+      ) : (
+        <div>
+          <label className="block text-sm font-medium mb-1">Files</label>
+          <input
+            type="file"
+            multiple
+            onChange={(e) => setFiles(Array.from(e.target.files))}
+            className="text-sm"
+          />
+          {files.length > 0 && (
+            <p className="text-xs text-slate-500 mt-1">
+              {files.length} file(s) — {files.map((f) => f.name).join(", ")}
+            </p>
+          )}
+          <p className="text-xs text-slate-400 mt-1">
+            Anything the skill can read: JSON, YAML, MD, PDF, DOCX, XLSX, PPTX, images.
           </p>
-        )}
-        <p className="text-xs text-slate-400 mt-1">
-          Anything the skill can read: JSON, YAML, MD, PDF, DOCX, XLSX, PPTX, images.
-        </p>
-      </div>
+        </div>
+      )}
 
       <button
         type="submit"

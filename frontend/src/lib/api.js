@@ -21,12 +21,21 @@ async function ensureOk(res) {
   return res;
 }
 
-export async function createSession({ skill, prompt, files }) {
+export async function createSession({ skill, prompt, projectDir, files, generatedFile, expectedFile }) {
   const fd = new FormData();
   fd.append("skill", skill);
   if (prompt) fd.append("prompt", prompt);
+  if (projectDir) fd.append("project_dir", projectDir);
   for (const f of files || []) fd.append("files", f);
+  if (generatedFile) fd.append("generated_file", generatedFile);
+  if (expectedFile) fd.append("expected_file", expectedFile);
   const res = await fetch(`${getApiBase()}/sessions`, { method: "POST", body: fd });
+  await ensureOk(res);
+  return res.json();
+}
+
+export async function fetchComparisonSheet(sessionId) {
+  const res = await fetch(`${getApiBase()}/sessions/${sessionId}/comparison-sheet`);
   await ensureOk(res);
   return res.json();
 }
@@ -79,6 +88,12 @@ export async function fetchResultJson(sessionId) {
 
 export function streamUrl(sessionId) {
   return `${getApiBase()}/sessions/${sessionId}/stream`;
+}
+
+export async function fetchSkills() {
+  const res = await fetch(`${getApiBase()}/skills`);
+  await ensureOk(res);
+  return res.json();
 }
 
 export const EVENT_TYPES = [

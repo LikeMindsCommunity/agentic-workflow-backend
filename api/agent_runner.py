@@ -27,9 +27,9 @@ from claude_agent_sdk import (
 EventCallback = Callable[[str, dict[str, Any]], Awaitable[None]]
 
 
-def build_options() -> ClaudeAgentOptions:
+def build_options(cwd: str | None = None) -> ClaudeAgentOptions:
     kwargs: dict[str, Any] = dict(
-        cwd=os.getcwd(),
+        cwd=cwd or os.getcwd(),
         setting_sources=["user", "project"],
         permission_mode="bypassPermissions",
         allowed_tools=[
@@ -78,8 +78,9 @@ class AgentRunner:
 
     _STOP = object()
 
-    def __init__(self, on_event: EventCallback):
+    def __init__(self, on_event: EventCallback, cwd: str | None = None):
         self._on_event = on_event
+        self._cwd = cwd
         self._inbox: asyncio.Queue = asyncio.Queue()
         self._task: asyncio.Task | None = None
         self._turn_count = 0
@@ -105,7 +106,7 @@ class AgentRunner:
 
     async def _run(self) -> None:
         try:
-            async with ClaudeSDKClient(options=build_options()) as client:
+            async with ClaudeSDKClient(options=build_options(cwd=self._cwd)) as client:
                 while True:
                     item = await self._inbox.get()
                     if item is self._STOP:
