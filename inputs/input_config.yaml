@@ -3,7 +3,7 @@
 # HOW TO USE:
 #   1. Fill in the prompt below — describe the platform, use case, and paste any doc URLs.
 #   2. (Optional) Drop sample files into inputs/sample_artifacts/ and docs into inputs/docs/
-#   3. Run:  /build-kb   (Claude Code)   or   python main.py   (SDK)
+#   3. Run:  /platform-kb   (Claude Code)   or   python main.py   (SDK)
 #
 # The agent drafts a KB, identifies gaps, and loops with you until it's complete.
 
