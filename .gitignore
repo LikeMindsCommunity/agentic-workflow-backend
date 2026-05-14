@@ -1,0 +1,43 @@
+# Outputs
+outputs/
+
+# LLM reference docs (not source code)
+llm_docs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+.Python
+
+# Virtual environment
+venv/
+.venv/
+env/
+
+# Environment variables
+.env
+
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Pytest / coverage
+.pytest_cache/
+.coverage
+htmlcov/
+
+inputs/
+package*
+
+# Node modules
+node_modules/
+.claude/settings.local.json
