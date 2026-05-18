@@ -52,20 +52,21 @@ claude
 ## Commands
 
 
-| Command                  | What it does                                                                       |
-| ------------------------ | ---------------------------------------------------------------------------------- |
-| `/init-project`          | Scans repo, generates `CLAUDE.md` and `approval_sheet.md`                          |
-| `/triage-bug`            | Enriches a vague bug report and adds it to `bug_backlog.md`                        |
-| `/process-backlog`       | Moves all APPROVED bugs from backlog into approval sheet                           |
-| `/fix-bug`               | Diagnoses a bug, proposes fix, writes to approval sheet                            |
-| `/batch-fix`             | Processes multiple bugs with interaction analysis                                  |
-| `/find-bugs`             | Compares generated vs expected file, writes discrepancies to `comparison_sheet.md` |
+| Command                  | What it does                                                                                                                                                                                   |
+| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `/init-project`          | Scans repo, generates `CLAUDE.md` and `approval_sheet.md`                                                                                                                                      |
+| `/triage-bug`            | Enriches a vague bug report and adds it to `bug_backlog.md`                                                                                                                                    |
+| `/process-backlog`       | Moves all APPROVED bugs from backlog into approval sheet                                                                                                                                       |
+| `/fix-bug`               | Diagnoses a bug, proposes fix, writes to approval sheet                                                                                                                                        |
+| `/batch-fix`             | Processes multiple bugs with interaction analysis                                                                                                                                              |
+| `/find-bugs`             | Compares generated vs expected file, writes discrepancies to `comparison_sheet.md`                                                                                                             |
 | `/find-bugs-exotel`      | Exotel IVR JSON comparison — wraps `/find-bugs` and adds per-node schema, default, alias, composition, script, pattern, and numbered-constraint checks using Exotel KB sections in `CLAUDE.md` |
-| `/process-comparison`    | Processes approved comparison items into `approval_sheet.md` with full RCA         |
-| `/review-approval-sheet` | Summarizes current approval sheet status                                           |
-| `/apply-fixes`           | Applies all APPROVED fixes and creates a git commit                                |
-| `/platform-kb`           | Builds a structured Knowledge Base (KB) from platform artifacts and docs           |
-| `/generate-document`     | Generates a versioned PDF/DOCX document from a KB + source materials               |
+| `/process-comparison`    | Processes approved comparison items into `approval_sheet.md` with full RCA                                                                                                                     |
+| `/review-approval-sheet` | Summarizes current approval sheet status                                                                                                                                                       |
+| `/apply-fixes`           | Applies all APPROVED fixes and creates a git commit                                                                                                                                            |
+| `/platform-kb`           | Builds a structured Knowledge Base (KB) from platform artifacts and docs                                                                                                                       |
+| `/generate-document`     | Generates a versioned PDF/DOCX document from a KB + source materials                                                                                                                           |
+
 
 ## File Comparison (`/find-bugs`)
 
@@ -124,7 +125,7 @@ A sub-skill of `/find-bugs` specialised for Exotel IVR flow JSONs. It runs every
 
 `/find-bugs-exotel` auto-derives the Exotel KB from your project's own prompts, generator code, schemas, and docs — the same artefacts `/find-bugs` already sweeps in Step 1.3. Node types, per-node defaults, alias maps, event catalog, composition rules, scripting language, and numbered constraints are extracted directly from your code. **No manual KB population is needed.** Just run `/find-bugs-exotel` right after `/init-project`.
 
-If the skill's derivation is sparse (e.g., your code doesn't name every node type explicitly), you can optionally pin overrides or add rules the code doesn't encode by filling in any of the `## Exotel *` sections of `CLAUDE.md`:
+If the skill's derivation is sparse (e.g., your code doesn't name every node type explicitly), you can optionally pin overrides or add rules the code doesn't encode by filling in any of the `## Exotel `* sections of `CLAUDE.md`:
 
 - `## Exotel Node Taxonomy`, `## Exotel Alias Map`, `## Exotel Node Attribute Schema`, `## Exotel Event Catalog`, `## Exotel Composition Rules`, `## Exotel Constraints` — augment the derived KB.
 - Optional: `## Exotel Universal Attributes`, `## Exotel Scripting Language`, `## Exotel Patterns`, `## Exotel Strict Instructions`, `## Exotel Layout Rules`.
@@ -163,13 +164,14 @@ claude
 ### 2. Drop your input materials
 
 
-| Folder                     | What to put here                                                                   |
-| -------------------------- | ---------------------------------------------------------------------------------- |
-| `inputs/sample_artifacts/` | Platform-generated files (JSON, XML, YAML, config files, etc.)                     |
-| `inputs/docs/`             | Documentation in any format (markdown, PDF, Word, Excel, PowerPoint, HTML, images) |
+| Folder / File              | What to put here                                                                         |
+| -------------------------- | ---------------------------------------------------------------------------------------- |
+| `inputs/sample_artifacts/` | Platform-generated files (JSON, XML, YAML, config files, etc.)                           |
+| `inputs/docs/`             | Documentation in any format (markdown, PDF, Word, Excel, PowerPoint, HTML, images)       |
+| `inputs/input_config.yaml` | Optional — a `prompt` field with additional context, URLs, or instructions for the skill |
 
 
-Both folders are optional. You can also pass file paths, URLs, or context directly as arguments.
+All inputs are optional. You can also pass file paths, URLs, or context directly as arguments.
 
 ### 3. Run the skill
 
@@ -303,6 +305,7 @@ Generates a pixel-accurate PDF and/or DOCX document from a KB and one or more so
 
 ### Inputs
 
+
 | Parameter      | Description                                                          | Default                       |
 | -------------- | -------------------------------------------------------------------- | ----------------------------- |
 | `kb`           | Path to the client's KB directory                                    | `outputs/exotel-sow/kb/`      |
@@ -311,6 +314,9 @@ Generates a pixel-accurate PDF and/or DOCX document from a KB and one or more so
 | `output`       | Directory for generated files                                        | `outputs/<client>/generated/` |
 | `format`       | `pdf`, `docx`, or `both`                                             | `both`                        |
 | `version-bump` | Override auto-detected bump: `patch`, `minor`, or `major`            | *(auto-detected)*             |
+
+
+You can also place an `inputs/input_config.yaml` file with a `prompt` field to pass additional context, URLs, or instructions to the skill without using command-line arguments.
 
 ### Workflow
 
@@ -326,3 +332,87 @@ The skill auto-detects CREATE vs UPDATE mode from the presence of `doc-manifest.
 ```
 
 ---
+
+# Claude Agent (`claude_agent`)
+
+A Python CLI that runs any skill in `.claude/commands/` programmatically using the **Claude Agent SDK** — no interactive Claude Code session required. Streams tool calls, thinking blocks, and assistant text live to the terminal and supports multi-turn conversations after the skill finishes.
+
+## How it works
+
+The agent loads slash commands from `.claude/commands/` (via `setting_sources=["project"]`), sends `/<skill-name> <arguments>` as the first user message, then streams the full response. After the skill finishes you can keep the conversation going by typing follow-up messages; type `done` or `Ctrl-D` to exit.
+
+If `inputs/input_config.yaml` exists and contains a `prompt` field, that text is automatically appended to the first message as authoritative user guidance for the run.
+
+## Setup
+
+Dependencies are already listed in `requirements.txt`. Install them once:
+
+```bash
+pip install -r requirements.txt
+```
+
+Copy your API credentials into `.env` (the agent loads it automatically via `python-dotenv`):
+
+```
+ANTHROPIC_API_KEY=sk-ant-...          # standard Anthropic API
+# or, for Azure AI Foundry:
+CLAUDE_CODE_USE_FOUNDRY=1
+ANTHROPIC_FOUNDRY_BASE_URL=https://<resource>.services.ai.azure.com/anthropic
+ANTHROPIC_FOUNDRY_API_KEY=<key>
+```
+
+## Usage
+
+```bash
+python -m claude_agent <skill-name> [arguments...]
+```
+
+The `skill-name` must match a file in `.claude/commands/<skill-name>.md`. Everything after it is passed verbatim as `$ARGUMENTS` to the skill.
+
+### Examples
+
+```bash
+# Build a platform KB from files in inputs/
+python -m claude_agent platform-kb
+
+# Pass context inline
+python -m claude_agent platform-kb "Exotel IVR JSONs in inputs/sample_artifacts/ and docs at https://developer.exotel.com/api/nodeflows"
+
+# Generate a document from an existing KB
+python -m claude_agent generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/
+
+# PDF only
+python -m claude_agent generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ format=pdf
+```
+
+## Configuration
+
+
+| Variable                     | Description                                                               | Default                       |
+| ---------------------------- | ------------------------------------------------------------------------- | ----------------------------- |
+| `ANTHROPIC_API_KEY`          | Anthropic API key (standard)                                              | required unless using Foundry |
+| `CLAUDE_AGENT_MODEL`         | Override the model (e.g. `claude-opus-4-5`)                               | SDK default                   |
+| `CLAUDE_CODE_USE_FOUNDRY`    | Set to `1` to route through Azure AI Foundry instead of api.anthropic.com | off                           |
+| `ANTHROPIC_FOUNDRY_BASE_URL` | Azure Foundry endpoint URL                                                | required if using Foundry     |
+| `ANTHROPIC_FOUNDRY_API_KEY`  | Azure Foundry API key                                                     | required if using Foundry     |
+
+
+## Allowed tools
+
+The agent runs with `bypassPermissions` and grants the skill access to:
+`Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `TodoWrite`, `Skill`, and all MCP tools (`mcp__*`).
+
+## Terminal output
+
+
+| Colour  | Meaning                                 |
+| ------- | --------------------------------------- |
+| Green   | Agent status messages                   |
+| Cyan    | Tool call (`→ ToolName {input}`)        |
+| Yellow  | Tool result (`← output` / `← error`)    |
+| Magenta | Thinking block (truncated to 400 chars) |
+| Dim     | Session metadata (turns, cost)          |
+
+
+---
+
