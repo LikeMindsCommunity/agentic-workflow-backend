@@ -5,12 +5,9 @@ Works with any project, any tech stack.
 
 ## Install
 
-Clone and run:
-
 ```
 git clone https://github.com/LikeMindsCommunity/claude-skill-auto-bugfix.git
 cd claude-skill-auto-bugfix
-./install.sh
 ```
 
 ## Setup
