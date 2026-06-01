@@ -1665,6 +1665,44 @@ This phase emits the HTML/CSS into the generated skill. **Every concrete styling
 
 The template must follow these strict rules so the generated skill renders pixel-correctly across Chrome print-to-PDF and WeasyPrint.
 
+---
+
+**Rule 0 (BRD DOCX output mode only — mandatory, checked before all other rules):**
+
+When `FORMAT_SPEC.document_type == BRD` and the generated skill produces DOCX output (via python-docx), the generated skill's Phase 4 Python script **must load the sample DOCX as its base document — never create a blank `Document()`**.
+
+The compiler must emit this exact pattern in the generated skill's Phase 4 DOCX initialisation block:
+
+```python
+from docx import Document
+from docx.oxml.ns import qn
+
+# Load the sample DOCX as the style/theme/header/footer template.
+# This is the ONLY correct way to initialise the document for BRD output.
+# Do NOT replace this with Document() — a blank document loses all styles,
+# the Office theme (font and color palette), header images, and footer layout.
+SAMPLE_PATH = "{{FORMAT_SPEC.sample_path}}"   # absolute path to the sample DOCX
+doc = Document(SAMPLE_PATH)
+
+# Strip all body content while preserving styles, theme, header, and footer.
+body = doc.element.body
+for child in list(body):
+    if child.tag.split("}")[-1] != "sectPr":
+        body.remove(child)
+
+# All styles (NoSpacing, RapidHeading1, Rapid Heading 1.1., List Paragraph, etc.),
+# the Office theme (Calibri/Cambria font pair, color tokens), header images,
+# footer text, and page margins are now inherited exactly from the sample.
+# Write content into doc from this point — do not call _ensure_style() or
+# recreate styles manually. They already exist.
+```
+
+`{{FORMAT_SPEC.sample_path}}` is substituted by the compiler with the absolute path to the sample file recorded in Phase 1.3. The generated skill embeds the real path as a string literal.
+
+**Why this is mandatory:** Creating a blank `Document()` and then calling `_ensure_style()` to recreate styles produces a document that deviates from the sample in at least 9 measurable ways: wrong body style name, incomplete `NoSpacing` definition, incorrect top margin, missing Office theme, wrong header tab stop, missing `contextualSpacing` on list paragraphs, missing `Normal1` style, inconsistent line spacing inheritance, and table cell font override. Every one of these is visible in the rendered output. Loading the sample as the base eliminates all of them in a single line.
+
+---
+
 **Rule 1: Centralise all colors as CSS custom properties at `:root`**
 
 Every color used in the document must appear once in `:root` as a CSS variable with the semantic name from FORMAT_SPEC.color_palette, and every other CSS rule must reference that variable through `var(--token)`. This makes the document re-tintable by editing the token block alone.
@@ -2162,3 +2200,5 @@ Next step:
 24. **Boilerplate template strings are embedded as output strings, not as instructions.** When the compiler embeds a Role: footer in the generated skill's 1B catalog, it embeds the actual string `"Role: The Management & Finance role users will be able to create, edit and view customer master records in NetSuite..."` — not the instruction `"Write a Role line describing who can access customer master records."` The generation agent must be able to pass this string directly to the HTML template with only [CLIENT_SHORT] substitution. Any instruction that asks the agent to compose or paraphrase boilerplate text will produce wrong text.
 
 25. **REUSABLE_STANDARD section images are embedded assets, not placeholders.** When Step L2 classifies a section-body image as REUSABLE_STANDARD (standard process flow diagram that appears identically across all BRDs for this org), the compiler extracts it to `assets/{customer_slug}/`, records it in FORMAT_SPEC.section_images, and the generated skill renders it as `<img src="file://...">` at the correct section position. These images appear in every generated document without client input. CLIENT_SPECIFIC images use a placeholder div — the user is explicitly notified that the diagram must be inserted manually.
+
+26. **BRD DOCX skills must load the sample as a base document — never `Document()`.** This is the single most impactful styling rule for BRD-type generated skills. The correct initialisation is `doc = Document(sample_path)` followed by stripping all body content while preserving the `sectPr` element. This one line guarantees that styles, the Office theme, header images, footer text, page margins, and `contextualSpacing` are all inherited exactly from the sample. Creating a blank `Document()` and then manually recreating styles via `_ensure_style()` will always produce deviations — no matter how carefully the FORMAT_SPEC values are specified — because Word's style inheritance chain, the Office theme XML, and the `docDefaults` element cannot be faithfully reproduced by hand. Any generated BRD skill that contains `doc = Document()` without immediately stripping it of a loaded sample is non-compliant with this rule and must be regenerated.
