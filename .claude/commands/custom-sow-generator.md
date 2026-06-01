@@ -228,7 +228,11 @@ Do not apply a single global table style to all tables in the document. Visit ev
 - Code or keyword inline styling: monospace? background color? border?
 - Hyperlink / cross-reference styling: color hex, underline yes/no, weight
 
-**Step I: Flowchart shape vocabulary** (critical for technical SOWs)
+**Step I: Flowchart shape vocabulary** (conditional — skip entirely for BRD-type documents)
+
+Before running this step, check the document type determined in Phase 1.5. If the document type is `BRD`, skip this entire step and record `flowchart_vocabulary: not_applicable` in FORMAT_SPEC. BRD process flow diagrams are embedded raster images, not drawable SVG shapes — they are handled in Step L2 below.
+
+Only run the steps below if the document type is `IVR_SOW` or `FLOW_DOCUMENT`:
 
 Flowcharts are the most distinctive element. Catalogue every shape used and its meaning:
 
@@ -285,7 +289,13 @@ For each such element found:
 - Record its approximate position and dimensions
 - Record whether it is a static image (must be embedded as `<img>` or recreated as SVG) or a structured graphic that can be approximated with HTML/CSS
 
-The generated skill must include explicit instructions for handling these images — either embedding a base64 data URI, providing an `<img src="...">` placeholder the user must fill, or recreating the graphic as SVG. Silently omitting a graphical block because it is hard to reproduce is a completeness error.
+The generated skill must include explicit instructions for handling these images. The required approach, in priority order:
+
+1. **Extract and store as a local asset file** (mandatory for all raster images — logos, badges, cover photos, signatures). Run the extraction in Phase 1.3 Step L. The generated skill references these files by path. This is the only approach that scales to large images without truncation.
+2. **Recreate as inline SVG** only for simple geometric graphics (banners, icon shapes, dividers) where the visual can be faithfully reproduced programmatically.
+3. **Base64 data URI** only for images under 5 KB where extracting a file is impractical.
+
+**Placeholders (`<img src="...">` or gray divs) are never acceptable in a compiled skill.** A placeholder produces a broken output every time the skill runs, on every page the image appears. If an image is hard to embed, extract it as a file — there is no size limit on a local path reference.
 
 **Step K: Build the master color palette (via programmatic pixel sampling, not visual estimation)**
 
@@ -363,7 +373,274 @@ The palette typically has 12 to 20 tokens for a well-designed SOW. Common slots,
 - Link / hyperlink color
 - Arrow color in flowcharts (often black)
 
-**Step L: Record exact heading strings**
+**Step L: Extract and store all embedded image assets**
+
+Every raster image in the sample (logos, badges, cover photos, watermarks, signature blocks) must be extracted now, saved to a permanent local directory, and its path recorded in FORMAT_SPEC. The generated skill will reference these paths — never placeholders, never large base64 strings.
+
+**Step L2: Extract section-body images and score for reusability** (BRD-type documents)
+
+Many document types (BRDs, implementation guides) embed process flow diagrams directly inside section bodies rather than as SVG flowcharts. These images must be extracted and classified — some are standard org-level diagrams that appear identically in every document for that org; others are client-specific.
+
+**Step L2-A: Extract all body images**
+
+```python
+import zipfile, hashlib
+from pathlib import Path
+
+body_images = {}   # filename → { path, hash, size_bytes }
+
+with zipfile.ZipFile(sample_path, 'r') as z:
+    media_files = [f for f in z.namelist() if '/media/' in f]
+    for mf in media_files:
+        fname = Path(mf).name
+        data = z.read(mf)
+        dest = assets_dir / fname
+        dest.write_bytes(data)
+        body_images[fname] = {
+            "path": str(dest.resolve()),
+            "hash": hashlib.md5(data).hexdigest(),
+            "size_bytes": len(data)
+        }
+
+print(f"Extracted {len(body_images)} body images")
+```
+
+**Step L2-B: Map each image to its section**
+
+Parse the sample DOCX body XML to find which section heading precedes each `<w:drawing>` element. Record `section_images[section_heading] = filename`.
+
+```python
+import xml.etree.ElementTree as ET
+from docx import Document
+
+doc = Document(sample_path)
+section_images = {}   # section_heading → list of image filenames
+current_heading = "cover"
+
+ns = {'w': 'http://schemas.openxmlformats.org/wordprocessingml/2006/main',
+      'r': 'http://schemas.openxmlformats.org/officeDocument/2006/relationships'}
+
+with zipfile.ZipFile(sample_path) as z:
+    rels_xml = z.read('word/_rels/document.xml.rels')
+    rels_tree = ET.fromstring(rels_xml)
+    rid_to_file = {}
+    for rel in rels_tree:
+        if 'image' in rel.get('Type', '').lower():
+            rid_to_file[rel.get('Id')] = Path(rel.get('Target', '')).name
+
+doc_xml = ET.fromstring(z.read('word/document.xml') if 'word/document.xml' in z.namelist() else b'<root/>')
+for para in doc.paragraphs:
+    style = para.style.name if para.style else ""
+    text = para.text.strip()
+    if 'Heading' in style and text:
+        current_heading = text
+    # Check for drawings in this paragraph's runs
+    para_xml = para._p
+    for blip in para_xml.findall('.//' + '{http://schemas.openxmlformats.org/drawingml/2006/spreadsheetDrawing}blip') + \
+                 para_xml.findall('.//' + '{http://schemas.openxmlformats.org/drawingml/2006/main}blip'):
+        r_embed = blip.get('{http://schemas.openxmlformats.org/officeDocument/2006/relationships}embed')
+        if r_embed and r_embed in rid_to_file:
+            fname = rid_to_file[r_embed]
+            section_images.setdefault(current_heading, []).append(fname)
+
+print("Section → Images mapping:")
+for sec, imgs in section_images.items():
+    print(f"  {sec}: {imgs}")
+```
+
+**Step L2-C: Score each image for reusability**
+
+An image is a **REUSABLE_STANDARD** asset (same in every org document) if:
+- Its content represents a generic process flow (P2P, O2C, R2R, etc.) that does not contain client-specific names, logos, or data
+- OR it appears in multiple sample documents with the same MD5 hash
+
+An image is **CLIENT_SPECIFIC** if:
+- It contains the client's name, logo, or project-specific data
+- OR it only appears in one document
+
+**Decision rule** (apply when only one sample is available):
+- Images in header/footer zones → always REUSABLE_STANDARD (logos)
+- Cover photo → REUSABLE_STANDARD (org standard cover image)
+- Images in section bodies whose section heading matches a standard process section name (Procure to Pay, Order to Cash, Record to Report, Design to Build, Return to Credit, Return to Debit, Customization, Integration) → mark as REUSABLE_STANDARD candidate; visual-inspect to confirm no client-specific content is visible
+
+```python
+STANDARD_PROCESS_SECTIONS = [
+    "procure to pay", "order to cash", "record to report",
+    "design to build", "return to credit", "return to debit",
+    "customization", "integration", "employee master", "customer master",
+    "vendor master", "subsidiary structure"
+]
+
+for section_heading, images in section_images.items():
+    for img_fname in images:
+        is_standard = any(kw in section_heading.lower() for kw in STANDARD_PROCESS_SECTIONS)
+        role = "REUSABLE_STANDARD" if is_standard else "CLIENT_SPECIFIC"
+        print(f"  {img_fname} in '{section_heading}' → {role}")
+```
+
+**Step L2-D: Record in FORMAT_SPEC.section_images**
+
+```yaml
+section_images:
+  # REUSABLE_STANDARD: embedded in the generated skill; used in every output document
+  - section: "Procure to Pay"
+    filename: "image3.png"
+    path: "assets/{customer_slug}/image3.png"
+    reusability: REUSABLE_STANDARD
+    embed_in_skill: yes
+
+  - section: "Order to Cash"
+    filename: "image5.png"
+    path: "assets/{customer_slug}/image5.png"
+    reusability: REUSABLE_STANDARD
+    embed_in_skill: yes
+
+  # CLIENT_SPECIFIC: the generated skill outputs a placeholder; client or consultant inserts the real image
+  - section: "Customization"
+    filename: "image9.png"
+    path: "assets/{customer_slug}/image9.png"
+    reusability: CLIENT_SPECIFIC
+    embed_in_skill: no
+    placeholder_instruction: "Insert client-specific process diagram here"
+```
+
+**REUSABLE_STANDARD images** → the generated skill embeds `<img src="file://.../assets/{slug}/imageN.png">` at the correct section position. They are extracted once during compilation and reused in every generated document.
+
+**CLIENT_SPECIFIC images** → the generated skill outputs a styled placeholder `<div class="diagram-placeholder">[PROCESS FLOW DIAGRAM — insert client diagram here]</div>` with a note to the user.
+
+**1. Create the asset directory**
+
+```python
+import os, zipfile, re
+from pathlib import Path
+
+customer_slug = "<customer>"   # from Phase 1.1
+assets_dir = Path(f"assets/{customer_slug}")
+assets_dir.mkdir(parents=True, exist_ok=True)
+print(f"Asset directory: {assets_dir.resolve()}")
+```
+
+**2. Extract all media from the DOCX**
+
+```python
+extracted = {}   # filename → absolute path
+
+if sample_path.lower().endswith('.docx'):
+    with zipfile.ZipFile(sample_path, 'r') as z:
+        media_files = [f for f in z.namelist() if '/media/' in f]
+        for mf in media_files:
+            filename = Path(mf).name
+            data = z.read(mf)
+            dest = assets_dir / filename
+            dest.write_bytes(data)
+            extracted[filename] = str(dest.resolve())
+            print(f"  {filename}: {len(data):,} bytes → {dest}")
+    print(f"Extracted {len(extracted)} images to {assets_dir}/")
+```
+
+If the sample is a PDF (no embedded binary media), render pages to JPEG at 150 DPI and crop each logo/graphic region:
+
+```python
+# For PDF samples — crop logo regions from rendered page images
+# Use coordinates identified in Step C (cover) and Step B (header)
+from PIL import Image
+page_img = Image.open("sample_p01.jpg")
+header_right_crop = page_img.crop((x1, y1, x2, y2))   # coordinates from Step B
+header_right_crop.save(assets_dir / "header_logo_right.png")
+extracted["header_logo_right.png"] = str((assets_dir / "header_logo_right.png").resolve())
+```
+
+**3. Identify semantic roles**
+
+Map each extracted filename to its visual role using the DOCX XML relationships (for DOCX samples):
+
+```python
+import xml.etree.ElementTree as ET
+pkg_ns = 'http://schemas.openxmlformats.org/package/2006/relationships'
+
+role_map = {}   # semantic_role → filename
+
+with zipfile.ZipFile(sample_path, 'r') as z:
+    # Find which images are in headers
+    for name in sorted(z.namelist()):
+        if re.match(r'word/_rels/header\d+\.xml\.rels', name):
+            tree = ET.fromstring(z.read(name))
+            for rel in tree.findall(f'{{{pkg_ns}}}Relationship'):
+                if 'image' in rel.get('Type', '').lower():
+                    fname = Path(rel.get('Target', '')).name
+                    print(f"Header image: {fname}")
+                    # Cross-reference visual position from Step B to assign left/right
+                    # First image encountered in header XML = left zone, second = right zone
+                    if 'header_logo_left' not in role_map:
+                        role_map['header_logo_left'] = fname
+                    elif 'header_logo_right' not in role_map:
+                        role_map['header_logo_right'] = fname
+
+    # Find which images are in the document body (cover image = first large image in body)
+    if 'word/_rels/document.xml.rels' in z.namelist():
+        tree = ET.fromstring(z.read('word/_rels/document.xml.rels'))
+        body_images = []
+        for rel in tree.findall(f'{{{pkg_ns}}}Relationship'):
+            if 'image' in rel.get('Type', '').lower():
+                fname = Path(rel.get('Target', '')).name
+                body_images.append(fname)
+        # Identify cover image: largest body image or first JPEG
+        cover_candidates = [f for f in body_images if f.lower().endswith(('.jpg', '.jpeg', '.png'))]
+        if cover_candidates:
+            # Pick largest by file size
+            largest = max(cover_candidates, key=lambda f: Path(assets_dir / f).stat().st_size if (assets_dir / f).exists() else 0)
+            role_map['cover_image'] = largest
+
+print("Role map:", role_map)
+```
+
+Verify role assignments visually against the rendered page images (Step A). If the DOCX relationship order doesn't match visual left/right placement, swap the assignments.
+
+**4. Record in FORMAT_SPEC.assets**
+
+```yaml
+assets:
+  base_dir: "assets/{customer_slug}"     # relative to project root, substitute actual slug
+  images:
+    header_logo_left:
+      filename: "<imageNN.png>"           # substitute actual filename from role_map
+      path: "assets/{customer_slug}/<imageNN.png>"
+    header_logo_right:
+      filename: "<imageNN.png>"
+      path: "assets/{customer_slug}/<imageNN.png>"
+    cover_image:
+      filename: "<imageN.jpeg>"
+      path: "assets/{customer_slug}/<imageN.jpeg>"
+    # Add any other recurring images found (watermarks, section graphics, signature blocks)
+```
+
+**5. In the generated skill's HTML generation code, resolve absolute paths at runtime:**
+
+```python
+import os
+
+def asset_path(relative_path):
+    """Return a file:// URL for a local asset, usable in <img src>."""
+    return "file://" + os.path.abspath(relative_path)
+
+# Usage in HTML generation:
+header_left_src  = asset_path("assets/{customer_slug}/<imageNN.png>")
+header_right_src = asset_path("assets/{customer_slug}/<imageNN.png>")
+cover_image_src  = asset_path("assets/{customer_slug}/<imageN.jpeg>")
+```
+
+Use these variables in the HTML template:
+```html
+<img src="{header_right_src}" class="header-logo-right" alt="Logo" />
+```
+
+`file://` absolute URLs are resolved correctly by both Chrome headless and WeasyPrint regardless of where the HTML file is saved.
+
+**Enforcement:** Every image identified in Steps B (header), C (cover), and J (special elements) must appear in `FORMAT_SPEC.assets` with a real filename. An image that is not in the asset directory will break every generated document. Run the extraction code — do not skip it.
+
+---
+
+**Step M: Record exact heading strings**
 
 For every section that appears in the sample, record the heading string character-for-character (capitalisation, punctuation, ampersands, colons). These exact strings will be used in the generated documents so the org's heading convention is preserved.
 
@@ -377,7 +654,7 @@ Examples:
 
 These small conventions are organisation-specific and must be preserved exactly.
 
-**Step M: Sample content vs format**
+**Step N: Sample content vs format**
 
 After all the above is captured, write a one-line confirmation: "Format extraction complete. Sample text content (paragraph wording, bullet content, table cell values) is NOT extracted and will NOT be embedded in the generated skill. Only fixed org-legal text (confidentiality boilerplate) may be embedded verbatim, identified in Phase 1.4."
 
@@ -396,21 +673,328 @@ Visual format extracted:
   Flowchart shapes:     N shape types with semantics
   Conditional labels:   N color-to-condition mappings
   Special elements:     N (boxes, callouts, etc.)
+  Images extracted:     N files → assets/{customer_slug}/ (list filenames and semantic roles)
 
 Note: Sample content is used for format reference only and is NOT copied into the output skill.
 ```
 
-### 1.4 — Identify Truly Fixed Text
+### 1.4 — Document Type Detection
 
-Some text is genuinely fixed (org legal/compliance boilerplate that never changes regardless of client or MOM). Identify and flag ONLY these:
+Before content classification, determine the document type from the sample. This controls which phases run and how content is classified.
+
+**Detection signals — scan the sample document for these patterns:**
+
+```python
+doc = Document(sample_path)
+all_text = "\n".join(p.text for p in doc.paragraphs)
+
+signals = {
+    "has_role_report_dm_footers":     all_text.count("Role:") > 5 and all_text.count("Report:") > 5,
+    "has_features_to_configure":      "Features to be configured" in all_text,
+    "has_as_is_scenario":             "As-Is Scenario" in all_text or "As Is Scenario" in all_text,
+    "has_field_detail_tables":        sum(1 for t in doc.tables if any("Field Name" in c.text for c in t.rows[0].cells if t.rows)) > 3,
+    "has_data_migration_footers":     all_text.count("Data Migration:") > 5,
+    "has_approval_matrix_tables":     any("Approver" in c.text for t in doc.tables for row in t.rows for c in row.cells),
+    "has_ivr_flowchart_terms":        any(kw in all_text for kw in ["IVR", "call flow", "DTMF", "queue", "agent transfer", "play prompt"]),
+    "has_subsidiary_structure":       "Subsidiary" in all_text and "Parent Name" in all_text,
+}
+
+# Decision tree
+if signals["has_role_report_dm_footers"] and signals["has_field_detail_tables"] and signals["has_data_migration_footers"]:
+    doc_type = "BRD"
+elif signals["has_ivr_flowchart_terms"] and not signals["has_role_report_dm_footers"]:
+    doc_type = "IVR_SOW"
+else:
+    doc_type = "GENERIC_SOW"
+
+print(f"Document type detected: {doc_type}")
+print(f"Signals: {signals}")
+```
+
+**BRD mode** activates:
+- Phase 1.5 (Boilerplate Template Mining)
+- Phase 1.6 (Structured Reference Data Extraction)
+- Step L2 (Section-body image extraction)
+- Skips Step I (flowchart shape vocabulary)
+- 4-tier content classification in Phase 2.2
+
+**IVR_SOW mode** activates:
+- Step I (flowchart shape vocabulary)
+- Steps K rules 9–15 (SVG shape library)
+- Standard 2-tier content model (Fixed Legal / Variable)
+- Skips Phase 1.5 and 1.6
+
+**GENERIC_SOW mode**: applies IVR_SOW mode with reduced flowchart processing.
+
+Record in FORMAT_SPEC:
+```yaml
+document_type: BRD   # or IVR_SOW or GENERIC_SOW
+```
+
+---
+
+### 1.5 — Boilerplate Template Mining (BRD mode only)
+
+Mine the KB and sample for text that is **structurally fixed** but contains client-specific placeholder values. This is distinct from legal boilerplate (which is entirely fixed) and from variable content (which is written fresh). These are **template strings** — the structure is always the same, only bracketed values change.
+
+**Step 1.5-A: Mine the KB for BOILERPLATE markers**
+
+Scan every KB `.md` file for sections explicitly marked `BOILERPLATE`, `BOILERPLATE (verbatim)`, or `(verbatim)`:
+
+```python
+import re
+from pathlib import Path
+
+boilerplate_templates = []   # list of { section, template_string, placeholders }
+
+for kb_file in sorted(Path(kb_dir).glob("*.md")):
+    content = kb_file.read_text()
+    # Find all BOILERPLATE blocks
+    blocks = re.split(r'###\s+BOILERPLATE', content)
+    for block in blocks[1:]:  # skip text before first marker
+        # Extract the code fence content or paragraph content
+        fence_match = re.search(r'```\n(.*?)```', block, re.DOTALL)
+        raw_match = re.search(r'\n(.*?)(?=\n###|\Z)', block, re.DOTALL)
+        text = fence_match.group(1).strip() if fence_match else (raw_match.group(1).strip() if raw_match else "")
+        
+        if len(text) > 20:
+            # Detect placeholders: [CLIENT], [OBJECT], {{client}}, etc.
+            placeholders = re.findall(r'\[([A-Z_]+)\]|\{\{([a-z_]+)\}\}', text)
+            # Extract section context (heading before this BOILERPLATE block)
+            section_match = re.search(r'##\s+Section:\s+(.+)', content[:content.find('BOILERPLATE' + block[:20])])
+            section = section_match.group(1).strip() if section_match else "unknown"
+            
+            boilerplate_templates.append({
+                "section": section,
+                "template": text,
+                "placeholders": [p[0] or p[1] for p in placeholders],
+                "source_file": kb_file.name
+            })
+            print(f"  Found boilerplate template: section='{section}', {len(text)} chars, placeholders={[p[0] or p[1] for p in placeholders]}")
+
+print(f"Total boilerplate templates found: {len(boilerplate_templates)}")
+```
+
+**Step 1.5-B: Identify structural labels from sample**
+
+Scan the sample for recurring structural paragraph labels — short paragraphs that always appear in the same position within sections and carry the same text pattern across sections:
+
+```python
+from collections import Counter
+
+# Collect all short paragraphs (< 120 chars)
+short_paras = [p.text.strip() for p in doc.paragraphs if 5 < len(p.text.strip()) < 120]
+para_counter = Counter(short_paras)
+
+# Labels that appear 3+ times are structural labels
+structural_labels = {text: count for text, count in para_counter.items() if count >= 3}
+print("Structural labels (appear 3+ times):")
+for label, count in sorted(structural_labels.items(), key=lambda x: -x[1]):
+    print(f"  {count}x  '{label}'")
+```
+
+**Step 1.5-C: Build Role/Report/DM footer templates**
+
+For BRD documents, Role/Report/DM footers follow a strict per-section pattern. Extract each unique Role/Report/DM triplet and record which section it belongs to:
+
+```python
+section_footer_templates = {}   # section_heading → { role, report, data_migration }
+current_heading = ""
+
+for i, para in enumerate(doc.paragraphs):
+    style = para.style.name if para.style else ""
+    text = para.text.strip()
+    if 'Heading' in style and text:
+        current_heading = text
+    
+    if text.startswith("Role:") and current_heading:
+        section_footer_templates.setdefault(current_heading, {})["role"] = text
+    elif text.startswith("Report:") and current_heading:
+        section_footer_templates.setdefault(current_heading, {})["report"] = text
+    elif text.startswith("Data Migration:") and current_heading:
+        section_footer_templates.setdefault(current_heading, {})["data_migration"] = text
+
+print(f"Captured Role/Report/DM templates for {len(section_footer_templates)} sections")
+```
+
+**Step 1.5-D: Identify section intro templates**
+
+Many sections have a fixed intro sentence/paragraph that varies only by client name. Detect these by comparing intro paragraphs across multiple sample files if available, or by identifying `[CLIENT]`-substitutable sentences using a simple heuristic:
+
+```python
+# For single-sample mode: any intro paragraph containing the client's name is a potential template
+# Replace client name with [CLIENT] placeholder and record as template
+client_name = mom_data.get("client_legal_name", "")
+client_short = mom_data.get("client_short_name", "")
+
+intro_templates = {}
+current_heading = ""
+
+for para in doc.paragraphs:
+    style = para.style.name if para.style else ""
+    text = para.text.strip()
+    if 'Heading' in style and text:
+        current_heading = text
+        found_intro = False
+    elif current_heading and not found_intro and len(text) > 30:
+        # First substantive paragraph after heading = potential intro template
+        template_text = text
+        if client_name:
+            template_text = template_text.replace(client_name, "[CLIENT_LEGAL_NAME]")
+        if client_short:
+            template_text = template_text.replace(client_short, "[CLIENT_SHORT]")
+        # Only record if the text has a reasonable fixed-text structure
+        intro_templates[current_heading] = template_text
+        found_intro = True
+
+print(f"Captured {len(intro_templates)} section intro templates")
+```
+
+**Step 1.5-E: Identify "Features to be configured in NetSuite:" label**
+
+```python
+features_label_text = None
+for para in doc.paragraphs:
+    if "Features to be configured" in para.text:
+        features_label_text = para.text.strip()
+        break
+
+as_is_label_text = None
+for para in doc.paragraphs:
+    if "As-Is Scenario" in para.text and len(para.text.strip()) < 30:
+        as_is_label_text = para.text.strip()
+        break
+
+print(f"Features label: '{features_label_text}'")
+print(f"As-Is label: '{as_is_label_text}'")
+```
+
+**Output of Phase 1.5:** The `boilerplate_catalog` — a complete map of every template string, structural label, and footer pattern, with placeholder positions identified. This catalog is embedded verbatim in the generated skill.
+
+---
+
+### 1.6 — Structured Reference Data Extraction (BRD mode only)
+
+Structured Reference Data (SRD) is tabular data that is standard across all clients of this org — not client-specific. Field detail tables (Item Master, Customer Master, PO fields, etc.) are the primary example. These tables have the same columns and mostly the same rows across every BRD; they should be embedded in the generated skill as template data, not re-synthesized fresh from scratch.
+
+**Step 1.6-A: Classify each table in the sample**
+
+```python
+table_classifications = []
+
+for i, table in enumerate(doc.tables):
+    if not table.rows:
+        continue
+    headers = [c.text.strip() for c in table.rows[0].cells]
+    row_count = len(table.rows)
+    
+    # Detect table type
+    if "Field Name" in headers and ("Display Section" in headers or "Nature" in headers):
+        table_type = "FIELD_DETAIL"     # standard NS field list — embed all rows
+    elif "Subsidiary Name" in headers and "Parent Name" in headers:
+        table_type = "SUBSIDIARY_LIST"  # client-specific — write from MOM
+    elif "Approver" in headers or ("Level" in headers and "USD" in str(headers)):
+        table_type = "APPROVAL_MATRIX"  # client-specific — write from MOM
+    elif "Tax Rate" in headers or "Tax Code" in headers:
+        table_type = "TAX_TABLE"        # client-specific — write from MOM
+    elif "Department Name" in headers:
+        table_type = "DEPARTMENT_LIST"  # client-specific — write from MOM
+    elif "Version No." in headers:
+        table_type = "REVISION_HISTORY" # template — always same structure
+    elif "Abbreviations" in str(headers):
+        table_type = "ABBREVIATIONS"    # mixed: standard abbreviations + client ones
+    elif "Account Types" in headers:
+        table_type = "COA_TYPES"        # standard NS knowledge — embed from KB
+    else:
+        table_type = "CLIENT_SPECIFIC"
+    
+    table_classifications.append({
+        "index": i,
+        "type": table_type,
+        "headers": headers,
+        "row_count": row_count,
+        "embed_in_skill": table_type in ("FIELD_DETAIL", "COA_TYPES", "REVISION_HISTORY"),
+        "write_from_mom": table_type in ("SUBSIDIARY_LIST", "APPROVAL_MATRIX", "TAX_TABLE", "DEPARTMENT_LIST"),
+    })
+    print(f"  Table {i+1}: {table_type} ({row_count} rows) — headers: {headers[:4]}")
+```
+
+**Step 1.6-B: Extract FIELD_DETAIL table rows verbatim**
+
+For every table classified as `FIELD_DETAIL`, extract all rows and store as embedded reference data in the skill. At generation time, the skill uses these rows directly — it does not ask the agent to re-derive them.
+
+```python
+field_tables = {}   # section_heading → list of row dicts
+
+for item in table_classifications:
+    if item["type"] != "FIELD_DETAIL":
+        continue
+    table = doc.tables[item["index"]]
+    headers = [c.text.strip() for c in table.rows[0].cells]
+    rows = []
+    for row in table.rows[1:]:
+        row_data = {headers[j]: c.text.strip() for j, c in enumerate(row.cells) if j < len(headers)}
+        rows.append(row_data)
+    
+    # Associate with section (find which section heading this table falls under)
+    # (use paragraph index proximity — table index correlates with paragraph order)
+    field_tables[f"table_{item['index']}"] = {
+        "headers": headers,
+        "rows": rows,
+        "row_count": len(rows)
+    }
+    print(f"  Extracted FIELD_DETAIL table {item['index']}: {len(rows)} rows, columns: {headers}")
+```
+
+**Step 1.6-C: Extract standard COA account types from KB**
+
+```python
+# Extract standard NS account types from KB (not from sample — this is product knowledge)
+coa_types = []
+for kb_file in Path(kb_dir).glob("*.md"):
+    content = kb_file.read_text()
+    if "Account Types" in content and "Other Asset" in content:
+        # Parse the account types table from KB
+        lines = content.split("\n")
+        for j, line in enumerate(lines):
+            if "Account Types" in line and "|" in line:
+                # Extract table rows
+                for row_line in lines[j+2:]:
+                    if "|" not in row_line or row_line.strip().startswith("|---"):
+                        if "|" not in row_line:
+                            break
+                        continue
+                    cells = [c.strip() for c in row_line.split("|") if c.strip()]
+                    if cells:
+                        coa_types.extend(cells)
+        break
+
+print(f"COA account types from KB: {len(coa_types)} types")
+```
+
+**Output of Phase 1.6:** The `structured_reference_catalog` — a map of all extractable reference tables with their full row data. This is embedded in the generated skill as a data block so the generation agent never has to re-derive field tables.
+
+---
+
+### 1.7 — Identify Fixed Legal and Structural Text
+
+Some text is genuinely fixed (org legal/compliance boilerplate that never changes regardless of client or MOM). Identify and flag these:
 
 - Confidentiality / disclaimer block: org's standard legal language
 - Copyright footer line
 - Logo and registered address text (if same across all SOWs)
 
-These and ONLY these are candidates for verbatim embedding in the generated skill. Everything else (scope descriptions, feature lists, prerequisites, assumptions, notes, routing logic) is written fresh from KB + MOM each time.
+For BRD-type documents, the outputs of Phase 1.5 (boilerplate templates) and Phase 1.6 (structured reference data) replace the old "treat everything else as variable" rule. The complete content tier model is now:
 
-When in doubt about whether text is fixed, treat it as variable. The cost of writing a paragraph fresh is small. The cost of carrying over wording that should not have been carried is high.
+| Tier | Description | How embedded in skill |
+|---|---|---|
+| `FIXED_LEGAL` | Org legal/compliance text, never varies | Embedded verbatim |
+| `BOILERPLATE_TEMPLATE` | Fixed structure, substitute [PLACEHOLDERS] | Embedded as template string with placeholder map |
+| `STRUCTURED_REFERENCE_DATA` | Standard tables (field lists, COA types) | Embedded as data rows for direct insertion |
+| `SECTION_IMAGE_STANDARD` | Reusable process flow diagrams | Embedded as `<img>` asset path |
+| `VARIABLE` | Client-specific content | Written fresh from KB + MOM |
+
+When in doubt about tier assignment, prefer `BOILERPLATE_TEMPLATE` over `VARIABLE` for text that has a recognisable structure that repeats across sections. The cost of a fixed template with substitutable placeholders is low. The cost of an agent freely paraphrasing fixed structural text is a document that fails quality checks every time.
 
 ---
 
@@ -667,6 +1251,21 @@ FORMAT_SPEC:
     #   start/end terminator stroke and text, branch condition colors (one per family),
     #   queue endpoint fill, speaker icon, hyperlink color, flowchart arrow color.
 
+  assets:
+    # Populated by Phase 1.3 Step L. Every entry is a real extracted file — no placeholders.
+    base_dir: "assets/<customer_slug>"
+    images:
+      header_logo_left:
+        filename: "<imageNN.ext>"                   # substitute actual filename
+        path: "assets/<customer_slug>/<imageNN.ext>"
+      header_logo_right:
+        filename: "<imageNN.ext>"
+        path: "assets/<customer_slug>/<imageNN.ext>"
+      cover_image:
+        filename: "<imageN.ext>"
+        path: "assets/<customer_slug>/<imageN.ext>"
+      # Add additional named entries for any other recurring images
+
   exact_heading_strings:
     - "1. Business Goal Vs Deliverables"
     - "2. Prerequisites & Licenses"
@@ -677,32 +1276,109 @@ FORMAT_SPEC:
     - [list every heading exactly as in sample]
 ```
 
-### 2.2 — Section Content Model
+### 2.2 — Section Content Model (4-Tier Classification)
 
-For each section in the document, produce a content model that describes what to write (NOT what was written in the sample):
+For each section, classify every content element into one of four tiers identified in Phase 1.7. This model is derived dynamically from the boilerplate catalog (Phase 1.5), structured reference catalog (Phase 1.6), and section image map (Step L2).
 
 ```yaml
 SECTION: <heading>
-HEADING_EXACT: "<exact string from sample>"
+HEADING_EXACT: "<exact string from sample — character-for-character>"
 NUMBERED: <yes/no>
-FIXED_TEXT: <yes/no — only if this section is org legal boilerplate that never changes>
+SECTION_ORDER: <integer — position in the document's section sequence>
 
-IF FIXED_TEXT == yes:
-  FIXED_CONTENT: |
-    <verbatim org boilerplate, legal/compliance text only>
+# TIER 1: FIXED_LEGAL — org legal text, never changes
+FIXED_LEGAL:
+  present: <yes/no>
+  content: |
+    <verbatim legal text — substitute nothing>
 
-IF FIXED_TEXT == no:
-  PURPOSE: <what this section communicates to the reader>
-  CONTENT_SOURCES:
-    MOM_FIELDS_REQUIRED:
-      - { field: <name>, tier: <BLOCKING/IMPORTANT/OPTIONAL>, extraction_signal: <how to find it in a MOM> }
-    KB_KNOWLEDGE_TO_APPLY:
-      - <which product concepts, features, or standard content inform this section>
-  WRITING_INSTRUCTIONS: |
-    <How to write this section: what questions it answers, what to include, what KB knowledge to draw on, how MOM data fills the specifics>
-  STRUCTURAL_PATTERN: <table | bullet list | numbered list | paragraph | mixed — from sample observation>
-  VISUAL_BLOCKS_USED: <list of FORMAT_SPEC elements this section uses, e.g., "H1_numbered + standard_table + bullet list">
+# TIER 2: BOILERPLATE_TEMPLATE — fixed structure, substitute only [PLACEHOLDERS]
+# Source: boilerplate_catalog from Phase 1.5
+# Agent instruction: copy this template verbatim, substitute only the listed placeholders.
+BOILERPLATE_TEMPLATE:
+  present: <yes/no>
+  blocks:
+    - id: intro
+      template: |
+        <exact intro paragraph from sample with [CLIENT_LEGAL_NAME] / [CLIENT_SHORT] / [NS_VERSION] substituted>
+      placeholders:
+        CLIENT_LEGAL_NAME: { source: MOM, field: client_legal_name }
+        CLIENT_SHORT: { source: MOM, field: client_short_name }
+
+    - id: as_is_label
+      template: "As-Is Scenario:"
+      placeholders: {}
+
+    - id: features_label
+      template: "Features to be configured in NetSuite:"
+      placeholders: {}
+
+    - id: role_footer
+      template: |
+        <exact Role: text from sample>
+      placeholders:
+        CLIENT_SHORT: { source: MOM, field: client_short_name }
+
+    - id: report_footer
+      template: |
+        <exact Report: text from sample>
+      placeholders: {}
+
+    - id: data_migration_footer
+      template: |
+        <exact Data Migration: text from sample>
+      placeholders:
+        CLIENT_SHORT: { source: MOM, field: client_short_name }
+
+# TIER 3: STRUCTURED_REFERENCE_DATA — standard tables, embed all rows directly
+# Source: structured_reference_catalog from Phase 1.6
+# Agent instruction: insert this data directly — do NOT re-derive or summarise rows.
+STRUCTURED_REFERENCE_DATA:
+  present: <yes/no>
+  tables:
+    - id: field_detail_table
+      source: structured_reference_catalog.table_<index>
+      instruction: "Include ALL <N> rows verbatim. Never omit or truncate rows."
+      headers: [<col1>, <col2>, <col3>, <col4>, <col5>, <col6>]
+      row_count: <N>
+
+    - id: section_image
+      source: section_images[<section_heading>]
+      filename: <imageN.png>
+      asset_path: "assets/{customer_slug}/<imageN.png>"
+      reusability: <REUSABLE_STANDARD | CLIENT_SPECIFIC>
+      instruction: >
+        REUSABLE_STANDARD: Insert <img> tag at this position pointing to asset_path.
+        CLIENT_SPECIFIC: Insert diagram-placeholder div with "[PROCESS FLOW DIAGRAM — insert diagram here]".
+
+# TIER 4: VARIABLE — client-specific, written fresh from MOM + KB
+# This is the ONLY tier where the agent writes new sentences.
+VARIABLE:
+  present: <yes/no>
+  purpose: <what this variable content communicates>
+  mom_fields:
+    - { field: <name>, tier: <BLOCKING/IMPORTANT/OPTIONAL>, extraction_signal: <how to find in MOM> }
+  kb_knowledge:
+    - <which KB concepts are relevant for the variable content only>
+  writing_instructions: |
+    <Instructions for variable content only. Do not repeat boilerplate text here.>
+  structural_pattern: <bullet list | paragraph | approval_matrix_table>
+
+# RENDER ORDER — exact sequence of tier blocks on the page
+RENDER_ORDER:
+  - BOILERPLATE_TEMPLATE.intro
+  - STRUCTURED_REFERENCE_DATA.field_detail_table
+  - BOILERPLATE_TEMPLATE.as_is_label
+  - VARIABLE.as_is_content
+  - BOILERPLATE_TEMPLATE.features_label
+  - VARIABLE.features_bullets
+  - STRUCTURED_REFERENCE_DATA.section_image
+  - BOILERPLATE_TEMPLATE.role_footer
+  - BOILERPLATE_TEMPLATE.report_footer
+  - BOILERPLATE_TEMPLATE.data_migration_footer
 ```
+
+**Enforcement:** Every section must have a complete model with all five blocks. Write `present: no` for blocks that do not apply — never omit blocks. BOILERPLATE_TEMPLATE strings must be character-exact copies from Phase 1.5 boilerplate catalog. Any paraphrase is a fidelity error.
 
 ### 2.3 — Pattern Selection Logic
 
@@ -801,23 +1477,60 @@ The generated skill's Phase 0 must:
 
 ### 3.3 — Embed the Knowledge Base as Phase 1
 
-Embed a condensed but complete product knowledge reference:
+The generated skill's Phase 1 must embed three distinct knowledge blocks. Each block serves a different purpose and must NOT be merged:
 
 ```markdown
-## Embedded Product Knowledge
+## PHASE 1 — Embedded Knowledge
 
-### Products and Modules
-[For each product/module: name, what it does, key capabilities, when it applies]
+### 1A: Products and Modules
+[For each product/module: name, what it does, key capabilities, when it applies.
+This is the agent's product knowledge — used to write accurate VARIABLE content.]
 
-### Section Writing Guide
-[For each SOW section: purpose, what to include, what KB concepts apply, how MOM data fills the specifics]
+### 1B: Boilerplate Template Catalog
+[Embedded verbatim from Phase 1.5 boilerplate_catalog. This block contains the actual
+template strings that the agent copies with only placeholder substitution. No paraphrasing.
+No "write your own version of this". The strings here ARE the output strings.]
 
-### Standard Terms and Conditions
-[Org-standard assumptions, notes, out-of-scope language, as guidance for the agent, NOT as copy-paste blocks]
+Format for each entry:
+  SECTION: <section name>
+  BLOCK_ID: <intro | as_is_label | features_label | role_footer | report_footer | data_migration_footer>
+  TEMPLATE: |
+    <exact text, [PLACEHOLDER] markers for substitution points>
+  PLACEHOLDERS:
+    PLACEHOLDER_NAME: { source: MOM | KB | FIXED, field: <field_name>, default: <value_if_missing> }
 
-### Escalation Contacts
-[Standard contacts if fixed; otherwise note they come from MOM]
+### 1C: Structured Reference Data Catalog
+[Embedded verbatim from Phase 1.6 structured_reference_catalog. This block contains
+the actual table row data that the agent inserts directly into the document.
+No re-deriving. No "include representative fields". All rows are included.]
+
+Format for each table:
+  TABLE_ID: <e.g., customer_master_fields, po_fields, item_master_fields>
+  SECTION: <which section this table belongs to>
+  HEADERS: [col1, col2, col3, col4, col5, col6]
+  ROWS:
+    - [val1, val2, val3, val4, val5, val6]
+    - [val1, val2, val3, val4, val5, val6]
+    ... (ALL rows — never truncated)
+
+### 1D: Section Image Catalog
+[Embedded verbatim from Step L2. Maps section names to image asset paths.
+REUSABLE_STANDARD images are referenced by path and appear in every generated document.
+CLIENT_SPECIFIC images generate a placeholder div.]
+
+Format:
+  SECTION: <section name>
+  IMAGE_FILE: "assets/{customer_slug}/imageN.png"
+  REUSABILITY: REUSABLE_STANDARD | CLIENT_SPECIFIC
+
+### 1E: Standard Terms and Escalation Contacts
+[Org-standard assumptions, notes, out-of-scope language, escalation contacts.
+Used by agent as background context when writing VARIABLE content.]
 ```
+
+**Critical enforcement for 1B:** The template strings in block 1B must be copied character-for-character from Phase 1.5 boilerplate_catalog output. Do not summarise, paraphrase, or convert them to instructions. The agent reading 1B must be able to produce the correct output by pure string substitution — it must not need to compose or invent any of this text.
+
+**Critical enforcement for 1C:** ALL rows from every FIELD_DETAIL table must be included in block 1C. Never write "include representative rows" or "sample fields". A truncated table in 1C produces a truncated table in every generated document.
 
 ### 3.4 — Embed Pattern Selection as Phase 2
 
@@ -836,43 +1549,113 @@ Print: "Pattern selected: {{name}}, reason: {{from MOM}}"
 
 ### 3.5 — Write Section Generators as Phase 3
 
-For each section, embed a writing instruction block. Use the following distinction by type:
+For each section in SECTION_ORDER, emit a section generator block in the generated skill. Each generator has exactly four sub-blocks corresponding to the four content tiers. The compiler populates each block from the Phase 2.2 section content model.
 
-**For fixed org-legal text (confidentiality/disclaimer only):**
+```markdown
+### Section: {{HEADING_EXACT}}
+
+**Heading** (exact, character-for-character): `{{HEADING_EXACT}}`
+**Render position**: {{SECTION_ORDER}} in document
+**Visual blocks**: {{h1.sec + standard_table + bullet list | as per FORMAT_SPEC}}
+
+---
+
+#### STEP 1 — BOILERPLATE_TEMPLATE blocks (copy verbatim, substitute only placeholders)
+
+Render these blocks in this order using pure string substitution from 1B catalog.
+DO NOT paraphrase. DO NOT rewrite. Substitute [PLACEHOLDER] → MOM field value only.
+
+**Intro paragraph** (BOILERPLATE_TEMPLATE.intro):
+```
+{{exact intro template from Phase 1.5, with [CLIENT_LEGAL_NAME] etc.}}
+```
+Substitute: [CLIENT_LEGAL_NAME] → MOM.client_legal_name, [CLIENT_SHORT] → MOM.client_short_name
+
+**As-Is label** (BOILERPLATE_TEMPLATE.as_is_label):
+```
+{{as_is_label_text from Phase 1.5 — e.g., "As-Is Scenario:"}}
+```
+
+**Features label** (BOILERPLATE_TEMPLATE.features_label):
+```
+{{features_label_text from Phase 1.5 — e.g., "Features to be configured in NetSuite:"}}
+```
+
+**Role footer** (BOILERPLATE_TEMPLATE.role_footer):
+```
+{{exact Role: text from Phase 1.5 boilerplate_catalog for this section}}
+```
+
+**Report footer** (BOILERPLATE_TEMPLATE.report_footer):
+```
+{{exact Report: text from Phase 1.5 boilerplate_catalog for this section}}
+```
+
+**Data Migration footer** (BOILERPLATE_TEMPLATE.data_migration_footer):
+```
+{{exact Data Migration: text from Phase 1.5 boilerplate_catalog for this section}}
+```
+
+---
+
+#### STEP 2 — STRUCTURED_REFERENCE_DATA (insert directly, no rewriting)
+
+**Field detail table** (if present for this section):
+Use table data from 1C catalog entry TABLE_ID=`{{table_id}}`.
+Insert ALL {{row_count}} rows. Headers: {{headers}}. Do not omit any row.
+The HTML `<table>` uses class `std-table` with the section's field data.
+
+**Section image** (if REUSABLE_STANDARD):
+```html
+<img src="file://{{asset_path}}" alt="{{section_name}} process flow" style="width:100%; margin: 12px 0;" />
+```
+(If CLIENT_SPECIFIC: insert `<div class="diagram-placeholder">[PROCESS FLOW DIAGRAM — to be inserted by consultant]</div>`)
+
+---
+
+#### STEP 3 — VARIABLE content (write fresh from MOM + KB for this section only)
+
+The following content is client-specific. Read the MOM fields listed and write fresh:
+
+**As-Is Scenario content** (follows the "As-Is Scenario:" label):
+- MOM fields: {{list of MOM fields that describe the client's current state for this section}}
+- Write: 1–2 sentences describing what the client currently does in their legacy system.
+
+**Features to be configured content** (follows "Features to be configured in NetSuite:" label):
+- MOM fields: {{list of MOM fields with the client's configuration decisions}}
+- KB knowledge: {{which KB concepts apply — e.g., "approval workflow options", "item types", "payment methods"}}
+- Write: bullet list of client-specific configuration decisions. Each bullet = one decision from MOM.
+
+**Data Migration status** (placeholder in DM footer template if needed):
+- MOM fields: data_migration info for this section
+- Write: one sentence on what is/isn't migrated and the cut-off approach.
+
+---
+
+#### STEP 4 — RENDER ORDER for this section
+
+Render in this exact sequence:
+1. BOILERPLATE_TEMPLATE.intro  (paragraph)
+2. STRUCTURED_REFERENCE_DATA.field_detail_table  (table, if present)
+3. BOILERPLATE_TEMPLATE.as_is_label  (paragraph)
+4. VARIABLE.as_is_content  (paragraph)
+5. BOILERPLATE_TEMPLATE.features_label  (paragraph)
+6. VARIABLE.features_bullets  (ul list)
+7. STRUCTURED_REFERENCE_DATA.section_image  (img or placeholder div)
+8. BOILERPLATE_TEMPLATE.role_footer  (paragraph, class section-footer)
+9. BOILERPLATE_TEMPLATE.report_footer  (paragraph, class section-footer)
+10. BOILERPLATE_TEMPLATE.data_migration_footer  (paragraph, class section-footer)
+```
+
+**For FIXED_LEGAL sections only (confidentiality/disclaimer):**
 
 ```markdown
 ### Section: {{Heading}}
-Write this fixed org-standard legal text:
-<!-- FIXED ORG LEGAL TEXT, substitute only {{client_full_name}} -->
-{{verbatim legal boilerplate}}
+Write this fixed org-standard legal text verbatim (substitute only client name):
+{{verbatim legal text from Phase 1.4}}
 ```
 
-**For all other sections, write fresh from KB + MOM:**
-
-```markdown
-### Section: {{Heading}}
-
-**Heading** (exact): `{{heading string from sample}}`
-**Structure**: {{table | bullets | paragraphs}}
-**Visual blocks used**: {{e.g., H1_numbered, standard_table, bullet list}}
-
-**Purpose**: {{what this section communicates}}
-
-**Content to write, synthesize these sources:**
-  MOM fields to extract:
-    - {{field_name}} ({{BLOCKING/IMPORTANT}}): look for {{extraction signal}}
-    - ...
-
-  Product knowledge to apply:
-    - {{which KB concepts, features, or standard content are relevant here}}
-    - {{what technical accuracy this section requires}}
-
-**Writing instructions:**
-  {{How to write this section. What questions does it answer? What does the reader need to understand? How does the client's MOM data shape the specifics? What must always be included regardless of client? What is client-specific?}}
-
-  Structural pattern from sample (do NOT copy wording):
-  {{Describe the structure: "Starts with intro sentence, followed by a table with columns X/Y/Z, then bullet list of N items"}}
-```
+**Compiler enforcement:** Every section generator block must contain real template strings from Phase 1.5 (not instructions to "write a Role line"). If Phase 1.5 produced a boilerplate catalog entry for this section, that exact string must appear in the generator block. If no boilerplate entry exists for a section, note it explicitly and use the closest structural match from the same document type.
 
 ### 3.6 — Embed the HTML/CSS Template as Phase 4
 
@@ -1196,16 +1979,30 @@ The generated skill must use this rendering chain in order, falling back if a to
 
 The compiler embeds all four commands in the generated skill so the agent picks the first available.
 
-**Rule 12: Self-contained HTML output**
+**Rule 12: HTML output — assets and self-containment**
 
-The final HTML the generated skill produces must be a single file with:
+The final HTML the generated skill produces must follow these rules:
+
 - All CSS inside a `<style>` block in the `<head>`
 - All SVG markup inlined at each use site (no external SVG files, no `<symbol>` + `<use>`)
-- Fonts loaded via Google Fonts CDN with system fallback declared
-- No external image files (use SVG for logos and graphics)
-- No external script dependencies
+- Fonts: use a Google Fonts CDN import for any font that is available there; for proprietary fonts not on Google Fonts (e.g. Calibri), install the font on the local machine or substitute the closest available metric-compatible font (e.g. `Carlito` for Calibri — same metrics, on Google Fonts). Always declare a system fallback (`Arial, sans-serif`).
+- **Raster images (logos, badges, cover photos) use `file://` absolute paths**, not base64 and not relative paths. Resolve paths at HTML-generation time using `os.path.abspath()`:
 
-This guarantees the HTML opens identically in a browser preview and in a PDF renderer.
+  ```python
+  import os
+
+  def asset_src(relative_path):
+      return "file://" + os.path.abspath(relative_path)
+
+  # In the HTML template:
+  # <img src="{asset_src('assets/{customer_slug}/image12.png')}" class="header-logo-right" />
+  ```
+
+  `file://` absolute URLs work in both Chrome headless and WeasyPrint. They are resolved from the local filesystem, not relative to the HTML file's location, so the HTML file can be saved anywhere.
+- No external script dependencies
+- Simple geometric graphics (banners, flowchart shapes, dividers) use inline SVG, never raster images.
+
+The asset files referenced must exist on disk (extracted in Phase 1.3 Step L) before the HTML renderer is invoked.
 
 ---
 
@@ -1316,13 +2113,13 @@ Next step:
 
 ## Critical Rules
 
-1. **Sample is format-only.** Extract colors, layout, section order, heading strings, table column structures, flowchart shape vocabulary, and conditional label colors from the sample. NEVER extract content (paragraph text, bullet point wording, table cell text, descriptions) for embedding in the skill. Past SOW wording is irrelevant to future clients.
+1. **Sample serves two roles, not one.** The sample provides (a) the visual format — colors, layout, heading typography, table styles, section order, heading strings — which is extracted and embedded as FORMAT_SPEC; AND (b) the boilerplate template strings and field reference data — which are extracted via Phase 1.5 and 1.6 and embedded in the generated skill's 1B/1C catalogs. What is NEVER extracted from the sample: client-specific variable content (the client's name, their specific requirements, their approval matrices, their configuration decisions). Past client data is irrelevant to future clients; standard structural text and standard field tables are reusable.
 
-2. **KB is product knowledge, not boilerplate.** The KB defines what the product does, how it works, what belongs in each section. It is embedded in the skill as a knowledge reference that the generation agent draws on to write accurate content, not as text to copy.
+2. **KB serves two roles, not one.** The KB provides (a) product knowledge — what each module does, how it works, what belongs in each section — which the generation agent draws on to write accurate VARIABLE content; AND (b) boilerplate markers — text explicitly marked as `BOILERPLATE (verbatim)` in the KB — which are extracted by Phase 1.5 and embedded as template strings in the 1B catalog. KB boilerplate text is NOT converted to writing instructions. It is embedded as the actual output string, with only client-name placeholders substituted.
 
-3. **MOM is the client brief.** Every client-specific fact (name, requirements, flow, configuration, dates) comes from the MOM. No client detail is assumed from the sample.
+3. **MOM is the client brief.** Every client-specific fact (name, requirements, flow, configuration, decisions, dates) comes from the MOM. No client detail is assumed from the sample or KB. The MOM populates the VARIABLE tier only.
 
-4. **Write fresh every time.** The generated skill must instruct the agent to write new sentences for every non-legal section. The only text that is ever fixed is org-standard legal/compliance language (confidentiality, disclaimer). Everything else is synthesized from KB + MOM.
+4. **Four content tiers, not two.** The generated skill must apply the 4-tier content model to every section: FIXED_LEGAL (verbatim legal text), BOILERPLATE_TEMPLATE (verbatim structural text with placeholder substitution), STRUCTURED_REFERENCE_DATA (standard tables and reusable images inserted directly), and VARIABLE (client-specific content written fresh from MOM + KB). "Write fresh every time" applies ONLY to the VARIABLE tier. Writing fresh for BOILERPLATE_TEMPLATE or STRUCTURED_REFERENCE_DATA tiers is a fidelity error that produces wrong documents every time.
 
 5. **The output skill is self-contained.** All product knowledge, format spec, writing instructions, SVG shape templates, CSS variables, and legal boilerplate must be embedded in the skill file, not referenced by path. The skill works even if the KB directory is deleted.
 
@@ -1356,4 +2153,12 @@ Next step:
 
 20. **Header and footer text strings are extracted verbatim, never inferred.** Copyright lines, brand names, separator characters, and version slug formats must be copied character-by-character from the rendered image. If the sample's footer says "Ameyo", the skill embeds "Ameyo". If it says "Exotel", it embeds "Exotel". Context about what organisation is involved does not override what the pixels say. Inferred text will be wrong on every page of every future SOW.
 
-21. **Every section must be checked for embedded images or non-CSS graphical blocks.** Approval procedure pages, signature blocks, letterhead graphics, and watermarks are commonly missed because they are hard to reproduce. Missing a graphical block produces an obviously incomplete page. The generated skill must either embed the image (base64), provide a named placeholder `<img>` the user replaces, or recreate the graphic as inline SVG — never silently omit it.
+21. **Every section must be checked for embedded images or non-CSS graphical blocks.** Approval procedure pages, signature blocks, letterhead graphics, and watermarks are commonly missed because they are hard to reproduce. Missing a graphical block produces an obviously incomplete page. The generated skill must extract every such image to `assets/{customer_slug}/` during compilation (Phase 1.3 Step L), record its path in `FORMAT_SPEC.assets`, and reference it via `file://` absolute path in the HTML template. Placeholders and gray div blocks are not acceptable — the asset directory is the solution to the size-limitation problem that makes base64 impractical for large images.
+
+22. **Document type detection gates the compiler's processing mode.** Run Phase 1.4 detection before any content classification. BRD-type documents (detected by Role:/Report:/DM: footer patterns + field detail tables) activate Phases 1.5, 1.6, Step L2, and the 4-tier content model. IVR_SOW-type documents activate Step I flowchart vocabulary and the SVG shape library. Never apply the IVR flowchart machinery to a BRD — the resulting skill wastes context on shapes that don't exist in the document and misses the boilerplate template extraction that does.
+
+23. **Field detail tables must be embedded in full — never sampled.** When Phase 1.6 identifies a FIELD_DETAIL table in the sample, all rows are extracted and stored in the 1C structured reference catalog. The generated skill inserts all rows at generation time. A rule that says "include representative fields" or "include key fields" produces a truncated table in every generated document — a visible, verifiable error. The correct rule is: all rows, always.
+
+24. **Boilerplate template strings are embedded as output strings, not as instructions.** When the compiler embeds a Role: footer in the generated skill's 1B catalog, it embeds the actual string `"Role: The Management & Finance role users will be able to create, edit and view customer master records in NetSuite..."` — not the instruction `"Write a Role line describing who can access customer master records."` The generation agent must be able to pass this string directly to the HTML template with only [CLIENT_SHORT] substitution. Any instruction that asks the agent to compose or paraphrase boilerplate text will produce wrong text.
+
+25. **REUSABLE_STANDARD section images are embedded assets, not placeholders.** When Step L2 classifies a section-body image as REUSABLE_STANDARD (standard process flow diagram that appears identically across all BRDs for this org), the compiler extracts it to `assets/{customer_slug}/`, records it in FORMAT_SPEC.section_images, and the generated skill renders it as `<img src="file://...">` at the correct section position. These images appear in every generated document without client input. CLIENT_SPECIFIC images use a placeholder div — the user is explicitly notified that the diagram must be inserted manually.
