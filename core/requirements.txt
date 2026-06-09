@@ -1,0 +1,8 @@
+fastapi
+uvicorn[standard]
+motor
+beanie
+httpx
+pydantic
+pydantic-settings
+python-dotenv
