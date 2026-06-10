@@ -54,7 +54,7 @@ When kb-factory composes the generated skill's Critical Rules:
 
 ## Useful questions to ask the operator
 
-Examples of operator-facing questions for the discovery phase:
+Examples of operator-facing questions for the discovery phase. These are phrasing examples, not a checklist: the discovery / scope step sets what matters, then ask only the questions whose answers would change the KB and that the artifacts do not already answer.
 
 - **BLOCKING — Deliverable shape unspecified.** "I couldn't pin down the downstream deliverable's exact format from the artifacts. Format / schema / example?"
 - **BLOCKING — Reference example missing.** "I don't see a finished example of the deliverable. Without one I can't ground style / structure / vocabulary. Can you share one, or describe the target shape?"

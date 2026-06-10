@@ -68,6 +68,8 @@ Gap-question phrasings that have worked. These are EXAMPLES, not prescriptions â
 
 Each entry: severity tag (BLOCKING / IMPORTANT / VERIFY ASSUMPTION / NICE TO HAVE) + example question phrasing with `{placeholder}` slots.
 
+Frame this as a phrasing bank, not a checklist. The consuming skill should align scope with the operator first, then ask only the in-scope questions whose answers would change the KB and that the artifacts do not already answer. A long example list here must never become a long questionnaire at runtime.
+
 ## Typical KB shapes that have worked
 
 Past KB file lists for clients of this archetype. Reference only â€” the generated skill's file list is sized to what *this* client's artifacts demand. Include files that don't earn their keep here, and the generated KB will bloat.

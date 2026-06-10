@@ -53,6 +53,8 @@ When kb-factory composes the generated skill's Critical Rules, it draws from the
 
 Examples of gap-questions that have surfaced real issues in past engagements. The generated skill's gap-question list is Claude's composition for this client's actual unknowns; inspire here but don't copy.
 
+Use this as a phrasing bank, not a checklist. Align the KB's scope with the operator first, then ask only the few questions that are in scope, still unknown after reading the artifacts, and whose answers would change the KB. Do not enumerate this list.
+
 - **BLOCKING — Node type completeness.** "I observed these node types in the artifacts: `{observed_types}`. Is this list complete, or are there other types in your full library? If so, please share more sample flows."
 - **IMPORTANT — Script built-ins completeness.** "Scripts in your artifacts reference these globals / built-ins: `{observed_built_ins}`. Is this the full set the runtime provides, or are there others?"
 - **IMPORTANT — Operator set completeness.** "Conditions used these operators: `{observed_operators}`. Is this the complete operator set the expression language supports?"

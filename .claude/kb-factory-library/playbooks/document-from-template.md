@@ -129,6 +129,8 @@ When kb-factory composes the generated skill's Critical Rules, it draws from the
 
 Examples of gap-questions that have surfaced real issues. The generated skill's gap-question list is Claude's composition for this client's unknowns; inspire here but don't copy.
 
+Use this as a phrasing bank, not a checklist. This archetype's list is long on purpose; do not work through it. Align the KB's scope with the operator first, then ask only the few questions that are in scope, still unknown after reading the artifacts, and whose answers would change the KB.
+
 - **BLOCKING — Single reference sample.** "Only one reference sample given — the fixed-vs-variable split is a guess for fields I haven't seen vary. Please share at least one more reference before I treat boilerplate as canonical."
 - **BLOCKING — No reference at all.** "I see source materials (MOMs / transcripts) but no reference deliverable. I can extract content but I cannot match a visual identity I haven't seen. Please share at least one finished SOW / BRD / PRD that represents the target look-and-feel."
 - **BLOCKING — Reference is PDF-only.** "The reference is PDF; no DOCX source. I can produce a DOCX that closely matches the PDF's visual style, but it will not be byte-identical. Confirm DOCX-as-deliverable is acceptable, or share the source DOCX if available."
