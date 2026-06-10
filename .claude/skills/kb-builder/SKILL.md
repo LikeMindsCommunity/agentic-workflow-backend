@@ -38,10 +38,11 @@ One trade-off to accept consciously: kb-builder consults the playbooks on every 
 
 ## Pipeline
 
-Two phases. Execute in order.
+Three phases. Execute in order.
 
 1. **`pipeline/recognize.md`** — detect whether a KB already exists. On a first run, the LLM decides which archetype(s) apply by matching the playbook library against the artifacts (it never asks the operator). On an update, it infers the archetype and structure from the existing KB's own content (no re-match).
-2. **`pipeline/build.md`** — analyze the artifacts (full on first run, delta on update), align the KB's scope with the operator, draft or extend the KB conforming to the established structure, run the scope-gated gap loop, then save.
+2. **`pipeline/scope.md`** — understand the artifacts' anatomy, derive the requirement from the operator's prompt, and **lock the scope** (requirement + in scope + out of scope). Ask only when the prompt and artifacts leave real ambiguity. Everything downstream obeys this scope.
+3. **`pipeline/build.md`** — deep-extract the in-scope components, draft or extend the KB conforming to the established structure, run the scope-gated gap loop, then save.
 
 ## The playbook library
 
@@ -52,7 +53,7 @@ Current playbooks: `nodeflow`, `document-from-template`, `fallback` (the exclusi
 ## Critical rules
 
 1. **On update, the existing KB's structure is authoritative — extend it, don't reshape it.** New facts conform to the established containers / field paths / file shape. No renaming or re-bucketing of settled content.
-2. **Scope first, then ask only what matters, but do ask.** Before drafting, align the KB's scope with the operator. In the gap loop, drop only questions that are out of scope, already answered by the artifacts, or that can't change the KB; **present every survivor to the operator and wait for answers before finalizing.** A safe default is not a reason to skip a question: surface it as a VERIFY ASSUMPTION with your proposed default. Never self-resolve all gaps into assumptions and save, and never guess a BLOCKING answer. Group by severity, BLOCKING first, in small rounds; don't dump the playbook's example list or ask one giant batch. (This is about missing artifact *content*, not archetype selection.)
+2. **Scope first, then ask only what matters, but do ask.** The scope phase (`scope.md`) locks the requirement and what's in/out of scope before drafting, asking only when the prompt and artifacts leave ambiguity. In the gap loop, drop only questions that are out of scope, already answered by the artifacts, or that can't change the KB; **present every survivor to the operator and wait for answers before finalizing.** A safe default is not a reason to skip a question: surface it as a VERIFY ASSUMPTION with your proposed default. Never self-resolve all gaps into assumptions and save, and never guess a BLOCKING answer. Group by severity, BLOCKING first, in small rounds; don't dump the playbook's example list or ask one giant batch. (This is about missing artifact *content*, not archetype selection.)
 3. **Record observed values verbatim** — node types, event names, headings, vocabulary as they appear in the artifacts. Don't paraphrase.
 4. **If artifacts disagree among themselves, surface to the operator and resolve before saving.**
 5. **If new artifacts reveal a shape the existing KB can't account for, surface it** to the operator (it may be a genuinely new structure) rather than forcing it into the old shape.
@@ -68,6 +69,7 @@ Current playbooks: `nodeflow`, `document-from-template`, `fallback` (the exclusi
 │       ├── SKILL.md
 │       └── pipeline/
 │           ├── recognize.md
+│           ├── scope.md
 │           └── build.md
 └── kb-factory-library/
     └── playbooks/        ← shared archetype advice (read-only)

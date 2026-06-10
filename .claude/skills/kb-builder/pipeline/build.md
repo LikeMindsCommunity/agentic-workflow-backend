@@ -4,6 +4,7 @@ Produce the KB at `outputs/{client}/kb/`: **draft from scratch** on a first run,
 
 ## Input
 
+- The **locked scope** from `scope.md` (requirement + in scope + out of scope) and the component inventory it produced.
 - The fired playbook(s) from `recognize.md` — **advice**, not a recipe to copy.
 - The artifacts.
 - On an update: the existing KB (the archetype + structure are inferred from its content).
@@ -21,32 +22,25 @@ Read the fired playbook(s) end to end. Treat each section as guidance:
 
 Don't transcribe playbook sections into the KB. The KB is *this client's* extracted facts, composed by analyzing real artifacts and informed by the playbook.
 
-## B. Analyze the artifacts
+## B. Deep-extract the in-scope components
 
-- **First run** — read every artifact. Use the playbook's attention tips; use general intelligence for the rest. Extract:
+The scope phase mapped the artifacts' anatomy and locked what is in scope. Now extract the full detail of the in-scope components only; do not deep-mine anything scoped out.
+
+- **First run** — re-read the in-scope parts of every artifact closely. Use the playbook's attention tips; use general intelligence for the rest. Extract:
   - **Structural facts** — top-level container key names, field paths, fixed-value fingerprints (engine identifiers, schema constants), node/type vocabulary, event-name conventions, identifier formats.
-  - **Use-case shape** — what downstream agents will produce from this KB, what varies per-instance, what's fixed.
-  - **Quirks and recurring patterns** — how components are typically composed in this client's artifacts.
-- **Update** — read **only the new artifacts**. Diff against the existing KB: which node types / headings / vocabulary / sections / patterns are genuinely new? The existing KB's content is the frame (its files and shape define the established structure); you are finding **deltas** to fold in, not re-deriving the whole thing.
+  - **Per-instance vs fixed** — what varies per downstream instance vs what is constant across them.
+  - **Quirks and recurring patterns** — how the in-scope components are typically composed in this client's artifacts.
+- **Update** — extract from **only the new artifacts**. Diff against the existing KB: which node types / headings / vocabulary / sections / patterns are genuinely new? The existing KB's content is the frame (its files and shape define the established structure); you are finding **deltas** to fold in, not re-deriving the whole thing.
 - If artifacts disagree among themselves, surface to the operator and resolve before composing.
 
-## C. Align scope with the operator (before drafting)
-
-You now understand the artifacts. Before drafting, and before asking any detailed questions, pin down what this KB is actually for, so every later question is relevant.
-
-- **State your understanding back to the operator, briefly:** the deliverable the downstream agent will produce, the archetype you decided, and the scope you intend for the KB (what it will cover, and what you are deliberately leaving out per the skip-entirely categories).
-- **Ask a small set of scope-framing questions about focus, not detail.** For example: what matters most for their use case, anything in the artifacts to ignore or treat as out of scope, any priorities or constraints that should shape the KB. Keep this to a few high-level questions, not the detailed gap list.
-- **Lock the scope** from the operator's answers. This locked scope is the filter for the gap loop (Phase E): any later question that does not bear on it is dropped before you ask it.
-- **On an update**, the scope is already set by the existing KB. Do not re-run a full scoping conversation; confirm in one line that the scope is unchanged and note what the new artifacts add.
-
-## D. Draft or extend the KB
+## C. Draft or extend the KB
 
 - **File list** — first run: choose the KB files this client's artifacts demand, informed by the playbook's typical shapes; include only files that earn their keep. Update: reuse the existing KB's file list (the files already present in `outputs/{client}/kb/`); add a new file only if a genuinely new category appears, and flag it to the operator.
 - **Write the real observed values** into the KB files — verbatim, not paraphrased.
 - **Anti-drift (update, LOAD-BEARING):** the existing KB's structure is authoritative. Conform new facts to the established containers / field paths / file shape as seen in the existing KB files. Do not reshape, rename, or re-bucket settled content. If a new artifact's shape can't fit the existing KB's structure, **stop and surface it to the operator** — it may be a genuinely new structure warranting a deliberate shape change, not a silent reshape.
 - **Apply every critical rule while writing** — verbatim values, no internal-meta leak into recorded content, no out-of-scope categories from the skip list.
 
-## E. Gap loop (interactive, scope-gated)
+## D. Gap loop (interactive, scope-gated)
 
 After drafting, surface the open questions to the operator and **wait for answers before you finalize**. This step is mandatory whenever any question survives the relevance gate. Do not self-resolve every gap into a "safe assumption" and save; the gate trims the list to what is worth the operator's attention, it does not let you skip the ask.
 
@@ -57,7 +51,7 @@ After drafting, surface the open questions to the operator and **wait for answer
 - **Ask in small rounds, not one giant batch.** Lead with BLOCKING; once those are resolved, raise the rest. Keep each round short.
 - **On an update**, ask only about the new gaps the new artifacts introduce; do not re-litigate settled first-run decisions.
 
-## F. Save
+## E. Save
 
 - Write/update the KB files under `outputs/{client}/kb/`.
 - The KB's own files and content carry the archetype and structure; a future update infers them by reading the KB.
@@ -65,7 +59,7 @@ After drafting, surface the open questions to the operator and **wait for answer
 
 ## Fallback playbook fired (first run only)
 
-The fallback's advice is procedural: triage artifacts by kind, elicit the use case from the operator, propose a KB shape. Fold this into Phase C (scope alignment): because the shape cannot be locked from analysis alone, **propose the KB file list and get the operator's confirmation before drafting**. Then proceed through Phases D to F.
+The fallback's advice is procedural: triage artifacts by kind, elicit the use case from the operator, propose a KB shape. Most of this belongs in the scope phase (`scope.md`): because the shape cannot be locked from analysis alone, scope.md proposes the KB file list and gets the operator's confirmation before drafting. Build then proceeds through Phases B to E as usual.
 
 ## Multiple specific playbooks fired
 
@@ -73,7 +67,7 @@ Compose one KB that serves both archetypes: union the structural facts, sequence
 
 ## Don't
 
-- **Don't ask before scoping.** Align scope first (Phase C). An unscoped gap loop is what produces the flood of irrelevant questions.
+- **Don't ask before scoping.** Scope is locked in `scope.md` before build runs. An unscoped gap loop is what produces the flood of irrelevant questions.
 - **Don't enumerate the playbook's example questions.** They are a phrasing bank. Ask only this client's genuine, in-scope unknowns whose answers change the KB.
 - **Don't ask what the artifacts already answer**, and don't ask one giant batch of every severity at once.
 - **Don't transcribe playbook sections into the KB.** Playbooks are advice; the KB is this client's extracted facts.
