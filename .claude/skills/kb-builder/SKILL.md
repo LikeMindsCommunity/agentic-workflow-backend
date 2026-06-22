@@ -48,7 +48,7 @@ Three phases. Execute in order.
 
 Archetype advice lives in `.claude/kb-factory-library/playbooks/*.md` (shared with kb-factory; **read-only**). Each playbook holds recognition signals, what-to-look-for tips, common pitfalls, useful gap-questions, typical KB shapes, and skip-entirely categories. Playbooks are **advice, not recipes** — kb-builder composes the actual KB by analyzing this client's real artifacts, *informed* by the playbook.
 
-Current playbooks: `nodeflow`, `document-from-template`, `fallback` (the exclusion-only fallback for first-of-kind clients).
+Current playbooks: `nodeflow`, `document-from-template`, `api-integration`, `fallback` (the exclusion-only fallback for first-of-kind clients).
 
 ## Critical rules
 
