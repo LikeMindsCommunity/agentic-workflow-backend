@@ -19,7 +19,7 @@ How to authenticate, manage tokens, and keep secrets safe. **The KB declares the
 set -a; . "${SECRETS:-outputs/<client>/secrets.env}"; set +a
 # now $CLIENT_ID, $CLIENT_SECRET, $API_KEY, ... are available to the curl on the next line
 ```
-If a named credential the KB requires is absent from the source, **stop and ask** the operator to add it (name it). Do not proceed with a blank.
+If a named credential the KB requires is absent from the source, **stop and ask** the operator to add it — name it exactly as the KB calls it, and tell them which source you read (the `secrets=` path / `outputs/<client>/secrets.env` / env var) so they know where to put it. List **every** missing credential at once, not one at a time. Do not proceed with a blank, and never fabricate a credential value.
 
 ## Scheme catalog
 

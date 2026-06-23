@@ -1,6 +1,6 @@
 # Use case: api — execute a live API pipeline
 
-Authenticate and run a **live pipeline of API calls** the KB describes, driven by the user's prompt — manage tokens, chain each response into later requests, validate as you go, and report. Obey the shared principles, asking-questions discipline, and **Execution safety** rules in `SKILL.md`.
+Authenticate and run a **live pipeline of API calls** the KB describes, driven by the user's request — a `prompt` and/or a supplied **workflow document** (`workflow=<path>`, in any form: prose, JSON, YAML, PDF, or DOCX) — manage tokens, chain each response into later requests, validate as you go, and report. Obey the shared principles, asking-questions discipline, and **Execution safety** rules in `SKILL.md`.
 
 Companion files:
 - `reference/auth.md` — auth-scheme catalog, token lifecycle, secret hygiene.
@@ -27,20 +27,31 @@ If the KB doesn't document something you need (an endpoint, the auth flow, a sta
 ## 2. Resolve environment and credentials
 - **Environment:** use `env=` / `base_url=` if given; else default to the **safest non-prod** environment the KB offers; else the only one. Whatever you pick, it goes into the Phase 4 confirmation in plain sight. Running against prod is always an explicit, surfaced choice.
 - **Credentials:** the KB says *which* credentials are needed by name; their **values** come only from the secrets source — `secrets=<path>` if given, else `outputs/<client>/secrets.env`, else process env vars. Follow `reference/auth.md` for loading them safely.
-- **If a required credential is missing**, stop and ask the operator to put it in the secrets file (name it). **Never** accept a secret pasted into chat as something to write into a committed file, and never echo it. If the operator pastes one anyway, use it for the run but tell them to move it to the secrets file and not commit it.
+- **If a required credential is missing**, stop and ask the operator to add it to the secrets file — name it exactly as the KB calls it, and say which source you read (the `secrets=` path / `outputs/<client>/secrets.env` / env var) so they know where to put it. If several are missing, list them all at once (this is the Phase 3c preflight, not one-at-a-time discovery). **Never** accept a secret pasted into chat as something to write into a committed file, and never echo it. If the operator pastes one anyway, use it for the run but tell them to move it to the secrets file and not commit it. Never fabricate a credential value or proceed with a blank one.
 
-## 3. Parse the prompt and build the execution plan
-Turn the prompt's intent into an ordered list of steps, each mapped to a KB operation. For each step record:
-- **op** (which KB endpoint), **method**, **inputs** (literal values from the prompt, or `← step N.field` when chained from an earlier response), and whether it is **read-only or state-changing**.
+## 3. Parse the request and build the execution plan
+
+The **request** — what to run this run — arrives as a free-text `prompt` and/or a supplied **workflow document** (`workflow=<path>`), and may be in any form. Ingest it first, then normalize it into an ordered plan. The request is the **what / sequence**; the KB stays the **how** (auth, endpoints, schemas, conventions).
+
+**3a. Ingest the request (any format).** Read whatever was supplied and reduce it to plain, ordered intent:
+- **Prose / natural language** (the `prompt`, a `.txt` / `.md` doc) → read it directly.
+- **JSON / YAML** → parse it; if it already enumerates steps (op + inputs + chaining), honor that **sequence and the inputs it specifies** directly rather than re-deriving the order — but still resolve each step's **mechanics** (endpoint, method, headers, body schema) from the KB, never from a URL/method the doc may inline. If the doc's mechanics conflict with the KB, the **KB wins** — surface the conflict, don't silently follow the doc.
+- **PDF** → extract its text with the `pdf` skill; **DOCX** → extract with the `docx` skill; then read the extracted text as prose.
+- If **both** a `prompt` and a `workflow` doc are given, the doc carries the steps and the prompt carries values / overrides; reconcile them, and **ask if they conflict**. If neither is present, stop and ask — there is nothing to run.
+
+**3b. Build the ordered plan.** Turn the ingested intent into an ordered list of steps, **each mapped to a documented KB operation**. For each step record:
+- **op** (which KB endpoint), **method**, **inputs** (literal values from the request, or `← step N.field` when chained from an earlier response), and whether it is **read-only or state-changing**.
 - **extract**: which field(s) of the response feed later steps (the JSONPath/`jq` path), and whether each is **required** (a missing required value breaks the chain → stop).
 - **iteration/pagination**: does this step loop (over a collection from a prior step, or over pages)? What's the stop condition and a sane cap?
 - **idempotency**: for state-changing steps, can it carry an idempotency key (KB-supported)? Is it safe to retry?
 - **preconditions/guards**: anything that must be true first (e.g. "only DELETE if status==inactive").
 
-Resolve unknowns the usual way: KB convention or obvious default → take it and state it; real fork or a value only the operator has → ask now. **Missing required input for a call is a blocker — ask, don't invent.**
+**3c. Preflight — resolve every required input, prompt for whatever's missing.** Before executing, walk the whole plan *and* the auth scheme and enumerate every input each step needs: credentials (by the KB's name), path/query params, body fields the KB marks required, and the target environment. Tag each with its **source** — a literal from the request, `← step N.field` (chained), `<from secrets: NAME>`, a stated KB/convention default, or **MISSING**. For everything still **MISSING** with no documented default, **ask the operator now, in one consolidated, tightly-scoped prompt**: name each missing item and say where it goes (a credential → the secrets file, by name; a value → inline). Do not start the pipeline until they're supplied. This is the one place a grouped ask is correct — these are the genuine blockers, not speculative questions. Never substitute a blank, a guess, or a silent default for a required input.
+
+**If the request names an operation the KB doesn't document, say the KB is missing it — don't invent an endpoint, method, or payload to make it fit.** Resolve other unknowns the usual way: KB convention or obvious default → take it and state it; real fork or a value only the operator has → ask now. **Missing required input for a call is a blocker — ask, don't invent.**
 
 ## 4. Confirm the plan (gate before any state change)
-Present the plan as a compact, ordered list: per step the method, endpoint, resolved inputs (secrets shown as `<from secrets: NAME>`, never values), what gets extracted, and the **target environment**. Mark read-only vs state-changing clearly.
+Present the plan as a compact, ordered list: per step the method, endpoint, resolved inputs (secrets shown as `<from secrets: NAME>`, never values), what gets extracted, and the **target environment**. Mark read-only vs state-changing clearly. Show any required input still unresolved as **MISSING** and clear it via the Phase 3c prompt **before** sending anything — never send a blank or guessed value in its place.
 
 - **All read-only** → you may proceed without a gate (still show the plan).
 - **Any state-changing step** → **wait for the operator's go** before sending the first one. For destructive steps (DELETE / irreversible), confirm again at that step with the concrete target (the actual id/payload), not just the plan.
@@ -69,7 +80,7 @@ On a **state-changing** step: send only after the Phase 4 gate (and the per-step
 ## 7. Report and persist
 Write `result.json` (final structured outputs the operator asked for, plus per-step status) and finalize `run.log`. Then give a short report:
 - **What ran** — the ordered steps with status (✓/✗/skipped) and the key result of each.
-- **The outcome** — the final answer/result the prompt asked for (e.g. created ids, fetched data summary).
+- **The outcome** — the final answer/result the request asked for (e.g. created ids, fetched data summary).
 - **What changed** — every state-changing call that actually succeeded (so the operator knows the real-world effect), and against which **environment**.
 - **What failed / is open** — failures with the (redacted) error, anything skipped, any value the chain couldn't resolve, and **how to resume** (which step to restart from; whether already-completed mutations are idempotent).
 - **Assumptions** you took (defaults, env choice) so they can correct them.
