@@ -20,15 +20,11 @@ artifacts ─► kb-builder ──┤                                  ├─►
 
 The gap-question Q&A runs **in the main conversation**, so the interactive back-and-forth with the operator just works (a sub-agent couldn't pause to ask).
 
-## Relationship to kb-factory
-
-kb-factory manufactures a per-client `{client}-kb` skill, then that skill produces the KB (a two-step). kb-builder collapses that: it is the single producer and maintainer of the KB — there is no generated per-client skill. Use kb-builder when the KB is the deliverable and you don't need a standalone, portable per-client skill. The two share the same playbook library.
-
 ## Why one skill works without a frozen recipe
 
-A generated per-client skill froze this client's recipe so updates replayed a known structure. kb-builder drops that, so **something else must be the structural source of truth on updates** — and that is the **KB itself**. Its files, vocabulary, and structure already encode the archetype and the established shape. An update run reads the existing KB, infers the archetype and structure directly from that content, and conforms new facts to it, without re-matching. That, plus the anti-drift rule, keeps the KB consistent run-over-run.
+kb-builder is the single producer and maintainer of the KB — there is no generated per-client skill that freezes this client's recipe so updates can replay a known structure. So **something else must be the structural source of truth on updates** — and that is the **KB itself**. Its files, vocabulary, and structure already encode the archetype and the established shape. An update run reads the existing KB, infers the archetype and structure directly from that content, and conforms new facts to it, without re-matching. That, plus the anti-drift rule, keeps the KB consistent run-over-run.
 
-One trade-off to accept consciously: kb-builder consults the playbooks on every run, so playbook improvements reach update runs too (a generated skill was frozen against that). Usually a feature; the KB-as-source-of-truth rule keeps it from reshaping settled structure.
+One trade-off to accept consciously: kb-builder consults the playbooks on every run, so playbook improvements reach update runs too (rather than being frozen at first-run time). Usually a feature; the KB-as-source-of-truth rule keeps it from reshaping settled structure.
 
 ## Inputs
 
@@ -46,7 +42,7 @@ Three phases. Execute in order.
 
 ## The playbook library
 
-Archetype advice lives in `.claude/kb-factory-library/playbooks/*.md` (shared with kb-factory; **read-only**). Each playbook holds recognition signals, what-to-look-for tips, common pitfalls, useful gap-questions, typical KB shapes, and skip-entirely categories. Playbooks are **advice, not recipes** — kb-builder composes the actual KB by analyzing this client's real artifacts, *informed* by the playbook.
+Archetype advice lives in `.claude/playbook-library/playbooks/*.md` (**read-only**). Each playbook holds recognition signals, what-to-look-for tips, common pitfalls, useful gap-questions, typical KB shapes, and skip-entirely categories. Playbooks are **advice, not recipes** — kb-builder composes the actual KB by analyzing this client's real artifacts, *informed* by the playbook.
 
 Current playbooks: `nodeflow`, `document-from-template`, `api-integration`, `fallback` (the exclusion-only fallback for first-of-kind clients).
 
@@ -72,7 +68,7 @@ Current playbooks: `nodeflow`, `document-from-template`, `api-integration`, `fal
 │           ├── recognize.md
 │           ├── scope.md
 │           └── build.md
-└── kb-factory-library/
+└── playbook-library/
     └── playbooks/        ← shared archetype advice (read-only)
 
 outputs/

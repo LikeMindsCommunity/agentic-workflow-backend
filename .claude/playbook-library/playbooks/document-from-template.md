@@ -6,7 +6,7 @@ fallback: false
 
 # Playbook: document-from-template
 
-Analysis advice and lessons learned for clients whose setup is **formal business document generation from raw conversational sources, matching an existing reference template with visual fidelity** (SOW, BRD, PRD, proposal, contract, scope of work). The downstream agent's job is to read MOMs / call transcripts / email threads / scoping notes, then emit a finished document that is **visually indistinguishable** from the reference samples — same fonts, sizes, weights, colors, margins, headers, footers, logo placement, table styling, numbering, list bullets, paragraph spacing. kb-factory uses this as guidance while analyzing the artifacts; the generated `{client}-kb` skill is Claude's composition, not a copy of this file.
+Analysis advice and lessons learned for clients whose setup is **formal business document generation from raw conversational sources, matching an existing reference template with visual fidelity** (SOW, BRD, PRD, proposal, contract, scope of work). The downstream agent's job is to read MOMs / call transcripts / email threads / scoping notes, then emit a finished document that is **visually indistinguishable** from the reference samples — same fonts, sizes, weights, colors, margins, headers, footers, logo placement, table styling, numbering, list bullets, paragraph spacing. kb-builder uses this as guidance while analyzing the artifacts; the {client} KB is Claude's composition, not a copy of this file.
 
 ## When this playbook applies (recognition signals)
 
@@ -41,7 +41,7 @@ These are the things experience says actually matter when working with this arch
 
 The fastest path to visual identity is: open the reference DOCX as a working template, replace section bodies with new content, save. Don't try to author a fresh DOCX from a style spec — embedded numbering definitions, list-level inheritance, theme overrides, language tags, compatibility settings, and dozens of other XML attributes are nearly impossible to recreate from scratch and will silently drift.
 
-The generated skill's drafting phase should explicitly call this out: *start from a copy of the canonical reference DOCX; preserve cover page chrome, header / footer, styles, theme, numbering, embedded logo / images by default; replace only the variable content within established paragraph styles*. The KB's job is to tell the agent **what to replace and what to leave alone**, not how to author DOCX XML from first principles.
+The KB's drafting guidance should explicitly call this out: *start from a copy of the canonical reference DOCX; preserve cover page chrome, header / footer, styles, theme, numbering, embedded logo / images by default; replace only the variable content within established paragraph styles*. The KB's job is to tell the agent **what to replace and what to leave alone**, not how to author DOCX XML from first principles.
 
 For PDF-only references where no DOCX source exists, the runtime path is: produce a DOCX that closely mirrors the PDF's visual style, deliver DOCX as primary output, optionally export to PDF. Rebuilding a pixel-faithful PDF is not realistic without the source.
 
@@ -83,7 +83,7 @@ Heading numbering (`1`, `1.1`, `1.1.1`) is often managed by DOCX's numbering.xml
 
 ### Source material is messy — type your sources
 
-The raw source artifacts have very different qualities. The generated skill should know what each shape is good for:
+The raw source artifacts have very different qualities. The KB should capture what each shape is good for:
 
 - **MOMs** — typically structured: attendees, agenda, decisions, action items, next steps. The *decisions* and *agreed scope* sections are gold. The *action items* are typically follow-ups for internal tracking, NOT scope items the SOW should commit to; don't confuse them.
 - **Call transcripts** — verbatim speech with timestamps and speaker labels. High signal-to-noise but lots of filler ("uh, so I think we should, um"), tangents, and someone walking it back ten minutes later. The agent must read the whole transcript to find the *final* decision, not lift the first plausible-sounding sentence.
@@ -109,13 +109,13 @@ What typical MOM / transcript phrasings signal each Tier 1 field the downstream 
 
 ## Common pitfalls
 
-When kb-factory composes the generated skill's Critical Rules, it draws from these (selecting the ones that apply + any new ones the analysis surfaces):
+When kb-builder composes the KB's Critical Rules, it draws from these (selecting the ones that apply + any new ones the analysis surfaces):
 
 - **Do not summarize the reference document.** The KB's purpose is exact reproduction. Boilerplate is stored verbatim. Section headings are captured letter-for-letter. Paraphrasing is the failure mode this archetype most often falls into.
 - **Do not estimate fonts, colors, margins, or spacing visually.** Parse the source DOCX or PDF with the appropriate skill and extract real style attributes. Eyeballed values produce regenerated docs that look wrong without being obviously wrong.
 - **Do not rebuild the DOCX from scratch when a reference DOCX is available.** Clone the reference as a working template, preserve all chrome (cover, header, footer, styles, numbering, theme, embedded assets), replace only variable content. Authoring DOCX XML from style descriptions silently drifts on numbering, list inheritance, theme overrides, and compatibility flags.
 - **Do not strip or replace embedded assets without an explicit policy.** Logos, diagrams, decorative artwork on the cover page are part of visual identity. Replace per the per-asset policy (vendor logo: keep; client logo: swap; cover hero: per policy; diagrams: regenerate or carry over). Silently dropping is a reviewer reject.
-- **Do not produce a generic "how to write a SOW / BRD" guide.** The KB is specific to one client's reference template. A different client with a different template needs a separate `{client}-kb`. The KB encodes one template's identity.
+- **Do not produce a generic "how to write a SOW / BRD" guide.** The KB is specific to one client's reference template. A different client with a different template needs a separate KB. The KB encodes one template's identity.
 - **Do not collapse boilerplate into language-and-tone.** Boilerplate is exact-quote material; tone is descriptive guidance. The downstream agent must copy boilerplate verbatim and write fresh prose in the documented tone. Merging them invites paraphrasing the boilerplate.
 - **Do not skip the input checklist.** Document generation fails silently when MOMs / transcripts omit a field and the downstream agent invents one. The Tier 1 list is what enforces "halt and ask" instead of fabrication.
 - **Do not treat a single reference as authoritative.** With one sample, the fixed-vs-variable split is a guess. Surface this as a BLOCKING gap before treating any field as confidently "fixed".
@@ -127,7 +127,7 @@ When kb-factory composes the generated skill's Critical Rules, it draws from the
 
 ## Useful questions to ask the operator
 
-Examples of gap-questions that have surfaced real issues. The generated skill's gap-question list is Claude's composition for this client's unknowns; inspire here but don't copy.
+Examples of gap-questions that have surfaced real issues. The KB's gap-question list is Claude's composition for this client's unknowns; inspire here but don't copy.
 
 Use this as a phrasing bank, not a checklist. This archetype's list is long on purpose; do not work through it. Align the KB's scope with the operator first, then ask only the few questions that are in scope, still unknown after reading the artifacts, and whose answers would change the KB.
 
@@ -167,7 +167,7 @@ Past clients have settled around these files. Reference only — sized to what *
 
 ## Skip-entirely categories
 
-What's typically out of scope. The generated skill should never emit:
+What's typically out of scope. The KB should never lead the downstream agent to emit:
 
 - External API reference.
 - Authentication setup.

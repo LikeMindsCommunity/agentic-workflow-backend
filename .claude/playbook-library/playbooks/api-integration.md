@@ -6,7 +6,7 @@ fallback: false
 
 # Playbook: api-integration
 
-Analysis advice and lessons learned for clients whose artifacts are **the reference documentation for an HTTP API** — a set of endpoints with auth, request/response shapes, and conventions. The downstream consumer (`generate-artifact`) uses the resulting KB for either of two families of job against this API:
+Analysis advice and lessons learned for clients whose artifacts are **the reference documentation for an HTTP API** — a set of endpoints with auth, request/response shapes, and conventions. The downstream consumers (`code-agent` and `api-agent`) use the resulting KB for either of two families of job against this API:
 
 - **Integration** — **write integration code** (an SDK call, a function, a glue script), or **execute a live pipeline of calls** that accomplishes a goal (authenticate, chain one response into the next request, handle retries / rate limits / pagination / failures, and report). Occasionally it emits a **config** the API ingests (a webhook subscription, a collection export).
 - **API testing** — **generate a test suite** (contract/schema, functional/scenario, negative/boundary, auth, regression) or **execute a live test run** that exercises endpoints, **asserts** each response against the documented contract, and reports pass/fail. Testing is integration's mirror image: integration makes the API *do work*; testing *verifies the API behaves*, and it leans hardest on the API's negative space (errors, constraints, invalid states) plus explicit assertions and test data.
@@ -222,10 +222,3 @@ What's typically out of scope. The KB should never emit:
 
 The deliverable is integration code, a live API run, or a test suite/run — keep the KB to the callable, authenticatable, chainable, **assertable** surface, and nothing that tempts the consumer to act on a surface the runtime doesn't expose.
 
-## Notes for librarians
-
-- The `seen-in` clients (`razorpay-api`, `tmdb-api`, `pubnub-api`, `getstream-api`) are the **reverse-engineering corpus** this playbook was derived from — a deliberate spread of API styles (REST CRUD payments, read-heavy media REST, realtime/long-poll messaging, activity feeds). They are sample doc sets, not live engagements; replace/append real clients as the archetype recurs.
-- This is one archetype with a **style axis**: request/response REST, realtime/streaming (long-poll/handshake), and RPC/GraphQL. The KB shape and elicitation are the same across all three; only certain rows light up (the handshake/resume-token row for realtime; the signing-recipe row for HMAC; the webhooks file for event-driven APIs). Don't split it into per-style playbooks unless one style accrues genuinely distinct lessons.
-- It also has a **use-case axis**: *integration* (make the API do work) and *testing* (verify it behaves). One KB serves both; testing activates the assertion-oracle, negative-contract, and test-data parts (the test-scenarios file, the expected-behavior and test-data elicitation rows, the constraints file as oracle) that integration can leave implicit. Don't fork integration and testing into separate playbooks — they read the same surface and differ only in which facts they lean on and what the consumer emits. (The id is `api-integration` for historical reasons; the archetype covers testing equally.)
-- If runs keep surfacing the same missing fact (e.g. operators never have the signing recipe written down, or specs are always partial), sharpen the recognition/elicitation here rather than tolerating the repeated clarification.
-- Keep it vendor-agnostic: exact hosts, header/field names, status-code meanings, and credential lists are KB observations, never playbook constants.

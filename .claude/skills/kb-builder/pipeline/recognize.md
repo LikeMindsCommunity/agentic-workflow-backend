@@ -6,7 +6,7 @@ Parameterize the run before any KB work: decide whether this is a **first run** 
 
 - `inputs=<dir>` (required), optional `prompt`, `output=<dir>` (default `outputs/{client}/kb/`, where `{client}` is inferred from the inputs folder name or the prompt).
 - The client artifacts directly — read the files.
-- The playbook library at `.claude/kb-factory-library/playbooks/*.md` (read-only).
+- The playbook library at `.claude/playbook-library/playbooks/*.md` (read-only).
 
 ## Step 1 — Detect existing KB
 

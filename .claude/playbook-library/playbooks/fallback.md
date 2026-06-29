@@ -6,17 +6,17 @@ fallback: true
 
 # Playbook: fallback
 
-Analysis advice for the case when **no archetype-specific playbook matches** the client's artifacts. Ensures kb-factory still produces a tailored, self-contained `{client}-kb` skill for first-of-kind clients.
+Analysis advice for the case when **no archetype-specific playbook matches** the client's artifacts. Ensures kb-builder still produces a tailored, self-contained KB for first-of-kind clients.
 
 Structurally different from other playbooks: a specific playbook holds domain advice for one archetype. The fallback holds **discovery advice** — how to figure out a use-case Claude hasn't seen before, from artifacts that don't fit any known archetype.
 
-Every fallback run is a strong candidate for promotion into a real specific playbook. End-of-run candidate flag is mandatory (enforced by `assemble.md`).
+Every fallback run is a strong candidate for promotion into a real specific playbook. End-of-run candidate flag is mandatory — surface it when the build completes.
 
 ## When this playbook applies (recognition signals)
 
-This playbook fires **only by exclusion** — when match.md finds no specific playbook fits. The matcher does not signal-test the fallback against artifacts. (See `pipeline/match.md`'s fallback-flag handling.)
+This playbook fires **only by exclusion** — when recognize.md finds no specific playbook fits. The matcher does not signal-test the fallback against artifacts. (See `pipeline/recognize.md`'s fallback handling.)
 
-If you find yourself testing files against signals from this playbook, stop. Re-read match.md.
+If you find yourself testing files against signals from this playbook, stop. Re-read recognize.md.
 
 ## What to look for when analyzing
 
@@ -31,14 +31,14 @@ The fallback's analysis advice is procedural — a discovery process rather than
 
   For each group, characterize: file count, file shapes (top-level keys, doc genre), and the likely role each artifact plays (source content vs. reference example vs. format spec vs. brief). Report the grouping; do not propose a KB shape yet.
 
-- **The use case must be elicited from the operator.** Claude cannot infer it from artifacts alone reliably. The generated skill must include an interactive use-case elicitation phase that fires before drafting. Specifically the operator needs to answer:
+- **The use case must be elicited from the operator.** Claude cannot infer it from artifacts alone reliably. kb-builder must run an interactive use-case elicitation phase before drafting the KB. Specifically the operator needs to answer:
   - What does the downstream agent **produce**? (document / JSON artifact / config / code / form / other)
   - Are these artifacts **references to mimic**, **source material to extract from**, **format specs to learn**, or some combination?
   - Will the agent be invoked with **per-instance inputs that vary per run**, or is each invocation roughly identical?
   - What are the **per-instance must-haves** the agent needs before it can produce output?
   - Anything important about the deliverable that **isn't in these artifacts** — style guides, undocumented conventions, regulatory constraints, named entities not yet shared?
 
-- **The KB shape must be proposed and confirmed before drafting.** Based on triage + use-case, the generated skill should propose a KB file list with one-line per-file purposes, surface it to the operator, and wait for confirmation. Drafting without confirming shape is how the fallback degrades into platform-kb.
+- **The KB shape must be proposed and confirmed before drafting.** Based on triage + use-case, kb-builder should propose a KB file list with one-line per-file purposes, surface it to the operator, and wait for confirmation. Drafting without confirming shape is how the fallback degrades into platform-kb.
 
 - **Be ruthless about scope.** Default to skipping. If a category doesn't earn its keep against the use-case, drop it. The fallback's primary failure mode is producing a kitchen-sink KB that's longer than useful.
 
@@ -70,7 +70,7 @@ These hold for **every** archetype, so they hold for a first-of-kind client too.
 
 ## Common pitfalls
 
-When kb-factory composes the generated skill's Critical Rules:
+When kb-builder composes the KB's Critical Rules:
 
 - **Do not propose a KB shape without operator confirmation.** The use-case elicitation phase is non-negotiable. Skipping it turns the fallback into platform-kb.
 - **Do not include sections "just in case."** Skip-entirely beats include-just-in-case. The KB should be the smallest thing that fully serves the deliverable.
@@ -96,7 +96,7 @@ Ask in **two tiers**. *First*, request any reference artifact that would answer 
 
 ## Typical KB shapes that have worked
 
-By design, no canonical shape. The generated skill proposes a shape based on the use-case + triage and gets operator confirmation before drafting.
+By design, no canonical shape. kb-builder proposes a shape based on the use-case + triage and gets operator confirmation before drafting.
 
 For reference, common shapes by use-case (use as inspiration only, not as defaults):
 
@@ -106,7 +106,7 @@ For reference, common shapes by use-case (use as inspiration only, not as defaul
 
 ## Skip-entirely categories
 
-The generated skill must be ruthless. Default to skipping. Specifically:
+kb-builder must be ruthless. Default to skipping. Specifically:
 
 - Sections describing functionality the artifacts don't actually exercise.
 - "Future-proofing" sections for things the operator didn't ask for.

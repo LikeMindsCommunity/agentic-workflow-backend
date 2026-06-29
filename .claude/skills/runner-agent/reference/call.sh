@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# call.sh — one robust API call for the generate-artifact `execute` operation.
+# call.sh — one robust API call for the runner-agent execute operation.
 #
 # The execute pipeline copies this into the run dir and invokes it once per step so that
 # retries/backoff/redaction/status-capture are handled uniformly in ONE place, while the
