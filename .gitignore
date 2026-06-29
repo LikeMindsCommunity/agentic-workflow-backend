@@ -38,6 +38,9 @@ htmlcov/
 inputs/
 package*
 
+# Per-session sandboxes created by the local MCP server
+.sessions/
+
 # Node modules
 node_modules/
 .claude/settings.local.json

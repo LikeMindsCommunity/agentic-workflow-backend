@@ -4,6 +4,9 @@ python-dotenv>=1.0.0
 anyio>=4.0.0
 claude-agent-sdk
 
+# MCP server (FastMCP) exposing skills via streamable HTTP
+mcp>=1.2.0
+
 # OpenAI Agents SDK + Azure AI Foundry (Claude via LiteLLM)
 openai-agents[litellm]>=0.0.13
 openai>=1.54.0

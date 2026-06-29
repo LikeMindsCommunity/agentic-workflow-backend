@@ -2,5 +2,8 @@
   "model": "claude-sonnet-4-6",
   "enabledPlugins": {
     "document-skills@anthropic-agent-skills": true
+  },
+  "env": {
+    "MCP_TOOL_TIMEOUT": "600000"
   }
 }
