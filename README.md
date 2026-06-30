@@ -144,161 +144,147 @@ Every section is optional. If the derived KB and an override disagree, both sour
 /apply-fixes            # apply all approved fixes
 ```
 
-# LikeMinds Layer 1 — Platform Knowledge Base Builder
+# LikeMinds Agentic Workflow Skills
 
-Builds a structured markdown knowledge base (KB) from a client's platform artifacts and documentation. The KB captures everything a downstream system needs to automatically generate valid configuration files, integrations, or workflows for that platform from natural language.
+Five Claude Code skills in `.claude/skills/` take a client from **raw platform artifacts** to a working deliverable — a config, integration code, or a live API / browser run. Invoke each by describing what you want in plain English inside Claude Code; the trigger phrases below activate the right skill.
 
-**Example:** Given sample Exotel IVR JSON files and API docs, the system produces a KB documenting every node type, field, transition event, and validation rule — so a Layer 2 agent can generate new IVR flows from plain English.
+```
+raw artifacts ─► kb-builder ─► KB ─┬─► config-agent ─► structured config
+  (docs,                           │
+   samples,                        ├─► code-agent   ─► integration code (wired into your repo)
+   transcripts)                    │
+                                   └─► api-agent    ─► LLD ─► runner-agent ─► live run
+```
+
+**Two layers:**
+
+- **Layer 1 — `kb-builder`** turns the client's artifacts into a **KB** at `outputs/{client}/kb/`: the single source of truth about that platform.
+- **Layer 2 — the deliverable skills** (`config-agent`, `code-agent`, `api-agent`, `runner-agent`) read the KB plus a short **SOW** (a solution doc / prompt saying *what* to build or run) and produce the actual output. They learn the platform entirely from the KB — nothing is hardcoded, so the same skill works for any platform once its KB exists.
+
+> **KB = how, SOW = what.** The KB carries the platform's grammar and rules; the SOW carries the specific thing to build. Build the KB once with Layer 1, then run Layer 2 as many times as you have things to build.
 
 ---
 
-## Quick Start (Claude Code)
+## 1. `kb-builder` — build & maintain the KB
 
-The primary way to use this tool is the `**/platform-kb`** skill in Claude Code.
+**Use it when** you have a client's raw artifacts and need the KB built, or extended with new material.
 
-### 1. Open the project in Claude Code
+| | |
+| ----------- | ------------------------------------------------------------------------------------ |
+| **Triggers** | *"build the KB for {client}"*, *"update {client}'s KB"*, *"generate a KB from these artifacts"* |
+| **Inputs**   | `inputs=<dir>` (required) · `prompt` (optional context) · `output=<dir>` (optional)   |
+| **Output**   | `outputs/{client}/kb/`                                                                |
 
-```bash
-cd agentic-workflow-backend
-claude
-```
-
-### 2. Drop your input materials
-
-
-| Folder                     | What to put here                                                                   |
-| -------------------------- | ---------------------------------------------------------------------------------- |
-| `inputs/sample_artifacts/` | Platform-generated files (JSON, XML, YAML, config files, etc.)                     |
-| `inputs/docs/`             | Documentation in any format (markdown, PDF, Word, Excel, PowerPoint, HTML, images) |
-
-
-Both folders are optional. You can also pass file paths, URLs, or context directly as arguments.
-
-### 3. Run the skill
+Drop the client's artifacts (docs, transcripts, sample files, code, reference deliverables — any format) into a folder under `inputs/`, then:
 
 ```
-/platform-kb
+build the KB for exotel from the artifacts in inputs/exotel/
 ```
 
-Or with arguments:
+The first run drafts the KB; later runs extend it in place. It picks the archetype itself and asks any gap questions interactively, grouped **BLOCKING / IMPORTANT / VERIFY ASSUMPTION** — answer them to finalize. To extend later:
 
 ```
-/platform-kb Here are Exotel IVR flow JSONs in inputs/sample_artifacts/ and API docs at https://developer.exotel.com/api/nodeflows
-```
-
-That's it. The skill handles everything from there.
-
----
-
-## What `/platform-kb` Does
-
-The skill runs a self-contained loop inside a single Claude Code session:
-
-```
-Phase 1 — INVENTORY & ANALYSIS
-  Catalog all provided materials (artifacts, docs, URLs, screenshots, transcripts)
-  Auto-detect mode (artifacts+docs, artifacts-only, docs-only, prompt-only)
-  Classify use case (component-flow, api-sdk, artifact-generator, event-driven, etc.)
-  Deep structural analysis of artifacts (fields, enums, ID chains, relationships)
-  Cross-reference across all materials
-  Fetch any provided URLs (WebFetch → Playwright fallback for JS/protected sites)
-
-Phase 2 — DRAFT KB
-  Write the full structured KB markdown file to outputs/
-
-Phase 3 — GAP ANALYSIS
-  Identify up to 5 missing knowledge areas
-  Present gaps grouped by priority: BLOCKING / IMPORTANT / NICE TO HAVE
-
-Phase 4 — ENRICHMENT  (loops back to Phase 3)
-  User provides: a URL, "file", or plain text explanation
-  Rewrite the KB incorporating the new info
-  Loop back to Gap Analysis until ready or user types "done"
-```
-
-### Supported input formats
-
-The skill reads everything natively — no conversion needed:
-
-- **Structured files:** JSON, XML, YAML, HTML
-- **Documents:** PDF, Word (.docx), Excel (.xlsx/.csv), PowerPoint (.pptx), plain text, markdown
-- **Images:** PNG, JPG, GIF, WebP (screenshots, architecture diagrams, flow charts)
-- **Specs:** OpenAPI/Swagger, Postman collections
-- **Other:** Call transcripts, SOW documents, meeting notes
-
-### Use-case classification
-
-The skill auto-detects what kind of platform you're working with:
-
-
-| Use Case             | Signals                                                  | Examples                                      |
-| -------------------- | -------------------------------------------------------- | --------------------------------------------- |
-| `component-flow`     | Nodes, steps, blocks, transitions, visual flows          | IVR builders, workflow engines, no-code tools |
-| `api-sdk`            | REST/GraphQL endpoints, SDK methods, auth tokens         | Twilio, Stripe, Salesforce API                |
-| `artifact-generator` | Output files with strict schemas, validation rules       | Config generators, template engines           |
-| `event-driven`       | Webhooks, callbacks, event payloads, triggers            | Event buses, notification systems             |
-| `data-platform`      | Entities, relationships, CRUD, data models               | CRMs, databases, analytics platforms          |
-| `config-system`      | Config hierarchies, feature flags, env-specific settings | Infrastructure platforms, deployment tools    |
-
-
-A platform can match multiple use cases (e.g., an IVR builder is both `component-flow` and `artifact-generator`).
-
-### Responding to gaps
-
-After each gap analysis round you can:
-
-
-| Input            | What happens                                            |
-| ---------------- | ------------------------------------------------------- |
-| A URL            | Agent fetches and reads it (Playwright used if blocked) |
-| `file`           | Agent re-reads `inputs/docs/` for anything newly added  |
-| Text explanation | Used directly to fill the gaps                          |
-| `done`           | Ends the loop, saves the final KB                       |
-
-
-### Web research
-
-When you provide URLs, the skill follows a smart fetch pipeline:
-
-1. **Check for AI-friendly indexes** — `llms-full.txt`, `llms.txt`, `sitemap.xml` at the docs origin
-2. **WebFetch** — try direct fetch first
-3. **Playwright stealth browser** — fallback for JS-rendered sites, 403s, Cloudflare challenges, SPAs that 404 on direct requests
-4. **WebSearch** — last resort if the page is genuinely dead
-
-Playwright MCP is pre-configured in `.mcp.json` and activates automatically when Claude Code starts in this directory.
-
----
-
-## Input Modes
-
-The skill auto-detects what you provided and adapts accordingly:
-
-
-| Mode                 | Inputs available        | Agent approach                                                     |
-| -------------------- | ----------------------- | ------------------------------------------------------------------ |
-| `artifacts_and_docs` | Artifacts + docs/URLs   | Maps every artifact element to docs; writes with authority         |
-| `artifacts_only`     | Artifacts, no docs      | Reverse-engineers structure; liberal "Needs Verification" callouts |
-| `docs_only`          | Docs/URLs, no artifacts | Extracts schema from docs; notes no artifact was validated         |
-| `prompt_only`        | Prompt only             | Fetches any URLs in prompt; writes skeleton with gaps if none      |
-
-
----
-
-## Output
-
-Each run produces versioned `.md` files in `outputs/`:
-
-```
-outputs/
-  <platform>/
-    kb/
-      kb_<platform>_draft.md         <- initial draft
-      kb_<platform>_r1.md            <- after round 1 enrichment
-      kb_<platform>_r2.md            <- after round 2 enrichment
-      kb_<platform>_FINAL.md         <- final deliverable
+update the exotel KB with the new node-template export in inputs/exotel/
 ```
 
 ---
+
+## 2. `config-agent` — KB → structured config
+
+**Use it when** you have a KB and want a structured config the platform ingests (JSON / XML / YAML / NodeFlow). It is validated against the KB's own rules; **nothing is executed.**
+
+| | |
+| ----------- | ----------------------------------------------------------------------------------- |
+| **Triggers** | *"generate the config / nodeflow from this KB + SOW"*, *"build the {platform} config"*, *"config-agent"* |
+| **Inputs**   | `kb=<dir>` · `sow=<path>` · `prompt` (optional) · `output=<dir>` (optional)          |
+| **Output**   | `outputs/<client>/generated/`                                                       |
+
+```
+config-agent kb=outputs/exotel/kb/ sow=inputs/exotel/billing-ivr.md
+```
+
+Or describe the SOW inline:
+
+```
+config-agent kb=outputs/exotel/kb/ — build an IVR that greets the caller, collects an account number, and routes to billing
+```
+
+Re-running updates the deliverable in place.
+
+---
+
+## 3. `code-agent` — KB → integration code
+
+**Use it when** you want code — an SDK integration, function, handler, or glue snippet (*not* a whole project) — generated from the KB's API surface, verified (parse / compile / lint), and **wired into your codebase.**
+
+| | |
+| ----------- | ----------------------------------------------------------------------------------- |
+| **Triggers** | *"write the SDK code from this KB + SOW"*, *"integrate the {platform} code into <dir>"*, *"code-agent"* |
+| **Inputs**   | `kb=<dir>` · `sow=<path>` · `target=<dir-in-your-project>` · `prompt` (optional)     |
+| **Output**   | code written into your `target` directory                                           |
+
+```
+code-agent kb=outputs/razorpay/kb/ sow=inputs/razorpay/create-order.md target=src/payments/
+```
+
+If you omit `target` and the SOW doesn't name a path, it **asks where to integrate before writing** — it never guesses where to land code.
+
+---
+
+## 4. `api-agent` — KB → execution document (LLD)
+
+**Use it when** you want the **runbook before running it**: an ordered, fully-specified, self-contained LLD / Execution Document that the Runner later carries out. It only *designs* — no auth, no secrets, no live calls.
+
+| | |
+| ----------- | ----------------------------------------------------------------------------------- |
+| **Triggers** | *"create the LLD / execution doc from this KB + SOW"*, *"design the {platform} API workflow"*, *"api-agent"* |
+| **Inputs**   | `kb=<dir>` · `sow=<path>` · `prompt` (optional) · `output=<dir>` (optional)          |
+| **Output**   | `outputs/<client>/lld/`                                                             |
+
+```
+api-agent kb=outputs/getstream/kb/ sow=inputs/getstream/social-feed.md
+```
+
+The KB's shape decides the step type automatically — a REST-API KB yields HTTP-call steps; a web-flow KB yields browser-agent steps. There is no mode to pass.
+
+---
+
+## 5. `runner-agent` — execute the LLD live
+
+**Use it when** an `api-agent` LLD is ready and you want it run for real — exactly as written, from the document alone.
+
+| | |
+| ----------- | ----------------------------------------------------------------------------------- |
+| **Triggers** | *"run / execute this LLD"*, *"execute the execution document"*, *"runner-agent"*    |
+| **Inputs**   | `lld=<path>` (required) · `secrets=<file>` · `env=` / `mode=` · `dry_run=true` · `output=` |
+| **Output**   | a run directory with `run.log` + a redacted `result.json`                           |
+
+```
+runner-agent lld=outputs/getstream/lld/social-feed.md
+```
+
+It **defaults to non-prod** (going prod / live is an explicit choice), sources its own credential values by the names the LLD lists — from `secrets=`, a project secrets file, or by asking, **never from the document** — and honors the LLD's safety gates: confirm before any state change, double-confirm anything destructive. Add `dry_run=true` to rehearse without firing calls.
+
+---
+
+## End-to-end example
+
+```
+# 1. Build the KB once from the client's artifacts
+build the KB for getstream from inputs/getstream/            ->  outputs/getstream/kb/
+
+# 2a. Generate a config ...
+config-agent kb=outputs/getstream/kb/ sow=inputs/feed.md     ->  outputs/getstream/generated/
+
+# 2b. ... or integration code ...
+code-agent   kb=outputs/getstream/kb/ sow=inputs/feed.md target=src/feed/
+
+# 2c. ... or design + run a live API workflow
+api-agent    kb=outputs/getstream/kb/ sow=inputs/feed.md     ->  outputs/getstream/lld/
+runner-agent lld=outputs/getstream/lld/feed.md               ->  live run + run record
+```
+
+The **playbook library** at `.claude/playbook-library/playbooks/*.md` (read-only) holds the archetype advice `kb-builder` draws on — `nodeflow`, `api-integration`, `document-from-template`, and an exclusion-only `fallback`. You don't invoke it directly; it guides KB building behind the scenes.
 
 # Document Generator (`/generate-document`)
 
