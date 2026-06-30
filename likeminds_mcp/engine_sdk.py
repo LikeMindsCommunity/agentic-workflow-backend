@@ -71,14 +71,18 @@ def build_reply_message(response: str | None, added_files: list[str]) -> str:
 # plain text message (e.g. a "draft complete" summary) instead of calling a signal
 # tool. When that happens we nudge it to proceed and run another turn, rather than
 # treating the silent turn as a failure. This emulates the LLD's forced tool call.
-MAX_CONTINUES = 12
+MAX_CONTINUES = 20
 NUDGE = (
-    "Your turn ended without calling ask_user or emit_result. Do not stop here. "
-    "If any blocking/important gaps or unconfirmed assumptions remain, call "
-    "ask_user now with the verbatim gap block. If the deliverable in the output/ "
-    "directory is complete and no blocking/important gaps remain, call emit_result "
-    "now. Otherwise keep working — but you MUST end by calling ask_user or "
-    "emit_result."
+    "You paused without finishing, but your work is almost certainly NOT complete. "
+    "Keep going — do NOT call emit_result to stop early. Specifically:\n"
+    "1) If ANY KB section in your plan/outline (including every section your "
+    "overview references) is not yet written as a complete, real file in the "
+    "output/ directory, WRITE IT NOW. Do not skip or merge away planned sections.\n"
+    "2) Once every planned section exists, if you have ANY blocking or important "
+    "gaps or unconfirmed assumptions, you MUST call ask_user with the gap block and "
+    "wait for the user. Never finish without asking.\n"
+    "3) Call emit_result ONLY after every planned section is written AND the user "
+    "has answered the gaps (or replied 'done'). Do not finalize a partial KB."
 )
 
 

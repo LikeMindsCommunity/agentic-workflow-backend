@@ -36,13 +36,19 @@ class Session:
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | onboarded | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
+    asked: bool = False       # has ask_user been called at least once this session?
     questions: list = field(default_factory=list)
     result: dict | None = None        # {kb_id, summary} once onboarded
     error: str | None = None
     busy: bool = False                 # a turn is currently executing
-    task: object = None                # the asyncio.Task running the current turn
     connected: bool = False
     round_index: int = 0
+    # The skill runs in its OWN thread + event loop so it never blocks the MCP
+    # server's main loop. These connect the two:
+    thread: object = None              # threading.Thread running the skill
+    worker_loop: object = None         # the worker thread's asyncio loop
+    reply_event: object = None         # asyncio.Event (on worker loop) — reply ready
+    pending_reply: str = ""            # the reply message handed to the worker
 
 
 def _build_options(sandbox: Path) -> ClaudeAgentOptions:

@@ -20,6 +20,7 @@ from __future__ import annotations
 
 import asyncio
 import shutil
+import threading
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -35,18 +36,32 @@ load_dotenv()
 mcp = FastMCP("likeminds", host=HOST, port=PORT)
 
 # How long a single run_skill call waits for the job state to change before
-# returning "running". Kept high (but under the client's ~300s idle timeout) so the
-# client polls only a few times for a long run instead of dozens — far fewer
-# repeated calls, which otherwise look like a stuck loop to the user.
-POLL_WAIT = 150
+# returning "running". Kept SHORT so each call needs only a sliver of main-thread
+# time (the worker thread contends for the GIL) and returns promptly with fresh
+# progress. Frequent polls are fine now that each one shows live progress.
+POLL_WAIT = 4
+
+# Hard interlock: if the skill tries to finish before ever asking the user, we
+# refuse and push it back to the gap step. Allowed a few times before giving up so
+# a genuinely gap-free skill can't deadlock.
+MAX_EMIT_BLOCKS = 3
+EMIT_BLOCKED_MSG = (
+    "STOP — you called emit_result but you have NOT presented the gaps to the user "
+    "yet (ask_user was never called). The skill REQUIRES presenting all blocking "
+    "and important gaps and assumptions to the user via ask_user, and waiting for "
+    "their reply, BEFORE finishing. First make sure every planned KB section is "
+    "written as a complete file in output/, then call ask_user now with the full "
+    "gap block. Do not call emit_result again until the user has answered or said "
+    "'done'."
+)
 
 RELAY_TEXT = (
-    "Show these questions to the user verbatim, wait for their reply and any "
-    "attachments, then call run_skill again with this session_id and the user's "
-    "`response`. If the user points to local files to answer the gaps, pass their "
-    "absolute paths in `input_paths` (best for binary/large files) or their text "
-    "in `files` ([{name, content}]) on that SAME call so the skill can read them. "
-    "Do NOT answer the questions yourself."
+    "Show this ONE gap to the user verbatim and wait for their reply. They may "
+    "answer it, reply 'skip' to skip it, or 'done' to stop and finish the KB. Then "
+    "call run_skill again with this session_id and their `response`. If they point "
+    "to local files to answer, pass the absolute paths in `input_paths` (best for "
+    "binary/large files) or text in `files` on that SAME call. Do NOT answer the "
+    "gap yourself — after you relay the reply, the skill asks the next gap."
 )
 POLL_TEXT = (
     "Still working. Tell the user the current `progress` and `files_written` so "
@@ -102,37 +117,74 @@ def _promote(skill: str, harvested: list[tuple[str, str]], manifest: list | None
 # Background turn runner
 # ----------------------------------------------------------------------------- #
 
-async def _run_turn(sess: sessions.Session) -> None:
-    """Run one skill turn to its next signal and update the session job state.
-    Runs as a detached task; never raises out."""
+async def _drive_session(sess: sessions.Session, first_message: str) -> None:
+    """The whole skill lifecycle, run ON THE WORKER THREAD's own event loop so it
+    never blocks the MCP server's main loop. Updates sess.* state as it goes; the
+    main loop only ever reads that state to answer polls."""
     try:
-        signal = await engine_sdk.run_until_signal(sess)
-        if signal is None:
-            sess.status = "error"
-            sess.error = "Skill ended without calling ask_user or emit_result."
-        elif signal["kind"] == "ask":
+        sess.reply_event = asyncio.Event()
+        sess.worker_loop = asyncio.get_running_loop()
+        await sess.client.connect()
+        sess.connected = True
+        await sess.client.query(first_message)
+        emit_blocks = 0
+        while True:
+            sess.status = "running"
+            signal = await engine_sdk.run_until_signal(sess)
+            if signal is None:
+                sess.status = "error"
+                sess.error = "Skill ended without calling ask_user or emit_result."
+                return
+            if signal["kind"] == "emit":
+                # HARD INTERLOCK: refuse to finish if the skill never asked the user.
+                if not sess.asked and emit_blocks < MAX_EMIT_BLOCKS:
+                    emit_blocks += 1
+                    sess.progress = "Finishing blocked — must ask gaps first…"
+                    await sess.client.query(EMIT_BLOCKED_MSG)
+                    continue
+                harvested = _harvest(sess.sandbox)
+                kb_id, names = _promote(sess.skill, harvested, signal.get("files"))
+                await sessions.close_session(sess)  # harvest first, then purge
+                sess.result = {"kb_id": kb_id, "summary": {"files": names}}
+                sess.status = "onboarded"
+                return
+            # ask_user: publish the questions and wait for the main loop to hand us
+            # a reply (it sets pending_reply and fires reply_event via the worker loop).
+            sess.asked = True
             sess.questions = signal["questions"]
             sess.status = "need_input"
-        else:  # emit
-            harvested = _harvest(sess.sandbox)
-            print(f"[harvest] sandbox={sess.sandbox} "
-                  f"output_exists={(sess.sandbox/'output').is_dir()} "
-                  f"files={[(n, len(c)) for n, c in harvested]}", flush=True)
-            kb_id, names = _promote(sess.skill, harvested, signal.get("files"))
-            await sessions.close_session(sess)  # harvest first, then purge sandbox
-            sess.result = {"kb_id": kb_id, "summary": {"files": names}}
-            sess.status = "onboarded"
-    except Exception as e:  # noqa: BLE001 - surface as job error, don't crash server
+            await sess.reply_event.wait()
+            sess.reply_event.clear()
+            sess.progress = "Reading your answer…"
+            await sess.client.query(sess.pending_reply)
+    except Exception as e:  # noqa: BLE001 — surface as job error, never crash the thread
         sess.status = "error"
         sess.error = f"{type(e).__name__}: {e}"
+
+
+def _worker_entry(sess: sessions.Session, first_message: str) -> None:
+    """Thread target: own event loop, drives one skill session start to finish."""
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        loop.run_until_complete(_drive_session(sess, first_message))
     finally:
-        sess.busy = False
+        loop.close()
 
 
-def _start_turn(sess: sessions.Session) -> None:
+def _start_worker(sess: sessions.Session, first_message: str) -> None:
     sess.status = "running"
-    sess.busy = True
-    sess.task = asyncio.create_task(_run_turn(sess))
+    sess.thread = threading.Thread(
+        target=_worker_entry, args=(sess, first_message), daemon=True
+    )
+    sess.thread.start()
+
+
+def _deliver_reply(sess: sessions.Session, msg: str) -> None:
+    """Hand a reply to the worker thread and wake it (thread-safe)."""
+    sess.pending_reply = msg
+    sess.status = "running"
+    sess.worker_loop.call_soon_threadsafe(sess.reply_event.set)
 
 
 async def _wait_for_change(sess: sessions.Session, seconds: int = POLL_WAIT) -> None:
@@ -218,30 +270,25 @@ async def run_skill(
         has_answer = (
             response is not None or files or input_paths or artifacts
         )
-        if has_answer and sess.status == "need_input" and not sess.busy:
+        if has_answer and sess.status == "need_input":
             added = (
                 engine_sdk._write_artifacts(sess.inputs_dir, artifacts)
                 + engine_sdk._write_artifacts(sess.inputs_dir, files)
                 + _copy_input_paths(sess.inputs_dir, input_paths)
             )
-            msg = engine_sdk.build_reply_message(response, added)
-            await sess.client.query(msg)
-            _start_turn(sess)
+            _deliver_reply(sess, engine_sdk.build_reply_message(response, added))
         await _wait_for_change(sess)
         return _snapshot(sess)
 
-    # First call.
+    # First call — spin up the worker thread and return promptly.
     if not registry.skill_exists(skill or ""):
         available = ", ".join(s["name"] for s in registry.list_skills())
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
     sess = sessions.new_session(skill)
     engine_sdk._write_artifacts(sess.inputs_dir, artifacts)
     _copy_input_paths(sess.inputs_dir, input_paths)
-    await sess.client.connect()
-    sess.connected = True
-    msg = engine_sdk.build_first_message(skill, sess, urls, context)
-    await sess.client.query(msg)
-    _start_turn(sess)
+    first_message = engine_sdk.build_first_message(skill, sess, urls, context)
+    _start_worker(sess, first_message)
     await _wait_for_change(sess)
     return _snapshot(sess)
 
