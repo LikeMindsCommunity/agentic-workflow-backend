@@ -1,12 +1,33 @@
-# LikeMinds KB Builder — Input Config
-#
 # HOW TO USE:
-#   1. Fill in the prompt below — describe the platform, use case, and paste any doc URLs.
+#   1. Fill in the prompt below
 #   2. (Optional) Drop sample files into inputs/sample_artifacts/ and docs into inputs/docs/
-#   3. Run:  /platform-kb   (Claude Code)   or   python main.py   (SDK)
-#
-# The agent drafts a KB, identifies gaps, and loops with you until it's complete.
+#   3. Run one of:
+#        Claude Code (interactive):  /platform-kb
+#                                    /generate-document kb=outputs/<platform>/kb/ sources=inputs/materials/
+#        Claude Agent SDK (CLI):     python -m claude_agent platform-kb
+#                                    python -m claude_agent generate-document kb=outputs/<platform>/kb/ sources=inputs/materials/
 
 prompt: |
-  I want to automate the integration of MoEngage analytics events into each platform they offer, i.e https://developers.moengage.com/hc/en-us.
-  Refer to their website for the documentation. The agent should be able to use the moEngage sdk to integrate the analytics events into the platform.
+  I want to build a Knowledge Base (KB) that teaches a downstream AI agent how to generate
+  new Statement of Work (SOW) documents that exactly match the structure, style, and content
+  patterns of the sample SOW in inputs/sample_artifacts/.
+
+  This KB will be used by a /generate-document agent that receives a Minutes of Meeting (MOM)
+  from a client discovery call and must produce a fully-formatted SOW document — matching the
+  visual layout and section structure of the sample — with all client-specific details filled
+  in from the MOM.
+
+  The KB should capture:
+  1. Every section of the SOW in order (exact headings, sub-sections, their purpose)
+  2. Which text is boilerplate/verbatim (copy exactly) vs. dynamic (filled from MOM)
+  3. Templates for each dynamic section showing how to derive content from MOM inputs
+  4. The complete input-readiness checklist: every field the downstream agent must extract
+     from the MOM (client name, project scope, modules in scope, timelines, commercials,
+     team structure, assumptions, payment terms, etc.) — classified as BLOCKING/IMPORTANT/OPTIONAL
+  5. Constraints and validation rules (e.g., section ordering, required sub-sections,
+     numbering conventions, formatting rules)
+  6. Common patterns for scope tables, timeline tables, commercial tables, and assumption lists
+
+  The sample artifact is a Bizom RTM Digitization SOW. Extract its structure and patterns
+  as the authoritative template. The downstream agent must be able to produce a pixel-accurate
+  replica of this document style for any new client engagement using only a MOM as input.

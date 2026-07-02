@@ -35,6 +35,7 @@ These are the things experience says actually matter when working with this arch
 
 - Open DOCX with the `docx` skill (it's a zip of XML — `document.xml`, `styles.xml`, `numbering.xml`, `theme.xml`, `header*.xml`, `footer*.xml`, `settings.xml`, `media/` folder). Open PDF with the `pdf` skill.
 - Extract **real** style attributes: page setup (paper size, margins top / bottom / left / right / gutter), section breaks and section-specific page setup, fonts per heading level and per named paragraph style (exact face, size in half-points, weight, italic, hex color, underline), theme color palette with role tags, header and footer content per section, list styles with exact bullet glyphs and indentation, table styling (borders per side per cell, shading, cell margins), paragraph spacing before / after, line spacing, indentation.
+- For a **PDF reference** there is no style XML, so measure the tokens programmatically: `pdffonts` for the real font faces (they will not be web-safe — e.g. Proxima Nova; record a close substitute for render time), and `pdfplumber` for per-character size/color, rect fills (table-header shading, accent bars), and the text bounding box (→ real margins). Watch for a **non-black body color** (e.g. gray `#666666` from Google-Docs exports) — eyeballing would default it to black. Render a few pages to PNG (`pdftoppm`) to confirm cover layout, header/footer chrome, and table styling against the measured numbers.
 - Eyeballed values produce regenerated docs that *look* wrong without being obviously wrong — slightly off margins, near-but-not-exact heading sizes, a different shade of brand blue. The reviewer can't pin it down but rejects the doc.
 
 ### Plan to clone the reference, not rebuild it
@@ -43,7 +44,11 @@ The fastest path to visual identity is: open the reference DOCX as a working tem
 
 The KB's drafting guidance should explicitly call this out: *start from a copy of the canonical reference DOCX; preserve cover page chrome, header / footer, styles, theme, numbering, embedded logo / images by default; replace only the variable content within established paragraph styles*. The KB's job is to tell the agent **what to replace and what to leave alone**, not how to author DOCX XML from first principles.
 
-For PDF-only references where no DOCX source exists, the runtime path is: produce a DOCX that closely mirrors the PDF's visual style, deliver DOCX as primary output, optionally export to PDF. Rebuilding a pixel-faithful PDF is not realistic without the source.
+For PDF-only references where no DOCX source exists, there are two runtime paths, chosen by the required deliverable:
+
+- **Deliverable is DOCX** (editable review cycle wanted): produce a DOCX that closely mirrors the PDF's visual style, deliver DOCX as primary output, optionally export to PDF.
+- **Deliverable is PDF** (and no editable source to clone): author styled **HTML/CSS to the measured spec** (`02-visual-style.md`) and render with a **headless browser** (e.g. Chrome `--headless --print-to-pdf`, or the `pdf`/browser skill). This *does* reach near-indistinguishable fidelity — the "can't rebuild a faithful PDF without the source" caution applies to hand-rebuilding, not to a measured HTML→print pipeline. The KB's drafting guidance should say so, and carry print-ready CSS values (px/pt sizes, hex colors, `@page` size + margins) plus the bundled chrome assets so the generator isn't guessing.
+  - Repeating header/footer + edge bars: **do not** rely on `position:fixed` — Chrome's print engine offsets fixed elements by the `@page` margin and they land in the content area. Use a wrapping `<table>` with `<thead>`/`<tfoot>` (the browser repeats them on every printed page); keep the cover *outside* that table so it gets no running header.
 
 ### Section headings are captured letter-for-letter
 
@@ -72,6 +77,8 @@ References at this scale carry embedded assets, often multi-MB worth:
 - **Section icons, table-of-contents bullets, badges** — usually fixed chrome to be preserved by cloning.
 
 Enumerate every distinct embedded image type observed and record extraction strategy and replacement policy per type.
+
+When the reference is a **PDF** and the deliverable must render its chrome (logo, cover banner, accent bars), extract those raster assets from the PDF (`pdfimages` — composite each colour image with its `smask` to preserve transparency) and **bundle them into the KB** so it stays self-contained. Critical: **open every extracted asset and look at it before wiring it in** — image order in a PDF does not match semantic role, so the "logo" and "banner" files are easily swapped or mislabeled. A mislabeled asset renders as (e.g.) a banner where the logo should be and slips through if you trust filenames instead of eyes. Record real pixel dimensions after verifying, not before.
 
 ### Table types matter
 
@@ -122,7 +129,8 @@ When kb-builder composes the KB's Critical Rules, it draws from these (selecting
 - **Do not lift the first plausible sentence from a transcript or email thread.** Read end-to-end and prefer the most recent confirmed position. Walking it back is common; the agent must follow the walk-back.
 - **Do not confuse MOM action items with SOW scope items.** Action items are internal follow-ups; scope items are vendor commitments. They look similar in MOMs but produce different downstream artifacts.
 - **Do not silently resolve source conflicts.** When two MOMs disagree, flag and ask. Inventing a synthesis is fabrication.
-- **Do not output a PDF as the primary deliverable when DOCX is editable.** DOCX is the canonical editable form for SOW / BRD / PRD review cycles. If reference deliverables are DOCX, the agent emits DOCX; PDF is an optional export.
+- **Match the deliverable format to what exists and what's asked.** DOCX is the canonical editable form when an editable reference exists or a review cycle needs it — emit DOCX, PDF as export. But when the references are PDF-only *and* the operator wants a PDF, don't force a DOCX detour: author HTML/CSS to the measured spec and render to PDF (see the clone section). Confirm the target format during scoping rather than assuming.
+- **Do not trust the filenames of assets extracted from a PDF.** Extraction order ≠ semantic role; the logo and banner are commonly swapped. View each extracted asset before wiring it into the KB, and again in the first rendered page.
 - **Do not preserve the previous client's identifying details when cloning.** Cover page client name, header / footer client mention, in-body references to "Acme Corp", embedded screenshots showing the previous client's UI must all be cleansed before the new client's content is dropped in.
 
 ## Useful questions to ask the operator
