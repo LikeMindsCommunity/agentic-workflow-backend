@@ -87,6 +87,12 @@ This is the **validation** use of sample flows, distinct from bundling them (see
 
 ## Close the gap first: artifacts to request
 
+### Let the artifact's component structure drive your questions — so no component gets missed
+
+Don't run elicitation off a generic, one-size checklist. **First enumerate the component types *this* artifact actually contains** — walk the JSON and list every distinct structural component present: nodes, transitions / edges, conditions, variables, embedded scripts, child / sub-flow containers, layout (coordinates + waypoints), and the top-level envelope. Use that inventory as a **coverage map for your questions** — for every component on it, confirm you've asked what a sample can't show (full schema, defaults, vocabulary, conventions, quirks). This is about **not missing a component**, not about collecting one document per component: the operator may answer inline, point you at a single doc that covers several, or hand over one big export. What matters is that **no component's gaps go unasked.**
+
+State the consequence plainly: **artifact analysis alone is structurally incomplete.** A sample exercises only the slice of each component it happened to need; the rest lives in the team's own knowledge, not in any export of a few flows. So walk the inventory component by component and ask. When a component's gap is best closed by a document, the two kinds below (schema export vs convention doc) are what to request — but always finish with an open-ended catch-all: **"anything else you have that describes a part of the flow — a wiki page, a runbook, a screenshot, an SME's notes — send it too,"** because the operator will have material for components you didn't think to name.
+
 Before — or alongside — the gap-question round, ask whether the operator can share any of these. **One good export or convention doc collapses dozens of questions and is far more reliable than reverse-inference from samples.** Two kinds, both high-value:
 
 **A. Schema exports — what the builder can emit:**
@@ -122,7 +128,7 @@ Bundle a sample only as a **documented last-resort fallback** for a specific gap
 
 ### Presenting the request to the operator
 
-Operators rarely recognize abstract names like "per-node template export" or "injected-variable reference" — but they *do* recognize "our node docs" or "the variables sheet." So render the ask in **their** terms: **one line per entity you actually found in their artifacts** (node, variable, transition, condition, child-flow, pattern, layout), and for each say what the doc would contain in plain language, what you already extracted, and why the gap matters. Present it as **one checklist**, not scattered asks, and make the affordance explicit: **they can point you at files / a folder / a wiki / even a screenshot — they don't have to type the answers.** This is what turns a BLOCKING artifact request from confusing into actionable.
+Operators rarely recognize abstract names like "per-node template export" or "injected-variable reference" — but they *do* recognize "our node docs" or "the variables sheet." So render the ask in **their** terms: **cover every component in the inventory you built above** (node, variable, transition, condition, child-flow, pattern, layout — whatever the artifact actually contains, not a fixed list) with a row that says, in plain language, what would close the gap, what you already extracted, and why it matters. The rows are **coverage checkpoints, not a demand for a separate file each** — one doc the operator already has may answer several. Then add a **final open-ended row** — *"anything else that describes a part of the flow I haven't listed"* — so they can hand over material for a component you didn't name. Present it as **one checklist**, not scattered asks, and make the affordance explicit: **they can point you at files / a folder / a wiki / even a screenshot — they don't have to type the answers.** This is what turns a BLOCKING artifact request from confusing into actionable.
 
 A clear rendering looks like this (fill every row from *this* client's real entities and observed counts — don't ship the placeholders):
 
