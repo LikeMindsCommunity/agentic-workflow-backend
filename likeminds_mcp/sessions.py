@@ -17,8 +17,9 @@ from pathlib import Path
 
 from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
 
+from . import profiles, registry
 from .config import PROJECT_ROOT, SESSIONS_DIR
-from .harness import HARNESS
+from .harness import harness_for
 from .signals import build_signals_server
 
 # session_id -> Session. Single worker keeps this authoritative.
@@ -33,6 +34,8 @@ class Session:
     sandbox: Path             # <project>/.sessions/<id>
     inputs_dir: Path          # <sandbox>/inputs
     output_dir: Path          # <sandbox>/output  (final deliverable harvested from here)
+    mode: str = "oneshot"     # engine mode (from the skill's profile)
+    interlock: bool = False   # require ask_user before emit_result?
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | onboarded | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
@@ -51,20 +54,21 @@ class Session:
     pending_reply: str = ""            # the reply message handed to the worker
 
 
-def _build_options(sandbox: Path) -> ClaudeAgentOptions:
+def _build_options(sandbox: Path, harness_text: str) -> ClaudeAgentOptions:
     """Options for the server-side Claude running one skill session.
 
-    cwd is the PROJECT ROOT so the SDK can load `.claude/commands/*.md`; the skill
-    is told (via the harness + its argument) to confine working files to the
-    sandbox. The harness is appended to the default Claude Code system prompt.
+    cwd is the SANDBOX, so any relative/scratch file the skill writes stays inside
+    the session (and is purged with it) instead of leaking into the project root.
+    The project's `.claude` is symlinked into the sandbox (see new_session) so the
+    SDK still loads the skills + playbook library from cwd/.claude.
     """
     import os
 
     kwargs = dict(
-        cwd=str(PROJECT_ROOT),
+        cwd=str(sandbox),
         setting_sources=["project"],
         permission_mode="bypassPermissions",
-        system_prompt={"type": "preset", "preset": "claude_code", "append": HARNESS},
+        system_prompt={"type": "preset", "preset": "claude_code", "append": harness_text},
         mcp_servers={"signals": build_signals_server()},
         allowed_tools=[
             "Read",
@@ -101,8 +105,24 @@ def new_session(skill: str) -> Session:
     output_dir.mkdir(parents=True, exist_ok=True)
     (sandbox / "work").mkdir(parents=True, exist_ok=True)
 
-    client = ClaudeSDKClient(options=_build_options(sandbox))
-    sess = Session(id=sid, skill=skill, client=client, sandbox=sandbox,
+    # Symlink the project's .claude into the sandbox so the SDK loads skills +
+    # playbooks from cwd/.claude while cwd stays the sandbox (contains scratch).
+    link = sandbox / ".claude"
+    if not link.exists():
+        try:
+            link.symlink_to(PROJECT_ROOT / ".claude", target_is_directory=True)
+        except (OSError, NotImplementedError):
+            pass
+
+    # Resolve the skill's engine mode → harness variant + interlock.
+    entry = registry.resolve_skill(skill) or {}
+    mode = entry.get("mode", profiles.DEFAULT_MODE)
+    prof = entry.get("profile") or profiles.profile_for(mode)
+    harness_text = harness_for(prof["harness"])
+
+    client = ClaudeSDKClient(options=_build_options(sandbox, harness_text))
+    sess = Session(id=sid, skill=skill, mode=mode, interlock=prof["interlock"],
+                   client=client, sandbox=sandbox,
                    inputs_dir=inputs_dir, output_dir=output_dir)
     _SESSIONS[sid] = sess
     return sess
@@ -122,4 +142,9 @@ async def close_session(sess: Session) -> None:
             await sess.client.disconnect()
     finally:
         sess.connected = False
+        # Remove the .claude symlink first so rmtree can never follow it into the
+        # real project .claude, then delete the sandbox.
+        link = sess.sandbox / ".claude"
+        if link.is_symlink():
+            link.unlink(missing_ok=True)
         shutil.rmtree(sess.sandbox, ignore_errors=True)

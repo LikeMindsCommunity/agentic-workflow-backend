@@ -30,7 +30,7 @@ from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
 from . import engine_sdk, registry, sessions
-from .config import HOST, KB_DIR, PORT
+from .config import HOST, OUTPUTS_DIR, PORT
 
 load_dotenv()
 
@@ -95,8 +95,10 @@ def _harvest(sandbox: Path) -> list[tuple[str, str]]:
 
 
 def _promote(skill: str, harvested: list[tuple[str, str]], manifest: list | None) -> tuple[str, list[str]]:
-    """Write the harvested files to kb/<kb_id>/. Falls back to any inlined content
-    in the emit manifest only if nothing was found on disk."""
+    """Write the harvested KB into the project's `outputs/` dir, PRESERVING the
+    skill's own structure (e.g. `{client}/kb/…`) so the final KB lands at
+    `outputs/{client}/kb/`. Falls back to inlined manifest content only if nothing
+    was found on disk."""
     files = harvested
     if not files and manifest:
         files = [
@@ -104,15 +106,14 @@ def _promote(skill: str, harvested: list[tuple[str, str]], manifest: list | None
             for f in manifest
             if isinstance(f, dict) and f.get("name")
         ]
-    kb_id = f"kb_{skill}_{uuid.uuid4().hex[:8]}"
-    dest = KB_DIR / kb_id
-    dest.mkdir(parents=True, exist_ok=True)
     written = []
     for name, content in files:
-        out = dest / name
+        out = OUTPUTS_DIR / name  # `name` is relative, e.g. exotel-anfx-ivr/kb/00-overview.md
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_text(content, encoding="utf-8")
         written.append(name)
+    # kb_id = the top-level client folder under outputs/ (kb-builder's {client}).
+    kb_id = written[0].split("/")[0] if written else f"kb_{skill}_{uuid.uuid4().hex[:8]}"
     return kb_id, written
 
 
@@ -139,8 +140,9 @@ async def _drive_session(sess: sessions.Session, first_message: str) -> None:
                 sess.error = "Skill ended without calling ask_user or emit_result."
                 return
             if signal["kind"] == "emit":
-                # HARD INTERLOCK: refuse to finish if the skill never asked the user.
-                if not sess.asked and emit_blocks < MAX_EMIT_BLOCKS:
+                # HARD INTERLOCK (interactive modes only): refuse to finish if the
+                # skill never asked the user. One-shot skills finish freely.
+                if sess.interlock and not sess.asked and emit_blocks < MAX_EMIT_BLOCKS:
                     emit_blocks += 1
                     sess.progress = "Finishing blocked — must ask gaps first…"
                     await sess.client.query(EMIT_BLOCKED_MSG)
@@ -240,6 +242,55 @@ def _materialize_uploads(inputs_dir: Path, refs: list | None) -> list[str]:
     return added
 
 
+def _ingest_paths_from_text(inputs_dir: Path, text: str | None) -> list[str]:
+    """Backstop: if the client names a real local file path in the reply text
+    (instead of routing it through input_paths / upload_file), copy that file into
+    the session inputs so the skill can read it — rather than silently drop it.
+    Handles filenames with spaces by trimming trailing words until a real file
+    matches. Returns the names ingested."""
+    if not text:
+        return []
+    added: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        pos = 0
+        while (i := line.find("/", pos)) != -1:
+            pos = i + 1
+            cand = line[i:].strip().strip("`\"'.,)")
+            while cand and cand not in seen:
+                p = Path(cand)
+                if p.is_file():
+                    shutil.copy2(p, inputs_dir / p.name)
+                    added.append(p.name)
+                    seen.add(cand)
+                    break
+                if " " in cand:              # drop a trailing word, retry (spaces)
+                    cand = cand.rsplit(" ", 1)[0].rstrip("`\"'.,)")
+                else:
+                    break
+    return added
+
+
+def _unresolved_input_paths(paths: list | None) -> list[str]:
+    """Which of the given input_paths do NOT exist on the server's filesystem."""
+    out = []
+    for p in paths or []:
+        sp = Path(str(p)).expanduser()
+        if not (sp.is_file() or sp.is_dir()):
+            out.append(str(p))
+    return out
+
+
+def _paths_error(unresolved: list[str]) -> str:
+    return (
+        "These input_paths were not found on the server: " + ", ".join(unresolved) + ". "
+        "If they are CHAT ATTACHMENTS (no real local path), do NOT use input_paths — "
+        "send each file's CONTENT via the upload_file tool (encoding='base64' for "
+        "binary, upload large files in chunks) and pass the returned upload_refs "
+        "instead. If they are meant to be real local files, re-check the absolute paths."
+    )
+
+
 def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
     """Copy local files (incl. binaries like .anfx) into the session inputs dir.
     For large/binary inputs that can't ride inline as text artifacts. Returns the
@@ -250,6 +301,9 @@ def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
         if src.is_file():
             shutil.copy2(src, inputs_dir / src.name)
             copied.append(src.name)
+        elif src.is_dir():  # e.g. an existing KB directory for api/config/code-agent
+            shutil.copytree(src, inputs_dir / src.name, dirs_exist_ok=True)
+            copied.append(src.name + "/")
     return copied
 
 
@@ -267,12 +321,16 @@ async def run_skill(
 ) -> dict:
     """Run a LikeMinds skill (background job + poll).
 
-    First call: provide `skill` (e.g. 'kb-builder') and inputs. Ways to supply files:
-    - `input_paths` — absolute paths to local files (best for binary/large files;
-      ONLY works when you have a real local path, e.g. Claude Code).
-    - `upload_refs` — ids from the `upload_file` tool (use this when you have NO
-      local path, e.g. the regular Claude chat: call upload_file first, pass the ref).
-    - `artifacts` / `files` — inline text content ([{name, content}]).
+    First call: provide `skill` (e.g. 'kb-builder') and inputs. Choose the file
+    channel by what you actually have:
+    - ATTACHED files (regular chat — no real path): you MUST send their CONTENT via
+      the `upload_file` tool, then pass the returned ids in `upload_refs`. For a
+      binary file (.anfx zip, image) use encoding='base64'; for a large file upload
+      it in chunks (see upload_file). Do NOT put an attachment's filename in
+      `input_paths` — it has no real path and will be silently dropped.
+    - REAL local paths (Claude Code, or paths you can see on this machine): pass the
+      absolute paths in `input_paths`.
+    - Small inline text: `artifacts` / `files` ([{name, content}]).
     You get back `status: "running"` with a `session_id`.
 
     Then POLL: call again with ONLY that `session_id` (no other args). Keep
@@ -290,6 +348,15 @@ async def run_skill(
             return _snapshot(sess)
         # An ANSWER is any continuation that carries reply text OR reference files
         # (inline artifacts/files, or local input_paths). Otherwise it's a poll.
+        # If the answer relied ONLY on input_paths and none resolve, hold the gap
+        # open and tell the client to use upload_file instead of dropping the file.
+        unresolved = _unresolved_input_paths(input_paths)
+        if (input_paths and len(unresolved) == len(input_paths)
+                and not (files or artifacts or upload_refs)
+                and (response is None or not response.strip())):
+            return {"status": "need_input", "session_id": sess.id,
+                    "questions": sess.questions, "warning": _paths_error(unresolved),
+                    "next_step": RELAY_TEXT}
         has_answer = (
             response is not None or files or input_paths or artifacts or upload_refs
         )
@@ -299,6 +366,7 @@ async def run_skill(
                 + engine_sdk._write_artifacts(sess.inputs_dir, files)
                 + _copy_input_paths(sess.inputs_dir, input_paths)
                 + _materialize_uploads(sess.inputs_dir, upload_refs)
+                + _ingest_paths_from_text(sess.inputs_dir, response)
             )
             _deliver_reply(sess, engine_sdk.build_reply_message(response, added))
         await _wait_for_change(sess)
@@ -308,10 +376,24 @@ async def run_skill(
     if not registry.skill_exists(skill or ""):
         available = ", ".join(s["name"] for s in registry.list_skills())
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
+    entry = registry.resolve_skill(skill)
+    if entry and entry["mode"] == "execution":
+        return {"status": "error",
+                "message": f"'{skill}' performs live execution and is not available via "
+                           "run_skill yet — it needs a dedicated, gated runner path."}
+    # Don't start the skill with silently-empty inputs: if input_paths were given
+    # but none resolve on the server (the classic chat-attachment mistake), fail
+    # loudly with guidance so the client re-sends the files via upload_file.
+    unresolved = _unresolved_input_paths(input_paths)
+    if input_paths and len(unresolved) == len(input_paths):
+        return {"status": "error", "message": _paths_error(unresolved)}
     sess = sessions.new_session(skill)
     engine_sdk._write_artifacts(sess.inputs_dir, artifacts)
     _copy_input_paths(sess.inputs_dir, input_paths)
     _materialize_uploads(sess.inputs_dir, upload_refs)
+    # Backstop: pull in any real local paths the client named in `context` (e.g. a
+    # chat that typed the paths in the request instead of using input_paths).
+    _ingest_paths_from_text(sess.inputs_dir, context)
     first_message = engine_sdk.build_first_message(skill, sess, urls, context)
     _start_worker(sess, first_message)
     await _wait_for_change(sess)
@@ -319,26 +401,43 @@ async def run_skill(
 
 
 @mcp.tool()
-async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
-    """Upload a file's content so a skill can use it — for clients that have NO
-    local filesystem path to pass (e.g. the regular Claude chat).
+async def upload_file(
+    name: str, content: str, encoding: str = "utf-8", upload_ref: Optional[str] = None
+) -> dict:
+    """Upload a file's content so a skill can use it — for clients with NO local
+    filesystem path (e.g. the regular Claude chat, where a file is ATTACHED rather
+    than referenced by path).
 
-    Provide the file's full content as `content` (plain text, or base64 with
-    encoding='base64' for binary). Returns an `upload_ref`; pass that ref to
-    run_skill's `upload_refs` — on the first call as an input, or on a continuation
-    to answer a gap with a file. Prefer run_skill's `input_paths` only when you have
-    a real local file path (e.g. Claude Code)."""
+    Use this for attachments. For a binary file (e.g. a .anfx zip, an image), set
+    `encoding='base64'`. Do NOT use run_skill's `input_paths` for an attachment —
+    an attachment has no real path, so it will be silently dropped.
+
+    LARGE FILES — upload in CHUNKS: call this once (leave `upload_ref` empty) to get
+    a ref, then call again for each further chunk passing that SAME `upload_ref` to
+    APPEND. Keep chunks well under ~200 KB of `content` each. When done, pass the ref
+    to run_skill's `upload_refs`. This is how you deliver a large attachment the
+    chat can't inline in a single call — do not give up on size, just chunk it.
+
+    Returns `{upload_ref, name, bytes}` (bytes = total accumulated so far)."""
     clean = Path(name).name or "upload.bin"
     try:
         data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
     except Exception as e:  # noqa: BLE001
         return {"error": f"could not decode content ({encoding}): {e}"}
-    ref = "up_" + uuid.uuid4().hex[:12]
-    UPLOADS[ref] = {"name": clean, "data": data}
-    return {"upload_ref": ref, "name": clean, "bytes": len(data)}
+    if upload_ref and upload_ref in UPLOADS:
+        UPLOADS[upload_ref]["data"] += data          # append this chunk
+        ref = upload_ref
+    else:
+        ref = "up_" + uuid.uuid4().hex[:12]
+        UPLOADS[ref] = {"name": clean, "data": data}
+    return {"upload_ref": ref, "name": UPLOADS[ref]["name"], "bytes": len(UPLOADS[ref]["data"])}
 
 
 @mcp.tool()
 async def list_skills() -> dict:
-    """Return the available skill names and one-line descriptions."""
+    """List available skills with one-line descriptions. Use this to pick the right
+    skill for the user's intent, then call run_skill with that name. Rough guide:
+    build/update a knowledge base -> kb-builder; generate a config/nodeflow ->
+    config-agent; produce an LLD / execution doc -> api-agent; write/integrate code
+    -> code-agent."""
     return {"skills": registry.list_skills()}

@@ -56,10 +56,11 @@ def build_first_message(
 
     if kind == "skill":
         msg = (
-            f"Use the {skill} skill to onboard this client and build their "
-            f"knowledge base from the provided artifacts.\n"
-            f"inputs={sess.inputs_dir}\n"
-            f"output={sess.output_dir}"
+            f"Use the {skill} skill to process the provided inputs.\n"
+            f"Your inputs are in this directory: {sess.inputs_dir}\n"
+            f"It contains any artifacts plus any KB / SOW / reference files provided; "
+            f"follow the skill's own input contract to locate what it needs there.\n"
+            f"Write the deliverable under: {sess.output_dir}"
         )
         if urls:
             msg += "\nReference URLs: " + " ".join(str(u) for u in urls)

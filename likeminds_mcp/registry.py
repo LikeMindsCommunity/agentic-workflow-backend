@@ -11,20 +11,25 @@ returns the catalog. Adding a skill is dropping a file/folder here — no code c
 
 from __future__ import annotations
 
+from . import profiles
 from .config import COMMANDS_DIR, SKILLS_DIR
 
 
-def _frontmatter_description(text: str) -> str:
-    """Pull `description:` out of a YAML frontmatter block, if present."""
+def _frontmatter_field(text: str, field: str) -> str:
+    """Pull `<field>:` out of a YAML frontmatter block, if present."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return ""
     for i in range(1, len(lines)):
         if lines[i].strip() == "---":
             break
-        if lines[i].lstrip().startswith("description:"):
+        if lines[i].lstrip().startswith(f"{field}:"):
             return lines[i].split(":", 1)[1].strip()
     return ""
+
+
+def _frontmatter_description(text: str) -> str:
+    return _frontmatter_field(text, "description")
 
 
 def _first_meaningful_line(text: str) -> str:
@@ -52,9 +57,11 @@ def _index() -> dict[str, dict]:
     if COMMANDS_DIR.is_dir():
         for path in sorted(COMMANDS_DIR.glob("*.md")):
             text = path.read_text(encoding="utf-8")
+            mode = profiles.mode_for(path.stem, "command", None)
             out[path.stem] = {
                 "name": path.stem, "kind": "command", "path": path,
                 "description": _first_meaningful_line(text)[:200],
+                "mode": mode, "profile": profiles.profile_for(mode),
             }
     # Agent Skills (override commands on name clash).
     if SKILLS_DIR.is_dir():
@@ -62,9 +69,11 @@ def _index() -> dict[str, dict]:
             name = skill_md.parent.name
             text = skill_md.read_text(encoding="utf-8")
             desc = _frontmatter_description(text) or _first_meaningful_line(text)
+            mode = profiles.mode_for(name, "skill", _frontmatter_field(text, "x-engine-mode"))
             out[name] = {
                 "name": name, "kind": "skill", "path": skill_md,
                 "description": desc[:200],
+                "mode": mode, "profile": profiles.profile_for(mode),
             }
     return out
 

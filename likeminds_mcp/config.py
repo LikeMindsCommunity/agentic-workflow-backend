@@ -12,7 +12,7 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 COMMANDS_DIR = PROJECT_ROOT / ".claude" / "commands"   # slash-command skills
 SKILLS_DIR = PROJECT_ROOT / ".claude" / "skills"       # multi-file Agent Skills
 SESSIONS_DIR = PROJECT_ROOT / ".sessions"   # per-session sandboxes (gitignored)
-KB_DIR = PROJECT_ROOT / "kb"                 # promoted deliverables land here
+OUTPUTS_DIR = PROJECT_ROOT / "outputs"       # final KBs: outputs/{client}/kb/
 
 # Names of the in-process signal tools the engine intercepts.
 ASK_USER_TOOL = "mcp__signals__ask_user"
