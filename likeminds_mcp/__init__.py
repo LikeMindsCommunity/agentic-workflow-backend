@@ -1,10 +1,13 @@
-"""LikeMinds MCP server (local MVP).
+"""LikeMinds MCP server (local).
 
-Exposes the skills in `.claude/commands/` behind a single `run_skill` dispatch
-tool over local HTTP, so a Claude Code client can invoke a skill and handle its
-runtime questions through pause/resume round-trips — without ever seeing the
-skill prompt. The skill runs server-side via the Claude Agent SDK.
+Exposes every skill in `.claude/` behind a single `run_skill` dispatch tool over
+local HTTP, so a Claude Code client can invoke any skill and handle its runtime
+questions through pause/resume round-trips — without ever seeing the skill prompt.
 
-This is the local-test MVP of the Confidential Multi-Skill MCP Platform LLD:
-no OAuth, no Redis, no multi-tenancy, single in-process session store.
+Each turn runs server-side as a fresh `claude -p` subprocess (resume-per-turn):
+Claude Code's own on-disk session store carries the conversation between rounds, so
+nothing is parked in memory while a human answers. The engine is skill-agnostic —
+it only binds the I/O edges (inputs dir / an <<<LM_ASK>>> marker to pause for the
+user / an <<<LM_DONE>>> marker to finish); the skill's own logic decides everything
+else.
 """

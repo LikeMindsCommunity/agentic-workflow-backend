@@ -1,16 +1,16 @@
 """Interactive test client for the local likeminds MCP server.
 
-Drives run_skill end-to-end from the terminal: invoke a skill, see its questions,
+Drives run_skill end-to-end from the terminal: invoke any skill, see its questions,
 type answers, repeat until the deliverable is emitted. No Claude Code needed.
 
 Usage (server must already be running on :8787):
 
     .venv/bin/python -m likeminds_mcp.test_client list
-    .venv/bin/python -m likeminds_mcp.test_client run platform-kb path/to/artifact.json [more.json ...]
-    .venv/bin/python -m likeminds_mcp.test_client run platform-kb --context "Some platform" --url https://docs...
+    .venv/bin/python -m likeminds_mcp.test_client run kb-builder path/to/artifact.json [more ...]
+    .venv/bin/python -m likeminds_mcp.test_client run config-agent --context "Build the X config" --url https://docs...
 
 On 'need_input' it prints the questions and reads your reply from stdin.
-Type your answer and press Enter; type 'done' when you have nothing more to add.
+Type your answer and press Enter; type 'done' to stop and finish.
 """
 
 from __future__ import annotations
@@ -40,7 +40,7 @@ async def list_skills():
             await s.initialize()
             out = _parse(await s.call_tool("list_skills", {}))
             for sk in out["skills"]:
-                print(f"  {sk['name']:<22} {sk['description'][:80]}")
+                print(f"  {sk['name']:<28} {sk['description'][:80]}")
 
 
 async def run(skill: str, files: list[str], context: str | None, urls: list[str]):
@@ -64,27 +64,30 @@ async def run(skill: str, files: list[str], context: str | None, urls: list[str]
                 payload["urls"] = urls
             out = _parse(await s.call_tool("run_skill", payload, read_timeout_seconds=TOOL_TIMEOUT))
 
-            while out.get("status") == "need_input":
-                print("\n" + "=" * 60)
-                print("QUESTIONS FROM THE SKILL:")
-                for i, q in enumerate(out["questions"], 1):
-                    print(f"  {i}. {q}")
-                print("=" * 60)
-                reply = input("Your reply (or 'done'): ").strip()
-                print(">>> continuing — this can take minutes…")
-                out = _parse(
-                    await s.call_tool(
-                        "run_skill",
-                        {"session_id": out["session_id"], "response": reply},
-                        read_timeout_seconds=TOOL_TIMEOUT,
-                    )
-                )
+            # Poll/relay loop: keep calling until a terminal status.
+            while True:
+                status = out.get("status")
+                if status == "need_input":
+                    print("\n" + "=" * 60)
+                    print("QUESTIONS FROM THE SKILL:")
+                    for i, q in enumerate(out["questions"], 1):
+                        print(f"  {i}. {q}")
+                    print("=" * 60)
+                    reply = input("Your reply (or 'done'): ").strip()
+                    print(">>> continuing — this can take minutes…")
+                    args = {"session_id": out["session_id"], "response": reply}
+                elif status == "running":
+                    print(f"    … {out.get('progress', '')}  (files: {out.get('files_written', 0)})")
+                    args = {"session_id": out["session_id"]}
+                else:
+                    break
+                out = _parse(await s.call_tool("run_skill", args, read_timeout_seconds=TOOL_TIMEOUT))
 
             print("\n" + "=" * 60)
             print("FINAL RESULT:")
             print(json.dumps(out, indent=2))
-            if out.get("status") == "onboarded":
-                print(f"\nKB written to: kb/{out['kb_id']}/")
+            if out.get("status") == "done":
+                print(f"\nDeliverable written to: outputs/mcp/{out['result_id']}/")
 
 
 def main():

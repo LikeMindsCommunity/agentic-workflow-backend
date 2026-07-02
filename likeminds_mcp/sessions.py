@@ -1,11 +1,12 @@
-"""In-process session store and per-session sandbox.
+"""In-process session records for the resume-per-turn engine.
 
-For the local MVP a session is a LIVE `ClaudeSDKClient` parked in a dict between
-round-trips, plus its sandbox directory. The client stays connected while the
-skill waits for the user's answer; a continuation call sends the reply to the
-same client. This is single-process only (no horizontal scaling, lost on
-restart) — the productionization path swaps this for SDK `resume` + shared
-storage, per the LLD.
+A session is now a LIGHTWEIGHT record: an id (a real UUID, reused as Claude Code's
+own session id for `--session-id` / `--resume`), a sandbox on disk, and the job
+state polled by the client. There is NO live SDK client, worker thread, or event
+loop parked between turns — Claude Code's on-disk session store carries the
+conversation, and each turn is a fresh `claude -p` subprocess. That makes the store
+cheap to hold, survivable across a server restart, and free of the cross-loop and
+leak hazards of the previous parked-client design.
 """
 
 from __future__ import annotations
@@ -15,111 +16,88 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from claude_agent_sdk import ClaudeAgentOptions, ClaudeSDKClient
+from .config import MAX_SESSIONS, PROJECT_ROOT, SESSIONS_DIR
 
-from .config import PROJECT_ROOT, SESSIONS_DIR
-from .harness import HARNESS
-from .signals import build_signals_server
-
-# session_id -> Session. Single worker keeps this authoritative.
+# session_id -> Session. Single process keeps this authoritative. Terminal records
+# are kept so a client's final poll can read the result, but _gc() caps the total by
+# evicting the oldest FINISHED ones so the store can't grow without bound.
 _SESSIONS: dict[str, "Session"] = {}
 
 
 @dataclass
 class Session:
     id: str
-    skill: str                # the command this session is running
-    client: ClaudeSDKClient
+    skill: str                # the skill/command this session is running
     sandbox: Path             # <project>/.sessions/<id>
     inputs_dir: Path          # <sandbox>/inputs
-    output_dir: Path          # <sandbox>/output  (final deliverable harvested from here)
+    output_dir: Path          # <sandbox>/output  (deliverable harvested from here)
     # Job state, polled by the client across short calls:
-    status: str = "running"   # running | need_input | onboarded | error
+    status: str = "running"   # running | need_input | done | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
-    asked: bool = False       # has ask_user been called at least once this session?
+    nudges: int = 0           # how many no-signal turns we've nudged past
     questions: list = field(default_factory=list)
-    result: dict | None = None        # {kb_id, summary} once onboarded
+    result: dict | None = None        # {result_id, summary} once done
     error: str | None = None
-    busy: bool = False                 # a turn is currently executing
-    connected: bool = False
-    round_index: int = 0
-    # The skill runs in its OWN thread + event loop so it never blocks the MCP
-    # server's main loop. These connect the two:
-    thread: object = None              # threading.Thread running the skill
-    worker_loop: object = None         # the worker thread's asyncio loop
-    reply_event: object = None         # asyncio.Event (on worker loop) — reply ready
-    pending_reply: str = ""            # the reply message handed to the worker
-
-
-def _build_options(sandbox: Path) -> ClaudeAgentOptions:
-    """Options for the server-side Claude running one skill session.
-
-    cwd is the PROJECT ROOT so the SDK can load `.claude/commands/*.md`; the skill
-    is told (via the harness + its argument) to confine working files to the
-    sandbox. The harness is appended to the default Claude Code system prompt.
-    """
-    import os
-
-    kwargs = dict(
-        cwd=str(PROJECT_ROOT),
-        setting_sources=["project"],
-        permission_mode="bypassPermissions",
-        system_prompt={"type": "preset", "preset": "claude_code", "append": HARNESS},
-        mcp_servers={"signals": build_signals_server()},
-        allowed_tools=[
-            "Read",
-            "Write",
-            "Edit",
-            "Bash",
-            "Glob",
-            "Grep",
-            "WebFetch",
-            "WebSearch",
-            "TodoWrite",
-            "Skill",
-            "mcp__signals__ask_user",
-            "mcp__signals__emit_result",
-        ],
-    )
-    # Pick the model. Explicit CLAUDE_AGENT_MODEL wins. On Azure Foundry the CLI's
-    # default (a newer sonnet) may not be on the deployment, so fall back to the
-    # configured deployment name (e.g. claude-sonnet-4-5).
-    model = os.environ.get("CLAUDE_AGENT_MODEL")
-    if not model and os.environ.get("CLAUDE_CODE_USE_FOUNDRY"):
-        model = os.environ.get("AZURE_AI_DEPLOYMENT") or "claude-sonnet-4-5"
-    if model:
-        kwargs["model"] = model
-    return ClaudeAgentOptions(**kwargs)
+    finished: bool = False            # the driving task has returned
+    # async coordination — all on the server's single event loop (no threads):
+    task: object = None               # asyncio.Task driving this session
+    reply_event: object = None        # asyncio.Event — set when a reply is ready
+    pending_reply: str = ""           # the reply handed to the driver
 
 
 def new_session(skill: str) -> Session:
-    sid = "ses_" + uuid.uuid4().hex[:16]
+    sid = str(uuid.uuid4())          # valid UUID: required by `claude --session-id`
     sandbox = SESSIONS_DIR / sid
     inputs_dir = sandbox / "inputs"
     output_dir = sandbox / "output"
     inputs_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     (sandbox / "work").mkdir(parents=True, exist_ok=True)
-
-    client = ClaudeSDKClient(options=_build_options(sandbox))
-    sess = Session(id=sid, skill=skill, client=client, sandbox=sandbox,
+    sess = Session(id=sid, skill=skill, sandbox=sandbox,
                    inputs_dir=inputs_dir, output_dir=output_dir)
     _SESSIONS[sid] = sess
+    _gc()
     return sess
+
+
+def _gc() -> None:
+    """Evict oldest FINISHED session records once the store exceeds MAX_SESSIONS.
+    Live (unfinished) sessions are never evicted. Dict insertion order = age."""
+    if len(_SESSIONS) <= MAX_SESSIONS:
+        return
+    for sid, s in list(_SESSIONS.items()):
+        if len(_SESSIONS) <= MAX_SESSIONS:
+            break
+        if s.finished:
+            del _SESSIONS[sid]
 
 
 def get_session(session_id: str) -> Session | None:
     return _SESSIONS.get(session_id)
 
 
-async def close_session(sess: Session) -> None:
-    """Disconnect the live client and delete its sandbox so the raw client inputs
-    are purged (the retention guarantee). The lightweight Session record is KEPT in
-    the store so the client's terminal poll can still read status + result; only the
-    live client and on-disk sandbox are released. Call AFTER harvesting outputs."""
+def purge(sess: Session) -> None:
+    """Delete the on-disk sandbox (raw caller inputs) and best-effort remove Claude
+    Code's transcript for this session — the retention guarantee. Safe to call on
+    ANY terminal path (done OR error). The tiny Session record is kept in the store
+    so the client's terminal poll can still read status + result."""
+    shutil.rmtree(sess.sandbox, ignore_errors=True)
+    _purge_transcript(sess.id)
+
+
+def _purge_transcript(session_id: str) -> None:
+    """Best-effort deletion of Claude Code's on-disk transcript for this session.
+
+    CC stores sessions at ~/.claude/projects/<slug>/<uuid>.jsonl, where <slug> is
+    the project cwd with path separators replaced by '-'. Best-effort: the layout
+    can vary by CC version, so any failure here is swallowed."""
     try:
-        if sess.connected:
-            await sess.client.disconnect()
-    finally:
-        sess.connected = False
-        shutil.rmtree(sess.sandbox, ignore_errors=True)
+        slug = str(PROJECT_ROOT).replace("/", "-")
+        base = Path.home() / ".claude" / "projects" / slug
+        for p in (base / f"{session_id}.jsonl", base / session_id):
+            if p.is_file():
+                p.unlink()
+            elif p.is_dir():
+                shutil.rmtree(p, ignore_errors=True)
+    except Exception:  # noqa: BLE001 — retention cleanup is best-effort
+        pass
