@@ -36,10 +36,7 @@ In any project:
 cd /path/to/your-project
 claude
 > /init-project                # one-time setup, generates CLAUDE.md, bug_backlog.md and approval_sheet.md
-> /triage-bug <desc>           # enrich a vague bug report and add to bug_backlog.md
-> /process-backlog             # move approved backlog bugs into approval_sheet.md
-> /fix-bug <bug desc>          # diagnose a single bug and propose fix
-> /batch-fix                   # process multiple bugs with interaction analysis
+> /diagnose-bug <desc>         # validate a bug report; if valid, propose a fix into approval_sheet.md (single or batch)
 > /find-bugs                   # compare generated vs expected files (generic)
 > /find-bugs-exotel            # Exotel IVR JSON comparison (wraps /find-bugs + Exotel KB checks)
 > /process-comparison          # process approved comparisons into fix proposals
@@ -55,10 +52,7 @@ claude
 | Command                  | What it does                                                                                                                                                                                   |
 | ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `/init-project`          | Scans repo, generates `CLAUDE.md` and `approval_sheet.md`                                                                                                                                      |
-| `/triage-bug`            | Enriches a vague bug report and adds it to `bug_backlog.md`                                                                                                                                    |
-| `/process-backlog`       | Moves all APPROVED bugs from backlog into approval sheet                                                                                                                                       |
-| `/fix-bug`               | Diagnoses a bug, proposes fix, writes to approval sheet                                                                                                                                        |
-| `/batch-fix`             | Processes multiple bugs with interaction analysis                                                                                                                                              |
+| `/diagnose-bug`          | Validates a bug report and, if it is a real issue, proposes a fix into `approval_sheet.md` — single bug or batch with interaction analysis                                                     |
 | `/find-bugs`             | Compares generated vs expected file, writes discrepancies to `comparison_sheet.md`                                                                                                             |
 | `/find-bugs-exotel`      | Exotel IVR JSON comparison — wraps `/find-bugs` and adds per-node schema, default, alias, composition, script, pattern, and numbered-constraint checks using Exotel KB sections in `CLAUDE.md` |
 | `/process-comparison`    | Processes approved comparison items into `approval_sheet.md` with full RCA                                                                                                                     |
@@ -66,6 +60,31 @@ claude
 | `/apply-fixes`           | Applies all APPROVED fixes and creates a git commit                                                                                                                                            |
 | `/platform-kb`           | Builds a structured Knowledge Base (KB) from platform artifacts and docs                                                                                                                       |
 | `/generate-document`     | Generates a versioned PDF/DOCX document from a KB + source materials                                                                                                                           |
+
+
+## Per-client file locations
+
+Every client gets its own folder under `outputs/{client}/`, and the bug-fix tracking sheets live inside it:
+
+```
+outputs/
+└── {client}/
+    ├── kb/                    # knowledge base (from /platform-kb)
+    ├── approval_sheet.md      # ONE per client — the fix queue (diagnose-bug / process-comparison append; apply-fixes applies)
+    └── comparisons/           # MANY per client — one sheet per generated-vs-expected run (find-bugs-{client} writes)
+        ├── <generated>.md
+        └── ...
+```
+
+`{client}` is resolved the same way across all of these skills, in order: an explicit `client=<name>` argument → an `output=<dir>` override (used as the client folder directly) → inferred from an inputs/artifacts folder name, a name in the prompt, or the parent of a `kb=<dir>` → if still ambiguous, the skill asks. Pass `client=` explicitly when in doubt:
+
+```
+> /diagnose-bug client=acme "transitions render out of order AND variables missing on step 5"
+> /process-comparison client=acme
+> /apply-fixes client=acme
+```
+
+`outputs/` is gitignored, so these sheets stay local.
 
 
 ## File Comparison (`/find-bugs`)
