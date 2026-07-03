@@ -45,7 +45,7 @@ EXTRA_MCP_CONFIG = PROJECT_ROOT / "likeminds_mcp" / "extra_mcp.json"
 
 # Safety bounds (override the timeouts via env). These stop a hung or abandoned
 # session from leaking a subprocess / task / sandbox indefinitely.
-TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800"))    # s; abort one hung turn
-REPLY_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_REPLY_TIMEOUT", "3600"))  # s; close an unanswered session
+TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800000"))    # s; abort one hung turn
+REPLY_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_REPLY_TIMEOUT", "3600000"))  # s; close an unanswered session
 MAX_SESSIONS = 500   # evict oldest FINISHED session records beyond this
 MAX_UPLOADS = 100    # evict oldest un-consumed uploads beyond this
