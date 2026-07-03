@@ -4,10 +4,19 @@ description: Apply all approved fixes from the approval sheet
 
 # Apply Approved Fixes
 
-You are applying approved bug fixes from `approval_sheet.md`. Follow this exact process:
+You are applying approved bug fixes from `outputs/{client}/approval_sheet.md`. Follow this exact process:
+
+## Inputs & Paths — resolve the client first
+The approval sheet is stored per client at `outputs/{client}/approval_sheet.md`. Resolve `{client}` before reading it:
+1. `client=<name>` in $ARGUMENTS → use it.
+2. `output=<dir>` in $ARGUMENTS → the approval sheet is `<dir>/approval_sheet.md` (skip inference).
+3. Otherwise infer `{client}` from context: an inputs/artifacts folder name or a client name in $ARGUMENTS or the prompt, or the parent folder of a `kb=<dir>` if one is given.
+4. Still unresolved → if exactly one `outputs/*/` client directory exists, use it; otherwise ASK the user which client and STOP. Never guess.
+
+Every step below reads and updates this resolved `outputs/{client}/approval_sheet.md`.
 
 ## Step 1: Read the Approval Sheet
-Read `approval_sheet.md` from the repository root. Parse the table rows.
+Read `outputs/{client}/approval_sheet.md`. Parse the table rows.
 
 ## Step 2: Find APPROVED Entries
 Find all rows with Status = `APPROVED`. If none found, inform the user and stop.
@@ -23,7 +32,7 @@ For each approved fix:
 6. **Update the sheet**: Change the row's Status from `APPROVED` to `APPLIED` and add the date
 
 ## Step 4: Create a Git Commit
-Stage all modified files (both code changes and the updated `approval_sheet.md`).
+Stage all modified files (both code changes and the updated `outputs/{client}/approval_sheet.md`).
 Create a single commit with the message format:
 ```
 fix: apply approved bug fixes {BUG-IDs}
