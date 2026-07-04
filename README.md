@@ -86,7 +86,6 @@ outputs/
 
 `outputs/` is gitignored, so these sheets stay local.
 
-
 ## File Comparison (`/find-bugs`)
 
 Compare a generated file against an expected file to find all discrepancies. Works with any file format (PDF, JSON, DOCX, XLSX, PPTX, images, text, etc.).
@@ -144,7 +143,7 @@ A sub-skill of `/find-bugs` specialised for Exotel IVR flow JSONs. It runs every
 
 `/find-bugs-exotel` auto-derives the Exotel KB from your project's own prompts, generator code, schemas, and docs — the same artefacts `/find-bugs` already sweeps in Step 1.3. Node types, per-node defaults, alias maps, event catalog, composition rules, scripting language, and numbered constraints are extracted directly from your code. **No manual KB population is needed.** Just run `/find-bugs-exotel` right after `/init-project`.
 
-If the skill's derivation is sparse (e.g., your code doesn't name every node type explicitly), you can optionally pin overrides or add rules the code doesn't encode by filling in any of the `## Exotel `* sections of `CLAUDE.md`:
+If the skill's derivation is sparse (e.g., your code doesn't name every node type explicitly), you can optionally pin overrides or add rules the code doesn't encode by filling in any of the `## Exotel` * sections of `CLAUDE.md`:
 
 - `## Exotel Node Taxonomy`, `## Exotel Alias Map`, `## Exotel Node Attribute Schema`, `## Exotel Event Catalog`, `## Exotel Composition Rules`, `## Exotel Constraints` — augment the derived KB.
 - Optional: `## Exotel Universal Attributes`, `## Exotel Scripting Language`, `## Exotel Patterns`, `## Exotel Strict Instructions`, `## Exotel Layout Rules`.
@@ -186,11 +185,13 @@ raw artifacts ─► kb-builder ─► KB ─┬─► config-agent ─► struc
 
 **Use it when** you have a client's raw artifacts and need the KB built, or extended with new material.
 
-| | |
-| ----------- | ------------------------------------------------------------------------------------ |
+
+|              |                                                                                                 |
+| ------------ | ----------------------------------------------------------------------------------------------- |
 | **Triggers** | *"build the KB for {client}"*, *"update {client}'s KB"*, *"generate a KB from these artifacts"* |
-| **Inputs**   | `inputs=<dir>` (required) · `prompt` (optional context) · `output=<dir>` (optional)   |
-| **Output**   | `outputs/{client}/kb/`                                                                |
+| **Inputs**   | `inputs=<dir>` (required) · `prompt` (optional context) · `output=<dir>` (optional)             |
+| **Output**   | `outputs/{client}/kb/`                                                                          |
+
 
 Drop the client's artifacts (docs, transcripts, sample files, code, reference deliverables — any format) into a folder under `inputs/`, then:
 
@@ -210,11 +211,13 @@ update the exotel KB with the new node-template export in inputs/exotel/
 
 **Use it when** you have a KB and want a structured config the platform ingests (JSON / XML / YAML / NodeFlow). It is validated against the KB's own rules; **nothing is executed.**
 
-| | |
-| ----------- | ----------------------------------------------------------------------------------- |
+
+|              |                                                                                                          |
+| ------------ | -------------------------------------------------------------------------------------------------------- |
 | **Triggers** | *"generate the config / nodeflow from this KB + SOW"*, *"build the {platform} config"*, *"config-agent"* |
-| **Inputs**   | `kb=<dir>` · `sow=<path>` · `prompt` (optional) · `output=<dir>` (optional)          |
-| **Output**   | `outputs/<client>/generated/`                                                       |
+| **Inputs**   | `kb=<dir>` · `sow=<path>` · `prompt` (optional) · `output=<dir>` (optional)                              |
+| **Output**   | `outputs/<client>/generated/`                                                                            |
+
 
 ```
 config-agent kb=outputs/exotel/kb/ sow=inputs/exotel/billing-ivr.md
@@ -234,11 +237,13 @@ Re-running updates the deliverable in place.
 
 **Use it when** you want code — an SDK integration, function, handler, or glue snippet (*not* a whole project) — generated from the KB's API surface, verified (parse / compile / lint), and **wired into your codebase.**
 
-| | |
-| ----------- | ----------------------------------------------------------------------------------- |
-| **Triggers** | *"write the SDK code from this KB + SOW"*, *"integrate the {platform} code into <dir>"*, *"code-agent"* |
-| **Inputs**   | `kb=<dir>` · `sow=<path>` · `target=<dir-in-your-project>` · `prompt` (optional)     |
-| **Output**   | code written into your `target` directory                                           |
+
+|              |                                                                                                      |
+| ------------ | ---------------------------------------------------------------------------------------------------- |
+| **Triggers** | *"write the SDK code from this KB + SOW"*, *"integrate the {platform} code into **"*, *"code-agent"* |
+| **Inputs**   | `kb=<dir>` · `sow=<path>` · `target=<dir-in-your-project>` · `prompt` (optional)                     |
+| **Output**   | code written into your `target` directory                                                            |
+
 
 ```
 code-agent kb=outputs/razorpay/kb/ sow=inputs/razorpay/create-order.md target=src/payments/
@@ -252,11 +257,13 @@ If you omit `target` and the SOW doesn't name a path, it **asks where to integra
 
 **Use it when** you want the **runbook before running it**: an ordered, fully-specified, self-contained LLD / Execution Document that the Runner later carries out. It only *designs* — no auth, no secrets, no live calls.
 
-| | |
-| ----------- | ----------------------------------------------------------------------------------- |
+
+|              |                                                                                                              |
+| ------------ | ------------------------------------------------------------------------------------------------------------ |
 | **Triggers** | *"create the LLD / execution doc from this KB + SOW"*, *"design the {platform} API workflow"*, *"api-agent"* |
-| **Inputs**   | `kb=<dir>` · `sow=<path>` · `prompt` (optional) · `output=<dir>` (optional)          |
-| **Output**   | `outputs/<client>/lld/`                                                             |
+| **Inputs**   | `kb=<dir>` · `sow=<path>` · `prompt` (optional) · `output=<dir>` (optional)                                  |
+| **Output**   | `outputs/<client>/lld/`                                                                                      |
+
 
 ```
 api-agent kb=outputs/getstream/kb/ sow=inputs/getstream/social-feed.md
@@ -270,11 +277,13 @@ The KB's shape decides the step type automatically — a REST-API KB yields HTTP
 
 **Use it when** an `api-agent` LLD is ready and you want it run for real — exactly as written, from the document alone.
 
-| | |
-| ----------- | ----------------------------------------------------------------------------------- |
-| **Triggers** | *"run / execute this LLD"*, *"execute the execution document"*, *"runner-agent"*    |
+
+|              |                                                                                            |
+| ------------ | ------------------------------------------------------------------------------------------ |
+| **Triggers** | *"run / execute this LLD"*, *"execute the execution document"*, *"runner-agent"*           |
 | **Inputs**   | `lld=<path>` (required) · `secrets=<file>` · `env=` / `mode=` · `dry_run=true` · `output=` |
-| **Output**   | a run directory with `run.log` + a redacted `result.json`                           |
+| **Output**   | a run directory with `run.log` + a redacted `result.json`                                  |
+
 
 ```
 runner-agent lld=outputs/getstream/lld/social-feed.md
@@ -416,6 +425,118 @@ The agent runs with `bypassPermissions` and grants the skill access to:
 | Yellow  | Tool result (`← output` / `← error`)    |
 | Magenta | Thinking block (truncated to 400 chars) |
 | Dim     | Session metadata (turns, cost)          |
+
+
+---
+
+# Local MCP Server (`likeminds_mcp`)
+
+Exposes **every** skill in `.claude/` (both `.claude/commands/*.md` slash commands and `.claude/skills/*/SKILL.md` Agent Skills) behind a single `run_skill` tool over local HTTP, so a Claude Code client — or the regular chat — can invoke any skill and answer its runtime questions through pause/resume round-trips. Each turn runs server-side as a fresh `claude -p` subprocess (resume-per-turn); Claude Code's own on-disk session store carries state between turns, so nothing is parked in memory while a human answers.
+
+> Full design + wire protocol reference: `[likeminds_mcp/README.md](likeminds_mcp/README.md)`.
+
+## Quick start
+
+**1. Install dependencies** (once) — the server itself needs only `mcp` + `python-dotenv`:
+
+```bash
+python3 -m venv venv
+venv/bin/pip install "mcp>=1.2.0" python-dotenv
+# or install everything: venv/bin/pip install -r requirements.txt
+```
+
+The server drives the **Claude Code CLI** as a subprocess, so a working `claude` must be on your `PATH` (override with `CLAUDE_BIN`).
+
+**2. Authenticate** — the server routes the spawned Claude at your **Claude subscription** (Max/Pro), not the API/Foundry creds in `.env`:
+
+```bash
+claude setup-token          # requires a Claude subscription; prints a token
+```
+
+Put it in `.env` as `CLAUDE_TOKEN=…` (the server maps it to the `CLAUDE_CODE_OAUTH_TOKEN` the CLI reads), or log in once with the `claude` CLI and skip the token. On startup the server strips `CLAUDE_CODE_USE_FOUNDRY` / `ANTHROPIC_FOUNDRY_*` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the environment so they can't outrank the subscription token. To use the `.env` API/Foundry creds instead, set `LIKEMINDS_MCP_AUTH=api`.
+
+**3. Run the server** from a plain terminal (it loads `.env` automatically):
+
+```bash
+venv/bin/python -m likeminds_mcp      # serves http://127.0.0.1:8787/mcp
+```
+
+## Connect from Claude Code
+
+`.mcp.json` in the project root **already registers the server** for the Claude Code **CLI**, which reads it automatically — no extra config needed:
+
+```json
+"likeminds": { "type": "http", "url": "http://127.0.0.1:8787/mcp" }
+```
+
+The **Claude Desktop app** uses its own config file instead (see below). **Either way, you start the server yourself first** (Quick start step 3) and keep it running — neither client launches it for you; they only dial the HTTP endpoint.
+
+### Claude Code (CLI)
+
+1. Start the server (Quick start step 3) in its own terminal.
+2. (Re)start `claude` in this project so it reads `.mcp.json`.
+3. Run `/mcp` — `likeminds` should show as **connected**.
+4. Ask it to use a skill (e.g. *"use the kb-builder skill on inputs/exotel/"*).
+
+**Running the CLI from another directory?** Project `.mcp.json` only loads when `claude` runs inside this repo. To reach `likeminds` from anywhere, register it once at **user scope**:
+
+```bash
+claude mcp add --transport http likeminds http://127.0.0.1:8787/mcp --scope user
+```
+
+The skills are served from this repo (server-side), so the client's working directory doesn't change what's available — and deliverables still land in this repo's `outputs/mcp/`.
+
+### Claude Desktop app
+
+Claude Desktop takes only `command`-based (stdio) servers in its config, so reach the HTTP server through the `mcp-remote` bridge (`npx` fetches it — Node.js required).
+
+1. Start the server (Quick start step 3) in a terminal and leave it running.
+2. Open **Claude Desktop → Settings → Connectors → Edit Config**.
+3. Add `likeminds` under `mcpServers`:
+  ```json
+   "mcpServers": {
+     "likeminds": {
+       "command": "npx",
+       "args": [
+         "-y",
+         "mcp-remote",
+         "http://127.0.0.1:8787/mcp"
+       ]
+     }
+   }
+  ```
+4. Save and **restart Claude Desktop**. `likeminds` shows up in the tools/connectors list once it connects.
+5. Ask it to use a skill, e.g. *"use the config-agent skill…"*.
+
+## Tools exposed
+
+
+| Tool          | What it does                                                                                                                                                         |
+| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `run_skill`   | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. Deliverables land in `outputs/mcp/<result_id>/`. |
+| `upload_file` | Stage a file for clients with no local filesystem (regular chat); returns an id to pass back as `upload_refs`.                                                       |
+| `list_skills` | List every slash command + Agent Skill the server can run.                                                                                                           |
+
+
+## Passing files to a skill
+
+- `input_paths` — absolute **local** paths, copied byte-for-byte into the session inputs dir (best for Claude Code on the same machine).
+- `upload_refs` — call `upload_file(name, content)` first, then pass the returned id (for clients with no local filesystem).
+- `artifacts` / `files` — inline `[{name, content}]` text.
+
+A skill that needs extra MCP servers of its own (e.g. `playwright` for a browser flow) can declare them in an optional `likeminds_mcp/extra_mcp.json` shaped like `{"mcpServers": {…}}`.
+
+## Configuration
+
+
+| Variable             | Description                                                                                | Default                                               |
+| -------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
+| `CLAUDE_TOKEN`       | Subscription token, mapped to `CLAUDE_CODE_OAUTH_TOKEN`                                    | required unless `LIKEMINDS_MCP_AUTH=api` or CLI login |
+| `LIKEMINDS_MCP_AUTH` | `subscription` (default), or `api` to keep the `.env` API/Foundry creds                    | `subscription`                                        |
+| `CLAUDE_AGENT_MODEL` | Model for spawned turns                                                                    | `opus[1m]` (latest Opus, 1M context)                  |
+| `CLAUDE_BIN`         | Path to the `claude` CLI                                                                   | resolved from `PATH`                                  |
+| `MCP_TIMEOUT`        | Client-side server **startup/connect** timeout in ms (set on the Claude Code client)       | `30000`                                               |
+| `MCP_TOOL_TIMEOUT`   | Client-side **tool-call** timeout in ms (raise for long-running skills; set on the client) | client default                                        |
 
 
 ---
