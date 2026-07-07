@@ -1,5 +1,6 @@
 ---
-description: Apply all approved fixes from the approval sheet
+name: apply-fixes
+description: Apply every APPROVED fix from a client's approval sheet (outputs/{client}/approval_sheet.md) to the source code — read each approved row, verify the code still matches the documented root cause, make the change, mark the row APPLIED, and create one git commit for all of them. The only step permitted to modify source files or commit. Use after a reviewer has marked rows APPROVED (following diagnose-bug or process-comparison). Triggers: "apply the approved fixes", "apply-fixes", "apply the fixes in {client}'s approval sheet".
 ---
 
 # Apply Approved Fixes

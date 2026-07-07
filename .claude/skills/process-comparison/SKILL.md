@@ -1,5 +1,6 @@
 ---
-description: Process approved comparison items into the approval sheet with full RCA
+name: process-comparison
+description: Read every APPROVED item from a client's comparison sheets (outputs/{client}/comparisons/*.md), run full root-cause analysis against the codebase and CLAUDE.md, and write each as a PENDING fix proposal in the client's approval sheet (outputs/{client}/approval_sheet.md), with COMP-to-BUG traceability. Proposes only; never edits source. Use to turn reviewed comparison findings into reviewable fix proposals. Triggers: "process the approved comparisons", "process-comparison", "run RCA on {client}'s approved comparison items".
 ---
 
 You are a comparison-to-fix processing agent. Read all APPROVED items from this client's comparison sheets under `outputs/{client}/comparisons/`, perform full root cause analysis for each, and write fix proposals to `outputs/{client}/approval_sheet.md`.
@@ -25,7 +26,7 @@ Find all rows with Should Fix = `APPROVED` across them, and remember which sheet
 If no APPROVED rows found in any sheet, print:
 ```
 No APPROVED items in outputs/{client}/comparisons/.
-Open a comparison sheet under outputs/{client}/comparisons/ and change Should Fix to APPROVED for items you want analyzed, then re-run /process-comparison.
+Open a comparison sheet under outputs/{client}/comparisons/ and change Should Fix to APPROVED for items you want analyzed, then re-run the process-comparison skill.
 ```
 Then STOP.
 
@@ -141,7 +142,7 @@ For each analyzed comparison item, append a new row to the outputs/{client}/appr
 | Root Cause | What is wrong in the source and why — note if code, prompt/template, config, data, or both |
 | Affected Files | Source file(s) with line ranges. If source not identified: generated file location for reference. Separate multiple files with `<br>` |
 | Fix Description | Plain text description of the change. For binary sources: include "Regenerate output after fix" |
-| Testing Notes | "Re-run `/find-bugs` with same generated and expected files to verify this discrepancy is resolved" |
+| Testing Notes | "Re-run the find-bugs-{client} skill with the same generated and expected files to verify this discrepancy is resolved" |
 | Status | `PENDING` |
 | Reviewed By | `_pending_` |
 
@@ -181,7 +182,7 @@ Print a complete summary:
   Next steps:
     1. Open outputs/{client}/approval_sheet.md — review the new PENDING rows
     2. Change Status to APPROVED or REJECTED
-    3. Run /apply-fixes to apply all approved fixes
+    3. Run the apply-fixes skill to apply all approved fixes
 ```
 
 ---
@@ -192,7 +193,7 @@ Print a complete summary:
 
 2. **Traceability is mandatory.** Always fill in the Linked Bug ID column in the source comparison sheet (under `outputs/{client}/comparisons/`) after writing to `outputs/{client}/approval_sheet.md`.
 
-3. **Respect the outputs/{client}/approval_sheet.md format exactly.** The downstream `/apply-fixes` command depends on parsing this table. Use the same column format as `/diagnose-bug`.
+3. **Respect the outputs/{client}/approval_sheet.md format exactly.** The downstream apply-fixes skill depends on parsing this table. Use the same column format as diagnose-bug.
 
 4. **Don't skip items.** Process ALL APPROVED rows, even if you cannot identify the source. For those, set Confidence = LOW and describe what manual investigation is needed.
 

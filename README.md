@@ -1,189 +1,120 @@
-# Claude Code Bug-Fix System
+# LikeMinds Agentic Workflow Backend
 
-Automated bug diagnosis and fix tracking using Claude Code.
-Works with any project, any tech stack.
+A library of **Claude Code Agent Skills** that take a client from raw platform
+artifacts to a finished deliverable — a knowledge base, a structured config,
+integration code, a Scope-of-Work document, a live API run, or an automated
+bug-fix loop — plus a **local MCP server** (`likeminds_mcp`) that exposes every
+skill over HTTP so any Claude client (Claude Code or the Claude Desktop app) can
+run them and answer their questions through pause/resume round-trips.
 
-## Install
+Every skill learns its platform entirely from a **KB** (knowledge base) built from
+the client's own artifacts — nothing is hardcoded, so the same skill works for any
+platform once its KB exists.
+
+## Contents
+
+- [Folder structure](#folder-structure)
+- [Install & setup](#install--setup)
+- [Skills](#skills)
+  - [KB → deliverable pipeline](#kb--deliverable-pipeline)
+  - [Document / SOW generators](#document--sow-generators)
+  - [Automated bug-fix loop](#automated-bug-fix-loop)
+- [Local MCP server (`likeminds_mcp`)](#local-mcp-server-likeminds_mcp)
+- [How the MCP server works (architecture)](#how-the-mcp-server-works-architecture)
+- [Configuration](#configuration)
+
+---
+
+## Folder structure
 
 ```
+agentic-workflow-backend/
+├── .claude/
+│   ├── skills/                       # the Agent Skills — invoke by describing the task in plain English
+│   │   ├── kb-builder/               #   raw artifacts → knowledge base (KB)
+│   │   ├── config-agent/             #   KB + SOW → structured config (JSON/XML/YAML/NodeFlow)
+│   │   ├── code-agent/               #   KB + SOW → integration code, wired into your repo
+│   │   ├── api-agent/                #   KB + SOW → LLD / execution document
+│   │   ├── runner-agent/             #   execute an LLD live (HTTP calls or browser actions)
+│   │   ├── custom-sow-generator/     #   compile a per-client SOW generator from a KB + one sample
+│   │   ├── generate-find-bugs-skill/ #   KB → a per-client find-bugs-{client} checker skill
+│   │   ├── diagnose-bug/             #   validate a bug report → PENDING row in the approval sheet
+│   │   ├── process-comparison/       #   approved comparison findings → approval sheet (with RCA)
+│   │   └── apply-fixes/              #   apply APPROVED fixes to source + one git commit
+│   ├── playbook-library/             # archetype advice kb-builder draws on (read-only, not invoked directly)
+│   │   └── playbooks/                #   api-integration, document-from-template, nodeflow, fallback
+│   └── settings.json                 # Claude Code settings
+├── likeminds_mcp/                    # local MCP server that exposes every skill over HTTP
+│   ├── server.py                     #   FastMCP HTTP server
+│   ├── engine.py                     #   runs one `claude -p` turn, parses the signal markers
+│   ├── harness.py                    #   skill-agnostic I/O envelope (appended to the system prompt)
+│   ├── sessions.py                   #   in-process session records + sandbox/transcript purge
+│   ├── registry.py                   #   indexes .claude/skills so any skill is runnable
+│   ├── config.py                     #   paths, host/port, model, markers, safety bounds
+│   ├── __main__.py                   #   `python -m likeminds_mcp` entrypoint
+│   └── test_client.py                #   drive a skill end-to-end from the terminal (no Claude client needed)
+├── inputs/                           # drop client artifacts here (gitignored)
+├── outputs/                          # deliverables (gitignored)
+│   ├── {client}/                     #   per client: kb/, approval_sheet.md, comparisons/
+│   └── mcp/<result_id>/              #   deliverables harvested from MCP skill runs
+├── .mcp.json                         # registers the likeminds server for the Claude Code CLI
+├── .env / .env.example               # CLAUDE_TOKEN and other env (.env is gitignored)
+├── requirements.txt                  # MCP server deps — just `mcp` + `python-dotenv`
+└── README.md                         # this file
+```
+
+`.sessions/` (per-run MCP sandboxes) and `venv/` are also created locally and are
+gitignored.
+
+---
+
+## Install & setup
+
+```bash
 git clone https://github.com/LikeMindsCommunity/claude-skill-auto-bugfix.git
 cd claude-skill-auto-bugfix
+
+python3 -m venv venv
+venv/bin/pip install -r requirements.txt      # mcp + python-dotenv
 ```
 
-## Setup
+The skills run inside **Claude Code**, so a working `claude` CLI must be on your
+`PATH`. You can use the skills two ways:
 
-Add the following to your project's `.gitignore` to keep generated files out of version control:
+1. **Directly in Claude Code** — open `claude` in this repo and describe the task;
+  the trigger phrases in each skill activate the right one.
+2. **Through the MCP server** — start `likeminds_mcp` and call `run_skill` from any
+  connected Claude client (see [Local MCP server](#local-mcp-server-likeminds_mcp)).
 
-```
-# Claude Code worktrees (transient, auto-generated)
-.claude/*
+Drop a client's artifacts into a folder under `inputs/`; deliverables land under
+`outputs/{client}/` (both gitignored).
 
-# Claude bug-fix mechanism (local only, not for version control)
-bug_backlog.md
-approval_sheet.md
-comparison_sheet.md
-CLAUDE.md
+---
 
-# Comparison inputs (user-specific, not for version control)
-inputs/*
-```
+## Skills
 
-## Usage
+The skills form three families. All are **platform-agnostic**: they read a KB (built
+once per client) and act on it. The KB carries the platform's grammar and rules; a
+short **SOW** (solution doc / prompt) says *what* to build.
 
-In any project:
+> **KB = how, SOW = what.** Build the KB once with `kb-builder`, then run the
+> deliverable skills as many times as you have things to build.
 
-```
-cd /path/to/your-project
-claude
-> /init-project                # one-time setup, generates CLAUDE.md, bug_backlog.md and approval_sheet.md
-> /diagnose-bug <desc>         # validate a bug report; if valid, propose a fix into approval_sheet.md (single or batch)
-> /find-bugs                   # compare generated vs expected files (generic)
-> /find-bugs-exotel            # Exotel IVR JSON comparison (wraps /find-bugs + Exotel KB checks)
-> /process-comparison          # process approved comparisons into fix proposals
-> /review-approval-sheet       # summarize approval sheet status
-> /apply-fixes                 # apply all approved fixes and create a git commit
-> /platform-kb                 # build a structured KB from platform artifacts and docs
-> /generate-document           # generate a versioned PDF/DOCX from a KB + source materials
-```
-
-## Commands
-
-
-| Command                  | What it does                                                                                                                                                                                   |
-| ------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `/init-project`          | Scans repo, generates `CLAUDE.md` and `approval_sheet.md`                                                                                                                                      |
-| `/diagnose-bug`          | Validates a bug report and, if it is a real issue, proposes a fix into `approval_sheet.md` — single bug or batch with interaction analysis                                                     |
-| `/find-bugs`             | Compares generated vs expected file, writes discrepancies to `comparison_sheet.md`                                                                                                             |
-| `/find-bugs-exotel`      | Exotel IVR JSON comparison — wraps `/find-bugs` and adds per-node schema, default, alias, composition, script, pattern, and numbered-constraint checks using Exotel KB sections in `CLAUDE.md` |
-| `/process-comparison`    | Processes approved comparison items into `approval_sheet.md` with full RCA                                                                                                                     |
-| `/review-approval-sheet` | Summarizes current approval sheet status                                                                                                                                                       |
-| `/apply-fixes`           | Applies all APPROVED fixes and creates a git commit                                                                                                                                            |
-| `/platform-kb`           | Builds a structured Knowledge Base (KB) from platform artifacts and docs                                                                                                                       |
-| `/generate-document`     | Generates a versioned PDF/DOCX document from a KB + source materials                                                                                                                           |
-
-
-## Per-client file locations
-
-Every client gets its own folder under `outputs/{client}/`, and the bug-fix tracking sheets live inside it:
-
-```
-outputs/
-└── {client}/
-    ├── kb/                    # knowledge base (from /platform-kb)
-    ├── approval_sheet.md      # ONE per client — the fix queue (diagnose-bug / process-comparison append; apply-fixes applies)
-    └── comparisons/           # MANY per client — one sheet per generated-vs-expected run (find-bugs-{client} writes)
-        ├── <generated>.md
-        └── ...
-```
-
-`{client}` is resolved the same way across all of these skills, in order: an explicit `client=<name>` argument → an `output=<dir>` override (used as the client folder directly) → inferred from an inputs/artifacts folder name, a name in the prompt, or the parent of a `kb=<dir>` → if still ambiguous, the skill asks. Pass `client=` explicitly when in doubt:
-
-```
-> /diagnose-bug client=acme "transitions render out of order AND variables missing on step 5"
-> /process-comparison client=acme
-> /apply-fixes client=acme
-```
-
-`outputs/` is gitignored, so these sheets stay local.
-
-## File Comparison (`/find-bugs`)
-
-Compare a generated file against an expected file to find all discrepancies. Works with any file format (PDF, JSON, DOCX, XLSX, PPTX, images, text, etc.).
-
-### Input files
-
-Drop files into the comparison folders:
-
-```
-inputs/
-  compare/
-    generated/    # The generated/actual output file
-    expected/     # The expected/reference file
-```
-
-Or pass paths directly:
-
-```
-/find-bugs generated=path/to/actual.pdf expected=path/to/reference.pdf source=path/to/template.html
-```
-
-The optional `source=` parameter tells the system which file (HTML template, JSON config, code file, etc.) produced the generated output, so fixes can target that source instead of the binary output.
-
-### Workflow
-
-```
-/find-bugs              # compare files → writes to comparison_sheet.md
-                        # review comparison_sheet.md, mark APPROVED / REJECTED
-/process-comparison     # runs full RCA on approved items → writes to approval_sheet.md
-                        # review approval_sheet.md, mark APPROVED / REJECTED
-/apply-fixes            # applies all approved fixes
-```
-
-## Exotel IVR Comparison (`/find-bugs-exotel`)
-
-A sub-skill of `/find-bugs` specialised for Exotel IVR flow JSONs. It runs every generic check first, then layers Exotel-specific checks on top using the Exotel KB inline in `CLAUDE.md`.
-
-**What it adds on top of `/find-bugs`:**
-
-- **Per-node schema validation** — every node's type resolved via the bidirectional Alias Map; every attribute checked against the KB Attribute Schema (type, required, allowed values, dynamic-flag).
-- **Per-key default-value verification** — if the KB documents `retryCount` default as `5` and the generated JSON has `5000`, a row is logged with `Expected Content = 5`, `Actual Content = 5000`. Conditional defaults (e.g. "`timeout` defaults to 0 when `nodeType = HANGUP`") are honoured.
-- **Value-form validation** — every attribute passes through a literal-vs-dynamic-vs-`staticValue`-struct check. Variable references (`{{var}}`, `$var`, `context.var`) must resolve to a declared variable (Built-in, upstream output, or upstream `preScript`/`script` assignment).
-- **Exhaustive script walk** — `script`, `preScript`, `postScript`, `preFunction`, `postFunction`, `expression`, `handler`, `onEnter`, `onExit`, `onError`, any `staticValue.value` marked as script/json, and any heuristically-detected code string — all parsed for syntax, unknown built-ins, unresolved variables, missing error handling, and cross-script type inconsistency.
-- **JSON-in-string** — when a script body or `staticValue.value` contains a JSON literal, it is `JSON.parse`d and walked key-by-key against any KB-declared schema.
-- **Composition & wiring** — broken transitions, unknown events, missing required event handlers, invalid ports, unmet parent-child back-references, invalid condition expressions.
-- **Pattern compliance** — named patterns from `## Exotel Patterns` verified; anti-patterns scanned.
-- **Numbered constraints** — every `C1, C2, …` in `## Exotel Constraints` checked; citations like `Exotel C7` in `KB Rule Violated`.
-- **Strict instructions** — global invariants from `## Exotel Strict Instructions` applied across the flow.
-
-**What it never flags (free-form, identity, or auto-generated):**
-
-`nodeflow.name`, `flow.name`, `node.name`, `node.displayName`, `node.label`, `node.description`, `node.comments`, `createdAt`, `updatedAt`, `createdBy`, `updatedBy`, any regenerated `id` / `nodeId` / `flowId` / `uuid` / `revisionId`, plus any attribute whose KB Attribute Schema row is absent.
-
-### Setup
-
-`/find-bugs-exotel` auto-derives the Exotel KB from your project's own prompts, generator code, schemas, and docs — the same artefacts `/find-bugs` already sweeps in Step 1.3. Node types, per-node defaults, alias maps, event catalog, composition rules, scripting language, and numbered constraints are extracted directly from your code. **No manual KB population is needed.** Just run `/find-bugs-exotel` right after `/init-project`.
-
-If the skill's derivation is sparse (e.g., your code doesn't name every node type explicitly), you can optionally pin overrides or add rules the code doesn't encode by filling in any of the `## Exotel` * sections of `CLAUDE.md`:
-
-- `## Exotel Node Taxonomy`, `## Exotel Alias Map`, `## Exotel Node Attribute Schema`, `## Exotel Event Catalog`, `## Exotel Composition Rules`, `## Exotel Constraints` — augment the derived KB.
-- Optional: `## Exotel Universal Attributes`, `## Exotel Scripting Language`, `## Exotel Patterns`, `## Exotel Strict Instructions`, `## Exotel Layout Rules`.
-- Or use `## Exotel KB Reference` (or a `See: path/to/file.md` inside any section) to point at an external file.
-
-Every section is optional. If the derived KB and an override disagree, both sources are cited in the resulting comparison-sheet row — no silent resolution.
-
-### Workflow
-
-```
-/find-bugs-exotel       # runs /find-bugs + Exotel KB checks → comparison_sheet.md
-                        # review rows, mark APPROVED / REJECTED
-/process-comparison     # RCA on approved items → approval_sheet.md
-/apply-fixes            # apply all approved fixes
-```
-
-# LikeMinds Agentic Workflow Skills
-
-Five Claude Code skills in `.claude/skills/` take a client from **raw platform artifacts** to a working deliverable — a config, integration code, or a live API / browser run. Invoke each by describing what you want in plain English inside Claude Code; the trigger phrases below activate the right skill.
+### KB → deliverable pipeline
 
 ```
 raw artifacts ─► kb-builder ─► KB ─┬─► config-agent ─► structured config
   (docs,                           │
    samples,                        ├─► code-agent   ─► integration code (wired into your repo)
    transcripts)                    │
-                                   └─► api-agent    ─► LLD ─► runner-agent ─► live run
+                                   ├─► api-agent    ─► LLD ─► runner-agent ─► live run
+                                   │
+                                   └─► (config / code / LLD, all from the same KB)
 ```
 
-**Two layers:**
+#### `kb-builder` — build & maintain the KB
 
-- **Layer 1 — `kb-builder`** turns the client's artifacts into a **KB** at `outputs/{client}/kb/`: the single source of truth about that platform.
-- **Layer 2 — the deliverable skills** (`config-agent`, `code-agent`, `api-agent`, `runner-agent`) read the KB plus a short **SOW** (a solution doc / prompt saying *what* to build or run) and produce the actual output. They learn the platform entirely from the KB — nothing is hardcoded, so the same skill works for any platform once its KB exists.
-
-> **KB = how, SOW = what.** The KB carries the platform's grammar and rules; the SOW carries the specific thing to build. Build the KB once with Layer 1, then run Layer 2 as many times as you have things to build.
-
----
-
-## 1. `kb-builder` — build & maintain the KB
-
-**Use it when** you have a client's raw artifacts and need the KB built, or extended with new material.
+**Use it when** you have a client's raw artifacts and need the KB built, or extended.
 
 
 |              |                                                                                                 |
@@ -193,23 +124,20 @@ raw artifacts ─► kb-builder ─► KB ─┬─► config-agent ─► struc
 | **Output**   | `outputs/{client}/kb/`                                                                          |
 
 
-Drop the client's artifacts (docs, transcripts, sample files, code, reference deliverables — any format) into a folder under `inputs/`, then:
-
 ```
 build the KB for exotel from the artifacts in inputs/exotel/
 ```
 
-The first run drafts the KB; later runs extend it in place. It picks the archetype itself and asks any gap questions interactively, grouped **BLOCKING / IMPORTANT / VERIFY ASSUMPTION** — answer them to finalize. To extend later:
+The first run drafts the KB; later runs extend it in place. It picks the archetype
+itself and asks any gap questions interactively, grouped **BLOCKING / IMPORTANT /
+VERIFY ASSUMPTION**. It draws on the read-only **playbook library**
+(`.claude/playbook-library/playbooks/*.md`: `nodeflow`, `api-integration`,
+`document-from-template`, `fallback`) for archetype advice.
 
-```
-update the exotel KB with the new node-template export in inputs/exotel/
-```
+#### `config-agent` — KB → structured config
 
----
-
-## 2. `config-agent` — KB → structured config
-
-**Use it when** you have a KB and want a structured config the platform ingests (JSON / XML / YAML / NodeFlow). It is validated against the KB's own rules; **nothing is executed.**
+**Use it when** you want a structured config the platform ingests (JSON / XML / YAML /
+NodeFlow), validated against the KB's own rules. **Nothing is executed.**
 
 
 |              |                                                                                                          |
@@ -223,19 +151,11 @@ update the exotel KB with the new node-template export in inputs/exotel/
 config-agent kb=outputs/exotel/kb/ sow=inputs/exotel/billing-ivr.md
 ```
 
-Or describe the SOW inline:
+#### `code-agent` — KB → integration code
 
-```
-config-agent kb=outputs/exotel/kb/ — build an IVR that greets the caller, collects an account number, and routes to billing
-```
-
-Re-running updates the deliverable in place.
-
----
-
-## 3. `code-agent` — KB → integration code
-
-**Use it when** you want code — an SDK integration, function, handler, or glue snippet (*not* a whole project) — generated from the KB's API surface, verified (parse / compile / lint), and **wired into your codebase.**
+**Use it when** you want code — an SDK integration, function, handler, or glue snippet
+(*not* a whole project) — generated from the KB's API surface, verified (parse /
+compile / lint), and **wired into your codebase.**
 
 
 |              |                                                                                                      |
@@ -249,13 +169,14 @@ Re-running updates the deliverable in place.
 code-agent kb=outputs/razorpay/kb/ sow=inputs/razorpay/create-order.md target=src/payments/
 ```
 
-If you omit `target` and the SOW doesn't name a path, it **asks where to integrate before writing** — it never guesses where to land code.
+If you omit `target` and the SOW doesn't name a path, it **asks where to integrate
+before writing** — it never guesses where to land code.
 
----
+#### `api-agent` — KB → execution document (LLD)
 
-## 4. `api-agent` — KB → execution document (LLD)
-
-**Use it when** you want the **runbook before running it**: an ordered, fully-specified, self-contained LLD / Execution Document that the Runner later carries out. It only *designs* — no auth, no secrets, no live calls.
+**Use it when** you want the **runbook before running it**: an ordered, fully-specified,
+self-contained LLD / Execution Document that `runner-agent` later carries out. It only
+*designs* — no auth, no secrets, no live calls.
 
 
 |              |                                                                                                              |
@@ -265,17 +186,13 @@ If you omit `target` and the SOW doesn't name a path, it **asks where to integra
 | **Output**   | `outputs/<client>/lld/`                                                                                      |
 
 
-```
-api-agent kb=outputs/getstream/kb/ sow=inputs/getstream/social-feed.md
-```
+The KB's shape decides the step type automatically — a REST-API KB yields HTTP-call
+steps; a web-flow KB yields browser-agent steps. There is no mode to pass.
 
-The KB's shape decides the step type automatically — a REST-API KB yields HTTP-call steps; a web-flow KB yields browser-agent steps. There is no mode to pass.
+#### `runner-agent` — execute the LLD live
 
----
-
-## 5. `runner-agent` — execute the LLD live
-
-**Use it when** an `api-agent` LLD is ready and you want it run for real — exactly as written, from the document alone.
+**Use it when** an `api-agent` LLD is ready and you want it run for real, exactly as
+written, from the document alone.
 
 
 |              |                                                                                            |
@@ -285,15 +202,12 @@ The KB's shape decides the step type automatically — a REST-API KB yields HTTP
 | **Output**   | a run directory with `run.log` + a redacted `result.json`                                  |
 
 
-```
-runner-agent lld=outputs/getstream/lld/social-feed.md
-```
+It **defaults to non-prod** (going live is an explicit choice), sources its own
+credential values by the names the LLD lists — **never from the document** — and honors
+the LLD's safety gates: confirm before any state change, double-confirm anything
+destructive. Add `dry_run=true` to rehearse without firing calls.
 
-It **defaults to non-prod** (going prod / live is an explicit choice), sources its own credential values by the names the LLD lists — from `secrets=`, a project secrets file, or by asking, **never from the document** — and honors the LLD's safety gates: confirm before any state change, double-confirm anything destructive. Add `dry_run=true` to rehearse without firing calls.
-
----
-
-## End-to-end example
+**End-to-end:**
 
 ```
 # 1. Build the KB once from the client's artifacts
@@ -301,159 +215,102 @@ build the KB for getstream from inputs/getstream/            ->  outputs/getstre
 
 # 2a. Generate a config ...
 config-agent kb=outputs/getstream/kb/ sow=inputs/feed.md     ->  outputs/getstream/generated/
-
 # 2b. ... or integration code ...
 code-agent   kb=outputs/getstream/kb/ sow=inputs/feed.md target=src/feed/
-
 # 2c. ... or design + run a live API workflow
 api-agent    kb=outputs/getstream/kb/ sow=inputs/feed.md     ->  outputs/getstream/lld/
 runner-agent lld=outputs/getstream/lld/feed.md               ->  live run + run record
 ```
 
-The **playbook library** at `.claude/playbook-library/playbooks/*.md` (read-only) holds the archetype advice `kb-builder` draws on — `nodeflow`, `api-integration`, `document-from-template`, and an exclusion-only `fallback`. You don't invoke it directly; it guides KB building behind the scenes.
+### Document / SOW generators
 
-# Document Generator (`/generate-document`)
+#### `custom-sow-generator` — compile a per-client SOW skill
 
-Generates a pixel-accurate PDF and/or DOCX document from a KB and one or more source materials (MOMs, transcripts, emails, requirement docs, etc.). Domain-agnostic — works for SOWs, BRDs, proposals, contracts, reports, or any document type defined by the KB.
-
-### Inputs
-
-
-| Parameter      | Description                                                          | Default                       |
-| -------------- | -------------------------------------------------------------------- | ----------------------------- |
-| `kb`           | Path to the client's KB directory                                    | `outputs/exotel-sow/kb/`      |
-| `sources`      | Directory of input materials (MOMs, transcripts, emails, PDFs, etc.) | `inputs/materials/`           |
-| `samples`      | Reference PDFs for visual template extraction                        | `inputs/sample_artifacts/`    |
-| `output`       | Directory for generated files                                        | `outputs/<client>/generated/` |
-| `format`       | `pdf`, `docx`, or `both`                                             | `both`                        |
-| `version-bump` | Override auto-detected bump: `patch`, `minor`, or `major`            | *(auto-detected)*             |
+Reads an organisation's KB plus **one sample SOW** (used as a pixel-level visual format
+reference) and writes a self-contained skill that turns a new MOM into a complete SOW
+matching the sample's exact format.
 
 
-You can also place an `inputs/input_config.yaml` file with a `prompt` field to pass additional context, URLs, or instructions to the skill without using command-line arguments.
+|              |                                                                                           |
+| ------------ | ----------------------------------------------------------------------------------------- |
+| **Triggers** | *"build a SOW generator for {customer}"*, *"compile a SOW skill from this KB and sample"* |
+| **Output**   | a new `.claude/skills/<customer>-sow/` skill                                              |
 
-### Workflow
 
-The skill auto-detects CREATE vs UPDATE mode from the presence of `doc-manifest.json` and runs five phases: source/manifest diff → input audit (asks for missing fields, otherwise proceeds in DRAFT mode with `[Q-N: ...]` placeholders) → template bootstrap from sample PDFs → content generation against the KB → assembly to HTML/PDF/DOCX → archive previous version and write the manifest. Open queries are tracked in `queries.md` and auto-resolved on re-run when the source materials answer them.
+### Automated bug-fix loop
 
-### Usage examples
+Four skills form a review-gated loop that finds discrepancies, proposes fixes for human
+approval, and applies them. The approval sheet and comparison sheets live per client
+under `outputs/{client}/`; project context (file index, architecture layers,
+constraints) is read from a `CLAUDE.md` in the **target** project.
 
 ```
-/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/
-/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ format=pdf
-/generate-document kb=outputs/acme/kb/ sources=inputs/acme-materials/ samples=inputs/acme-samples/
-/generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ version-bump=major
+generate-find-bugs-skill ─► find-bugs-{client} ─► outputs/{client}/comparisons/*.md
+   (once, from the KB)         (compare gen vs expected)          │
+                                                                  ▼  (review, mark APPROVED)
+bug report ─► diagnose-bug ─┐                          process-comparison  (RCA)
+                            └────────────►  outputs/{client}/approval_sheet.md
+                                                         │  (review, mark APPROVED)
+                                                         ▼
+                                                    apply-fixes ─► source edits + git commit
+```
+
+
+| Skill                            | Role                                                           | Writes                                         |
+| -------------------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
+| `generate-find-bugs-skill`       | Compile a per-client generated-vs-expected checker from the KB | `.claude/skills/find-bugs-{client}/SKILL.md`   |
+| *find-bugs-{client}* (generated) | Compare a generated file against an expected file              | `outputs/{client}/comparisons/<name>.md`       |
+| `process-comparison`             | Root-cause the APPROVED comparison items and propose fixes     | `outputs/{client}/approval_sheet.md` (PENDING) |
+| `diagnose-bug`                   | Validate one or more bug reports and propose fixes             | `outputs/{client}/approval_sheet.md` (PENDING) |
+| `apply-fixes`                    | Apply every APPROVED row to source and commit                  | source files + one git commit                  |
+
+
+Only `apply-fixes` edits source or touches git; `diagnose-bug` and `process-comparison`
+are propose-only. A reviewer flips each row's `Status` from `PENDING` to `APPROVED` /
+`REJECTED` in between. `{client}` is resolved from an explicit `client=<name>` argument,
+an `output=<dir>` override, or inferred from context (the skill asks if ambiguous).
+
+```
+diagnose-bug client=acme "transitions render out of order AND variables missing on step 5"
+process-comparison client=acme
+apply-fixes client=acme
 ```
 
 ---
 
-# Claude Agent (`claude_agent`)
+## Local MCP server (`likeminds_mcp`)
 
-A Python CLI that runs any skill in `.claude/commands/` programmatically using the **Claude Agent SDK** — no interactive Claude Code session required. Streams tool calls, thinking blocks, and assistant text live to the terminal and supports multi-turn conversations after the skill finishes.
+Exposes **every** skill in `.claude/skills/` behind a single `run_skill` tool over
+local HTTP, so a Claude client — or the regular Claude chat — can invoke any skill and
+answer its runtime questions through pause/resume round-trips, **without ever seeing the
+skill prompt**. Each turn runs server-side as a fresh `claude -p` subprocess
+(resume-per-turn); Claude Code's own on-disk session store carries state between turns,
+so nothing is parked in memory while a human answers.
 
-## How it works
+### Quick start
 
-The agent loads slash commands from `.claude/commands/` (via `setting_sources=["project"]`), sends `/<skill-name> <arguments>` as the first user message, then streams the full response. After the skill finishes you can keep the conversation going by typing follow-up messages; type `done` or `Ctrl-D` to exit.
-
-If `inputs/input_config.yaml` exists and contains a `prompt` field, that text is automatically appended to the first message as authoritative user guidance for the run.
-
-## Setup
-
-Dependencies are already listed in `requirements.txt`. Install them once:
-
-```bash
-pip install -r requirements.txt
-```
-
-Copy your API credentials into `.env` (the agent loads it automatically via `python-dotenv`):
-
-```
-ANTHROPIC_API_KEY=sk-ant-...          # standard Anthropic API
-# or, for Azure AI Foundry:
-CLAUDE_CODE_USE_FOUNDRY=1
-ANTHROPIC_FOUNDRY_BASE_URL=https://<resource>.services.ai.azure.com/anthropic
-ANTHROPIC_FOUNDRY_API_KEY=<key>
-```
-
-## Usage
-
-```bash
-python -m claude_agent <skill-name> [arguments...]
-```
-
-The `skill-name` must match a file in `.claude/commands/<skill-name>.md`. Everything after it is passed verbatim as `$ARGUMENTS` to the skill.
-
-### Examples
-
-```bash
-# Build a platform KB from files in inputs/
-python -m claude_agent platform-kb
-
-# Pass context inline
-python -m claude_agent platform-kb "Exotel IVR JSONs in inputs/sample_artifacts/ and docs at https://developer.exotel.com/api/nodeflows"
-
-# Generate a document from an existing KB
-python -m claude_agent generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/
-
-# PDF only
-python -m claude_agent generate-document kb=outputs/bizom-brd/kb/ sources=inputs/materials/ format=pdf
-```
-
-## Configuration
-
-
-| Variable                     | Description                                                               | Default                       |
-| ---------------------------- | ------------------------------------------------------------------------- | ----------------------------- |
-| `ANTHROPIC_API_KEY`          | Anthropic API key (standard)                                              | required unless using Foundry |
-| `CLAUDE_AGENT_MODEL`         | Override the model (e.g. `claude-opus-4-5`)                               | SDK default                   |
-| `CLAUDE_CODE_USE_FOUNDRY`    | Set to `1` to route through Azure AI Foundry instead of api.anthropic.com | off                           |
-| `ANTHROPIC_FOUNDRY_BASE_URL` | Azure Foundry endpoint URL                                                | required if using Foundry     |
-| `ANTHROPIC_FOUNDRY_API_KEY`  | Azure Foundry API key                                                     | required if using Foundry     |
-
-
-## Allowed tools
-
-The agent runs with `bypassPermissions` and grants the skill access to:
-`Read`, `Write`, `Edit`, `Bash`, `Glob`, `Grep`, `WebFetch`, `WebSearch`, `TodoWrite`, `Skill`, and all MCP tools (`mcp__*`).
-
-## Terminal output
-
-
-| Colour  | Meaning                                 |
-| ------- | --------------------------------------- |
-| Green   | Agent status messages                   |
-| Cyan    | Tool call (`→ ToolName {input}`)        |
-| Yellow  | Tool result (`← output` / `← error`)    |
-| Magenta | Thinking block (truncated to 400 chars) |
-| Dim     | Session metadata (turns, cost)          |
-
-
----
-
-# Local MCP Server (`likeminds_mcp`)
-
-Exposes **every** skill in `.claude/` (both `.claude/commands/*.md` slash commands and `.claude/skills/*/SKILL.md` Agent Skills) behind a single `run_skill` tool over local HTTP, so a Claude Code client — or the regular chat — can invoke any skill and answer its runtime questions through pause/resume round-trips. Each turn runs server-side as a fresh `claude -p` subprocess (resume-per-turn); Claude Code's own on-disk session store carries state between turns, so nothing is parked in memory while a human answers.
-
-> Full design + wire protocol reference: `[likeminds_mcp/README.md](likeminds_mcp/README.md)`.
-
-## Quick start
-
-**1. Install dependencies** (once) — the server itself needs only `mcp` + `python-dotenv`:
+**1. Install** (once) — the server needs only `mcp` + `python-dotenv`:
 
 ```bash
 python3 -m venv venv
-venv/bin/pip install "mcp>=1.2.0" python-dotenv
-# or install everything: venv/bin/pip install -r requirements.txt
+venv/bin/pip install -r requirements.txt
 ```
 
-The server drives the **Claude Code CLI** as a subprocess, so a working `claude` must be on your `PATH` (override with `CLAUDE_BIN`).
+The server drives the **Claude Code CLI** as a subprocess, so a working `claude` must be
+on your `PATH` (override with `CLAUDE_BIN`).
 
-**2. Authenticate** — the server routes the spawned Claude at your **Claude subscription** (Max/Pro), not the API/Foundry creds in `.env`:
+**2. Authenticate** — the server routes the spawned Claude at your **Claude
+subscription** (Max/Pro), not the API/Foundry creds in `.env`:
 
 ```bash
 claude setup-token          # requires a Claude subscription; prints a token
 ```
 
-Put it in `.env` as `CLAUDE_TOKEN=…` (the server maps it to the `CLAUDE_CODE_OAUTH_TOKEN` the CLI reads), or log in once with the `claude` CLI and skip the token. On startup the server strips `CLAUDE_CODE_USE_FOUNDRY` / `ANTHROPIC_FOUNDRY_*` / `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` from the environment so they can't outrank the subscription token. To use the `.env` API/Foundry creds instead, set `LIKEMINDS_MCP_AUTH=api`.
+Put it in `.env` as `CLAUDE_TOKEN=…` (the server maps it to the `CLAUDE_CODE_OAUTH_TOKEN`
+the CLI reads), or log in once with the `claude` CLI and skip the token. On startup the
+server strips `CLAUDE_CODE_USE_FOUNDRY` / `ANTHROPIC_FOUNDRY_*` / `ANTHROPIC_API_KEY` /
+`ANTHROPIC_AUTH_TOKEN` so they can't outrank the subscription token. To use the `.env`
+API/Foundry creds instead, set `LIKEMINDS_MCP_AUTH=api`.
 
 **3. Run the server** from a plain terminal (it loads `.env` automatically):
 
@@ -461,83 +318,184 @@ Put it in `.env` as `CLAUDE_TOKEN=…` (the server maps it to the `CLAUDE_CODE_O
 venv/bin/python -m likeminds_mcp      # serves http://127.0.0.1:8787/mcp
 ```
 
-## Connect from Claude Code
+### Connect from Claude Code (CLI)
 
-`.mcp.json` in the project root **already registers the server** for the Claude Code **CLI**, which reads it automatically — no extra config needed:
+`.mcp.json` in the project root **already registers the server**:
 
 ```json
 "likeminds": { "type": "http", "url": "http://127.0.0.1:8787/mcp" }
 ```
 
-The **Claude Desktop app** uses its own config file instead (see below). **Either way, you start the server yourself first** (Quick start step 3) and keep it running — neither client launches it for you; they only dial the HTTP endpoint.
-
-### Claude Code (CLI)
-
-1. Start the server (Quick start step 3) in its own terminal.
+1. Start the server (Quick start step 3) in its own terminal and leave it running.
 2. (Re)start `claude` in this project so it reads `.mcp.json`.
 3. Run `/mcp` — `likeminds` should show as **connected**.
 4. Ask it to use a skill (e.g. *"use the kb-builder skill on inputs/exotel/"*).
 
-**Running the CLI from another directory?** Project `.mcp.json` only loads when `claude` runs inside this repo. To reach `likeminds` from anywhere, register it once at **user scope**:
+**Running the CLI from another directory?** Project `.mcp.json` only loads when `claude`
+runs inside this repo. To reach `likeminds` from anywhere, register it once at user
+scope:
 
 ```bash
 claude mcp add --transport http likeminds http://127.0.0.1:8787/mcp --scope user
 ```
 
-The skills are served from this repo (server-side), so the client's working directory doesn't change what's available — and deliverables still land in this repo's `outputs/mcp/`.
+The skills are served from this repo (server-side), so the client's working directory
+doesn't change what's available, and deliverables still land in this repo's
+`outputs/mcp/`.
 
-### Claude Desktop app
+### Connect from the Claude Desktop app
 
-Claude Desktop takes only `command`-based (stdio) servers in its config, so reach the HTTP server through the `mcp-remote` bridge (`npx` fetches it — Node.js required).
+Claude Desktop takes only `command`-based (stdio) servers, so reach the HTTP server
+through the `mcp-remote` bridge (`npx` fetches it — Node.js required).
 
-1. Start the server (Quick start step 3) in a terminal and leave it running.
+1. Start the server and leave it running.
 2. Open **Claude Desktop → Settings → Connectors → Edit Config**.
 3. Add `likeminds` under `mcpServers`:
   ```json
    "mcpServers": {
      "likeminds": {
        "command": "npx",
-       "args": [
-         "-y",
-         "mcp-remote",
-         "http://127.0.0.1:8787/mcp"
-       ]
+       "args": ["-y", "mcp-remote", "http://127.0.0.1:8787/mcp"]
      }
    }
   ```
-4. Save and **restart Claude Desktop**. `likeminds` shows up in the tools/connectors list once it connects.
-5. Ask it to use a skill, e.g. *"use the config-agent skill…"*.
+4. Save and **restart Claude Desktop**.
 
-## Tools exposed
+### Tools exposed
 
 
 | Tool          | What it does                                                                                                                                                         |
 | ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `run_skill`   | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. Deliverables land in `outputs/mcp/<result_id>/`. |
 | `upload_file` | Stage a file for clients with no local filesystem (regular chat); returns an id to pass back as `upload_refs`.                                                       |
-| `list_skills` | List every slash command + Agent Skill the server can run.                                                                                                           |
+| `list_skills` | List every Agent Skill the server can run.                                                                                                                           |
 
 
-## Passing files to a skill
+**Passing files to a skill:**
 
-- `input_paths` — absolute **local** paths, copied byte-for-byte into the session inputs dir (best for Claude Code on the same machine).
-- `upload_refs` — call `upload_file(name, content)` first, then pass the returned id (for clients with no local filesystem).
+- `input_paths` — absolute **local** paths, copied byte-for-byte into the session inputs
+dir (best for Claude Code on the same machine).
+- `upload_refs` — call `upload_file(name, content)` first, then pass the returned id (for
+clients with no local filesystem).
 - `artifacts` / `files` — inline `[{name, content}]` text.
 
-A skill that needs extra MCP servers of its own (e.g. `playwright` for a browser flow) can declare them in an optional `likeminds_mcp/extra_mcp.json` shaped like `{"mcpServers": {…}}`.
+A skill that needs extra MCP servers of its own (e.g. `playwright` for a browser flow)
+can declare them in an optional `likeminds_mcp/extra_mcp.json` shaped like
+`{"mcpServers": {…}}`.
+
+`**run_skill` protocol:**
+
+```
+run_skill(skill, artifacts?, input_paths?, upload_refs?, urls?, context?) →
+  {status:"running",    session_id, progress, files_written, next_step}  # poll again with ONLY session_id
+  {status:"need_input", session_id, questions[], next_step}              # relay verbatim, then call with session_id + response
+  {status:"done",       result_id, summary}                             # deliverable at outputs/mcp/<result_id>/
+  {status:"expired"|"error", message}
+```
+
+---
+
+## How the MCP server works (architecture)
+
+A local MCP server that lets a Claude client run a private `.claude/` skill **without
+seeing the skill's prompt** — the skill executes server-side inside a real `claude -p`
+process, pausing to ask the user questions and returning finished files by reference.
+
+```
+Claude client ──run_skill──▶  likeminds server  ──spawns──▶  claude -p  (runs the skill)
+      ▲                            │  (background task)          │
+      │◀──── poll / questions ─────┤                             │ reads inputs, writes output
+      │────── answers ─────────────▶  ──resume──▶  claude -p  ◀──┘
+      │◀──── result_id (done) ──────┘         (same session, next turn)
+```
+
+**Core ideas:**
+
+- **Resume-per-turn.** Turn 1 spawns `claude -p … --session-id <uuid>`; every later turn
+spawns `claude -p … --resume <uuid>`. The process runs one turn and exits, so there's
+no long-lived client, no worker thread, and nothing running while a human answers.
+State survives a server restart (it lives in Claude Code's on-disk session store).
+- **Text-marker signalling (no signal tool).** The harness tells the skill to write
+`<<<LM_ASK>>>` (then the question) to pause for the user, and `<<<LM_DONE>>>` to finish;
+the engine watches the turn's streamed text for these markers. An MCP *tool* isn't used
+for this because a stdio MCP server isn't guaranteed to finish connecting before a
+`claude -p` turn begins (its `init` fires "pending" with zero tools), so a signal tool
+races and goes missing — a marker never does.
+- **Skill-agnostic harness.** Appended via `--append-system-prompt`, it remaps only the
+I/O edges (inputs dir / `<<<LM_ASK>>>` / `<<<LM_DONE>>>` / the authoritative output
+dir). The skill file itself is never edited.
+- **Deliverable harvested from disk.** On `<<<LM_DONE>>>` the engine copies the output
+directory byte-for-byte (so PDFs/DOCX/XLSX survive) to `outputs/mcp/<result_id>/`, then
+purges the session sandbox and its transcript.
+
+**Modules:**
+
+
+| Module           | Responsibility                                                                                                     |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `server.py`      | FastMCP HTTP server + the 3 tools; the background driver `_drive`; output harvest/promote; auth config; long-poll. |
+| `engine.py`      | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
+| `harness.py`     | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
+| `sessions.py`    | Lightweight in-process session records + sandbox/transcript purge + record GC.                                     |
+| `registry.py`    | Indexes `.claude/skills/*/SKILL.md` so any skill is runnable.                                                      |
+| `config.py`      | Paths, host/port, CLI binary, model, markers, safety bounds.                                                       |
+| `__main__.py`    | `python -m likeminds_mcp` entrypoint (streamable-HTTP).                                                            |
+| `test_client.py` | Terminal client to drive a skill end-to-end without a Claude client.                                               |
+
+
+**Session state machine:**
+
+```
+            ┌───────────────────────────────────────┐
+            ▼                                         │ (user replies)
+  running ──┬──▶ need_input ──────────────────────────┘
+            │        │ (no reply within REPLY_TIMEOUT)
+            │        ▼
+            ├──▶ done      (LM_DONE → harvest → purge)
+            └──▶ error     (crash / turn timeout / nudged out)
+```
+
+`run_skill` **long-polls**: each call waits up to `POLL_WAIT` (~4s) for the state to
+change, then returns a snapshot. The background `_drive` task owns the real work; the
+tool handlers only read `sess.`* state to answer polls.
+
+**Retention.** On every terminal path, `sessions.purge` deletes the sandbox
+(`.sessions/<uuid>`, the raw caller inputs) **and** best-effort deletes the Claude Code
+transcript (`~/.claude/projects/<slug>/<uuid>.jsonl`). Only a tiny status record is kept
+in memory so the client's final poll can read the result.
+
+**Safety rails:**
+
+
+| Rail                | What it does                                                                                                                                                                                                                                                                   |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| **Nudges**          | A turn that ends with no marker (model stopped on prose) is resumed with a canned "ask or finish" message, bounded by `MAX_CONTINUES` (12) → then `error`.                                                                                                                     |
+| **Turn timeout**    | `TURN_TIMEOUT` wraps each turn; on timeout the subprocess is killed and the session `error`s + purges. Stops a hung `claude` pinning `running` forever.                                                                                                                        |
+| **Reply timeout**   | `REPLY_TIMEOUT` wraps the wait for the user's answer; an abandoned `need_input` session is closed + purged.                                                                                                                                                                    |
+| **Subprocess kill** | `run_turn`'s `finally` kills the child on any exit/cancel — no orphans.                                                                                                                                                                                                        |
+| **Record caps**     | `MAX_SESSIONS` evicts oldest FINISHED records; `MAX_UPLOADS` evicts oldest un-consumed uploads.                                                                                                                                                                                |
+| **MCP isolation**   | Every turn uses `--strict-mcp-config` with the server's own (empty, or `extra_mcp.json`) `--mcp-config`, keeping the spawned `claude` off the project `.mcp.json` — otherwise it would connect back to *this* server (recursion) and spawn every project MCP server each turn. |
+
+
+> `TURN_TIMEOUT` / `REPLY_TIMEOUT` are passed to `asyncio.wait_for`, which is in
+> **seconds** (e.g. `1800` = 30 min, `3600` = 1 h), set via `LIKEMINDS_MCP_TURN_TIMEOUT`
+> / `LIKEMINDS_MCP_REPLY_TIMEOUT`.
+
+---
 
 ## Configuration
 
-
-| Variable             | Description                                                                                | Default                                               |
-| -------------------- | ------------------------------------------------------------------------------------------ | ----------------------------------------------------- |
-| `CLAUDE_TOKEN`       | Subscription token, mapped to `CLAUDE_CODE_OAUTH_TOKEN`                                    | required unless `LIKEMINDS_MCP_AUTH=api` or CLI login |
-| `LIKEMINDS_MCP_AUTH` | `subscription` (default), or `api` to keep the `.env` API/Foundry creds                    | `subscription`                                        |
-| `CLAUDE_AGENT_MODEL` | Model for spawned turns                                                                    | `opus[1m]` (latest Opus, 1M context)                  |
-| `CLAUDE_BIN`         | Path to the `claude` CLI                                                                   | resolved from `PATH`                                  |
-| `MCP_TIMEOUT`        | Client-side server **startup/connect** timeout in ms (set on the Claude Code client)       | `30000`                                               |
-| `MCP_TOOL_TIMEOUT`   | Client-side **tool-call** timeout in ms (raise for long-running skills; set on the client) | client default                                        |
+Server env vars (put persistent ones in `.env`):
 
 
----
+| Variable                      | Description                                                                            | Default                                               |
+| ----------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------- |
+| `CLAUDE_TOKEN`                | Subscription token, mapped to `CLAUDE_CODE_OAUTH_TOKEN`                                | required unless `LIKEMINDS_MCP_AUTH=api` or CLI login |
+| `LIKEMINDS_MCP_AUTH`          | `subscription` (default), or `api` to keep the `.env` API/Foundry creds                | `subscription`                                        |
+| `CLAUDE_AGENT_MODEL`          | Model for spawned turns                                                                | `opus[1m]` (latest Opus, 1M context)                  |
+| `CLAUDE_BIN`                  | Path to the `claude` CLI                                                               | resolved from `PATH`                                  |
+| `LIKEMINDS_MCP_TURN_TIMEOUT`  | Per-turn timeout, seconds                                                              | `1800`                                                |
+| `LIKEMINDS_MCP_REPLY_TIMEOUT` | Wait-for-user-reply timeout, seconds                                                   | `3600`                                                |
+| `MCP_TOOL_TIMEOUT`            | Client-side tool-call timeout in ms (raise for long-running skills; set on the client) | client default                                        |
+
 

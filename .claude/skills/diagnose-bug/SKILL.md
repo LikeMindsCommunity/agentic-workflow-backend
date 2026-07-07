@@ -1,16 +1,17 @@
 ---
-description: Validate a bug report and, if it is a real issue, propose a fix into the approval sheet — single or batch
+name: diagnose-bug
+description: Validate one or more bug reports and, for each real defect, diagnose the root cause and propose a fix as a PENDING row in the client's approval sheet (outputs/{client}/approval_sheet.md) — validate-only, never editing source or committing. Handles a single bug, a batch (with cross-fix interaction analysis), or "sheet" mode over existing rows. Use when a bug is reported and you want it triaged and a fix proposed for review. Triggers: "diagnose this bug", "diagnose-bug", "is this a real bug and what is the fix", "triage these bugs for {client}".
 ---
 
 You are a bug diagnosis agent. Given one or more bug reports in $ARGUMENTS, do the following.
 
-This command merges three jobs into one: it **validates** a report (is this a real, actionable bug?), and if valid it **diagnoses** and **proposes a fix** — handling a single bug like a focused diagnosis and multiple bugs like a batch with interaction analysis.
+This skill merges three jobs into one: it **validates** a report (is this a real, actionable bug?), and if valid it **diagnoses** and **proposes a fix** — handling a single bug like a focused diagnosis and multiple bugs like a batch with interaction analysis.
 
 If $ARGUMENTS is `sheet`, skip validation and diagnosis: read all PENDING/APPROVED rows from `outputs/{client}/approval_sheet.md` and run only the batch **Interaction Analysis** (Phase C) over them.
 
-## Scope — this command PROPOSES fixes, it does NOT apply them
+## Scope — this skill PROPOSES fixes, it does NOT apply them
 
-`/diagnose-bug` only: (a) validates, (b) diagnoses, (c) writes one row with `Status = PENDING` to `outputs/{client}/approval_sheet.md` per valid bug, and (d) prints a summary. The user then reviews, flips `Status` to `APPROVED` or `REJECTED`, and runs `/apply-fixes` — which is the **only** command allowed to modify source files or create commits.
+This skill only: (a) validates, (b) diagnoses, (c) writes one row with `Status = PENDING` to `outputs/{client}/approval_sheet.md` per valid bug, and (d) prints a summary. The user then reviews, flips `Status` to `APPROVED` or `REJECTED`, and runs the **apply-fixes** skill — which is the **only** step allowed to modify source files or create commits.
 
 While this command is running you MUST NOT:
 - Use `Edit`, `Write`, or `NotebookEdit` on any file other than `outputs/{client}/approval_sheet.md`.
@@ -132,7 +133,7 @@ Skip this phase in single mode. Run it after ALL bugs in a batch have been throu
 - Collect all (file, line_start, line_end) tuples from every fix's Affected Files column
 - Group by file path
 - If two fixes target overlapping OR adjacent (≤20 lines apart) ranges in the same file → flag as CONFLICT
-- Action: apply one at a time, re-run `/diagnose-bug` for the second after the first is applied
+- Action: apply one at a time, re-run the **diagnose-bug** skill for the second after the first is applied
 
 ### Check 2 — Dependency Order (read from CLAUDE.md)
 - Read `## Architecture Layers` or `## Pipeline Steps` from CLAUDE.md
@@ -149,13 +150,13 @@ Skip this phase in single mode. Run it after ALL bugs in a batch have been throu
 ### Pre-Deploy Check (only when $ARGUMENTS is `sheet`)
 Read all APPLIED rows from the last 7 days. If any PENDING fix targets code already changed by a recent APPLIED fix → flag as potentially stale.
 Print: `WARNING — BUG-XXX targets code already changed by BUG-YYY applied on YYYY-MM-DD`
-Recommend re-running `/diagnose-bug` for stale entries to get a fresh analysis.
+Recommend re-running the **diagnose-bug** skill for stale entries to get a fresh analysis.
 
 ## Phase D — Print Summary & Stop
 
 **Single mode** — print: Bug ID assigned, classification (which layer from CLAUDE.md), risk, confidence, affected files with line numbers, and this exact line:
 
-`Proposed fix written to outputs/{client}/approval_sheet.md with Status=PENDING. No source files were modified. Review and set Status=APPROVED, then run /apply-fixes.`
+`Proposed fix written to outputs/{client}/approval_sheet.md with Status=PENDING. No source files were modified. Review and set Status=APPROVED, then run the apply-fixes skill.`
 
 **Batch mode** — print:
 
@@ -167,7 +168,7 @@ Then print:
 - Any reports skipped as **not a valid issue** (with the one-line reason) and any skipped as **duplicates** (with the existing BUG-XXX)
 - Interaction warnings with specific recommendations
 - Recommended apply order (dependencies first, then HIGH risk, then by confidence)
-- Reminder: `Review outputs/{client}/approval_sheet.md, set Status=APPROVED on the rows you want, then run /apply-fixes.`
+- Reminder: `Review outputs/{client}/approval_sheet.md, set Status=APPROVED on the rows you want, then run the apply-fixes skill.`
 
 Then stop. Do not take any further action in this turn.
 
@@ -176,8 +177,8 @@ Then stop. Do not take any further action in this turn.
 ## Important Rules
 
 1. **Validate first, always.** No fix is proposed for a report that fails Phase A. An invalid report is reported and returned — nothing is written to `outputs/{client}/approval_sheet.md`.
-2. **Propose-only contract.** Only `outputs/{client}/approval_sheet.md` may be written in this command. Every other file is read-only for the duration of the run.
-3. **Status is always `PENDING`.** The human reviewer owns the transition to `APPROVED` / `REJECTED`. `/apply-fixes` owns the transition to `APPLIED` / `CONFLICT`.
+2. **Propose-only contract.** Only `outputs/{client}/approval_sheet.md` may be written in this skill. Every other file is read-only for the duration of the run.
+3. **Status is always `PENDING`.** The human reviewer owns the transition to `APPROVED` / `REJECTED`. the **apply-fixes** skill owns the transition to `APPLIED` / `CONFLICT`.
 4. **No git writes.** No staging, committing, branching, or pushing. If you discover mid-diagnosis that a fix is urgent, say so in the `Fix Description` — do not act on it.
 5. **Dual-layer fixes still propose-only.** Even if both a prompt file and a code file need changes, describe both in `Fix Description` with separate file paths and line ranges — do not edit either.
 6. **One row per bug.** Do not split a single bug into multiple approval rows; do not merge distinct bugs into one row. Multiple distinct bugs in one input each get their own row and their own Bug ID.

@@ -197,8 +197,8 @@ def _interpret(text: str) -> dict | None:
 async def run_turn(sess: Session, message: str, resume: bool) -> dict | None:
     """Spawn one `claude -p` turn and consume its stream to completion.
 
-    Returns {"kind": "ask", "questions": [text]} or {"kind": "emit", "files": []}
-    for the first marker seen, or None if the turn ended without either (the caller
+    Returns {"kind": "ask", "questions": [text]} or {"kind": "emit"} for the first
+    marker seen, or None if the turn ended without either (the caller
     then nudges + resumes). Raises RuntimeError on a hard subprocess failure (nonzero
     exit with no marker), which the caller surfaces as an error.
     """

@@ -1,8 +1,9 @@
 ---
-description: Read a client's KB (from /platform-kb) and generate a complete standalone find-bugs-{client}.md skill — all checks, rules, and execution logic baked in, KB as sole source of truth.
+name: generate-find-bugs-skill
+description: Read a client's Knowledge Base directory and generate a complete, standalone find-bugs-{client} skill at .claude/skills/find-bugs-{client}/SKILL.md — all check classes, rules, free-form exclusions, and the comparison-sheet schema baked in inline, with the KB as the sole source of truth. Use to compile a per-client generated-vs-expected bug checker from its KB. Triggers: "generate the find-bugs skill for {client}", "generate-find-bugs-skill", "build {client}'s find-bugs checker from the KB".
 ---
 
-You are a skill-generation agent. Given a client's Knowledge Base directory (produced by `/platform-kb`), produce a **complete, standalone** `find-bugs-{client}.md` command file that can compare generated vs expected files for this client and surface every genuine discrepancy to this client's comparison sheets under `outputs/{client}/comparisons/`.
+You are a skill-generation agent. Given a client's Knowledge Base directory (produced by `/platform-kb`), produce a **complete, standalone** `find-bugs-{client}` skill at `.claude/skills/find-bugs-{client}/SKILL.md` that can compare generated vs expected files for this client and surface every genuine discrepancy to this client's comparison sheets under `outputs/{client}/comparisons/`.
 
 **User-provided context:** $ARGUMENTS
 
@@ -138,11 +139,11 @@ A field is body-bearing (must be extracted verbatim, never summarized) if UC-1 o
 
 ## Step 7 — Assemble the Skill File
 
-Write the complete skill at `.claude/commands/find-bugs-{client}.md`. The output must be a COMPLETE, SELF-CONTAINED prompt. The executing LLM needs NOTHING beyond this skill file, the KB files, and the two comparison files.
+Write the complete skill at `.claude/skills/find-bugs-{client}/SKILL.md`. The output must be a COMPLETE, SELF-CONTAINED prompt. The executing LLM needs NOTHING beyond this skill file, the KB files, and the two comparison files.
 
 The generated skill file must contain these sections:
 
-1. **Header**: description, comparison mode, file format, `$ARGUMENTS` — must accept `generated=<path>`, `expected=<path>`, `kb=<path>` (all required), and `source=<path>` + `comparison=<name>` (optional). The generated skill must parse `kb=` and read all KB `.md` files at runtime for supplementary context.
+1. **Frontmatter + header**: YAML frontmatter with `name: find-bugs-{client}` and a `description` (what it validates, when to use it, and trigger phrases), then the comparison mode, file format, and the arguments contract — must accept `generated=<path>`, `expected=<path>`, `kb=<path>` (all required), and `source=<path>` + `comparison=<name>` (optional). The generated skill must parse `kb=` and read all KB `.md` files at runtime for supplementary context.
 2. **Comparison sheet format & location**: embed the full 13-column comparison-sheet schema below into the generated skill so it knows what format to write findings in. The generated skill writes to `outputs/{client}/comparisons/<name>.md` — with `{client}` baked to the `client=` value and `<name>` from the `comparison=` arg (default: the `generated=` file's basename). See the path rule under the schema.
 3. **Important rules**: KB-only knowledge source, all check classes must run, every row cites KB source, free-form fields never flagged, entity matching by discriminator field (never UUIDs or display names), body-bearing fields extracted verbatim, grouping repeated issues. KB files from `kb=` provide supplementary context — baked-in check classes are the primary validation, KB files help resolve ambiguities and provide evidence for KB Rule Violated citations.
 4. **Execution pipeline**: parse arguments → read all KB `.md` files from `kb=` path for runtime context → format-specific comparison walk → run all check classes (baked-in rules + KB context) → deduplicate/group → plausibility check → write the comparison sheet at `outputs/{client}/comparisons/<name>.md` → print summary
@@ -152,7 +153,7 @@ The generated skill file must contain these sections:
 
 ### Comparison Sheet Schema (embed in every generated skill)
 
-**Path rule (bake the resolved client into the generated skill):** the generated skill writes to `outputs/{client}/comparisons/<name>.md`, where `{client}` is the literal `client=` value fixed at generation time and `<name>` defaults to the `generated=` file's basename (override with a `comparison=<name>` argument). A client accumulates many comparison sheets in this folder — one per generated-vs-expected run — so the approval-sheet pipeline (`/process-comparison`) can process them together.
+**Path rule (bake the resolved client into the generated skill):** the generated skill writes to `outputs/{client}/comparisons/<name>.md`, where `{client}` is the literal `client=` value fixed at generation time and `<name>` defaults to the `generated=` file's basename (override with a `comparison=<name>` argument). A client accumulates many comparison sheets in this folder — one per generated-vs-expected run — so the approval-sheet pipeline (the process-comparison skill) can process them together.
 
 **Creation rule:** If that comparison sheet does not exist, create it — including the `outputs/{client}/comparisons/` directory — with the header row below, then append all findings as data rows. If it already exists, append rows — never overwrite existing content.
 
@@ -177,7 +178,7 @@ The generated skill file must contain these sections:
 | Source File | path or empty | Source document that produced the generated output (from `source=` arg); empty if not provided |
 | Should Fix | enum | Always `PENDING_REVIEW` when first written |
 | Reviewed By | text | `_pending_` when first written |
-| Linked Bug ID | text | Empty when first written (filled by `/process-comparison`) |
+| Linked Bug ID | text | Empty when first written (filled by the process-comparison skill) |
 
 **Grouping rules:** When the SAME issue affects MULTIPLE entities (same check class, same KB rule, same category, same expected value or same type of deviation), merge into ONE row with multi-location format. Use the HIGHEST risk among grouped instances.
 
@@ -215,4 +216,4 @@ Print summary: platform name, comparison mode, check classes embedded (count + n
 4. **The output skill must be self-contained.** No CLAUDE.md, no codebase access, no File Index. Only KB files + comparison files.
 5. **No client-specific keywords in the generator.** All domain vocabulary comes from the KB at runtime. The generator stays generic.
 6. **Exhaustive free-form exclusions prevent false positives.** When in doubt, EXCLUDE.
-7. **Downstream compatibility.** The generated skill MUST output the exact 13-column comparison-sheet format that `/process-comparison` expects, written under `outputs/{client}/comparisons/` so `/process-comparison` can pick it up for that client.
+7. **Downstream compatibility.** The generated skill MUST output the exact 13-column comparison-sheet format that the process-comparison skill expects, written under `outputs/{client}/comparisons/` so the process-comparison skill can pick it up for that client.
