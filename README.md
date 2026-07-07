@@ -52,7 +52,7 @@ agentic-workflow-backend/
 │   ├── registry.py                   #   indexes .claude/skills so any skill is runnable
 │   ├── config.py                     #   paths, host/port, model, markers, safety bounds
 │   ├── __main__.py                   #   `python -m likeminds_mcp` entrypoint
-│   └── test_client.py                #   drive a skill end-to-end from the terminal (no Claude client needed)
+
 ├── inputs/                           # drop client artifacts here (gitignored)
 ├── outputs/                          # deliverables (gitignored)
 │   ├── {client}/                     #   per client: kb/, approval_sheet.md, comparisons/
