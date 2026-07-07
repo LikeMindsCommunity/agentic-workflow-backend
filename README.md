@@ -11,18 +11,6 @@ Every skill learns its platform entirely from a **KB** (knowledge base) built fr
 the client's own artifacts — nothing is hardcoded, so the same skill works for any
 platform once its KB exists.
 
-## Contents
-
-- [Folder structure](#folder-structure)
-- [Install & setup](#install--setup)
-- [Skills](#skills)
-  - [KB → deliverable pipeline](#kb--deliverable-pipeline)
-  - [Document / SOW generators](#document--sow-generators)
-  - [Automated bug-fix loop](#automated-bug-fix-loop)
-- [Local MCP server (`likeminds_mcp`)](#local-mcp-server-likeminds_mcp)
-- [How the MCP server works (architecture)](#how-the-mcp-server-works-architecture)
-- [Configuration](#configuration)
-
 ---
 
 ## Folder structure
@@ -68,7 +56,7 @@ gitignored.
 
 ---
 
-## Install & setup
+## Install and setup
 
 ```bash
 git clone https://github.com/LikeMindsCommunity/claude-skill-auto-bugfix.git
@@ -84,7 +72,7 @@ The skills run inside **Claude Code**, so a working `claude` CLI must be on your
 1. **Directly in Claude Code** — open `claude` in this repo and describe the task;
   the trigger phrases in each skill activate the right one.
 2. **Through the MCP server** — start `likeminds_mcp` and call `run_skill` from any
-  connected Claude client (see [Local MCP server](#local-mcp-server-likeminds_mcp)).
+  connected Claude client.
 
 Drop a client's artifacts into a folder under `inputs/`; deliverables land under
 `outputs/{client}/` (both gitignored).
@@ -100,7 +88,7 @@ short **SOW** (solution doc / prompt) says *what* to build.
 > **KB = how, SOW = what.** Build the KB once with `kb-builder`, then run the
 > deliverable skills as many times as you have things to build.
 
-### KB → deliverable pipeline
+### KB to deliverable pipeline
 
 ```
 raw artifacts ─► kb-builder ─► KB ─┬─► config-agent ─► structured config
@@ -222,7 +210,7 @@ api-agent    kb=outputs/getstream/kb/ sow=inputs/feed.md     ->  outputs/getstre
 runner-agent lld=outputs/getstream/lld/feed.md               ->  live run + run record
 ```
 
-### Document / SOW generators
+### Document and SOW generators
 
 #### `custom-sow-generator` — compile a per-client SOW skill
 
@@ -278,7 +266,7 @@ apply-fixes client=acme
 
 ---
 
-## Local MCP server (`likeminds_mcp`)
+## Local MCP server
 
 Exposes **every** skill in `.claude/skills/` behind a single `run_skill` tool over
 local HTTP, so a Claude client — or the regular Claude chat — can invoke any skill and
@@ -395,7 +383,7 @@ run_skill(skill, artifacts?, input_paths?, upload_refs?, urls?, context?) →
 
 ---
 
-## How the MCP server works (architecture)
+## How the MCP server works
 
 A local MCP server that lets a Claude client run a private `.claude/` skill **without
 seeing the skill's prompt** — the skill executes server-side inside a real `claude -p`
@@ -431,16 +419,15 @@ purges the session sandbox and its transcript.
 **Modules:**
 
 
-| Module           | Responsibility                                                                                                     |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `server.py`      | FastMCP HTTP server + the 3 tools; the background driver `_drive`; output harvest/promote; auth config; long-poll. |
-| `engine.py`      | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
-| `harness.py`     | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
-| `sessions.py`    | Lightweight in-process session records + sandbox/transcript purge + record GC.                                     |
-| `registry.py`    | Indexes `.claude/skills/*/SKILL.md` so any skill is runnable.                                                      |
-| `config.py`      | Paths, host/port, CLI binary, model, markers, safety bounds.                                                       |
-| `__main__.py`    | `python -m likeminds_mcp` entrypoint (streamable-HTTP).                                                            |
-| `test_client.py` | Terminal client to drive a skill end-to-end without a Claude client.                                               |
+| Module        | Responsibility                                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------------------------------ |
+| `server.py`   | FastMCP HTTP server + the 3 tools; the background driver `_drive`; output harvest/promote; auth config; long-poll. |
+| `engine.py`   | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
+| `harness.py`  | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
+| `sessions.py` | Lightweight in-process session records + sandbox/transcript purge + record GC.                                     |
+| `registry.py` | Indexes `.claude/skills/*/SKILL.md` so any skill is runnable.                                                      |
+| `config.py`   | Paths, host/port, CLI binary, model, markers, safety bounds.                                                       |
+| `__main__.py` | `python -m likeminds_mcp` entrypoint (streamable-HTTP).                                                            |
 
 
 **Session state machine:**
