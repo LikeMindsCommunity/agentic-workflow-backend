@@ -38,11 +38,6 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
 # Override with CLAUDE_AGENT_MODEL (e.g. "sonnet", "opus", or a full model id).
 MODEL = os.environ.get("CLAUDE_AGENT_MODEL") or "opus[1m]"
 
-# Optional extra MCP servers loaded into every spawned turn — e.g. playwright for a
-# browser skill. A JSON file shaped like {"mcpServers": {...}}. If absent, the
-# spawned Claude runs with NO MCP servers (see engine._mcp_config_json). See README.
-EXTRA_MCP_CONFIG = PROJECT_ROOT / "likeminds_mcp" / "extra_mcp.json"
-
 # Safety bounds (override the timeouts via env). These stop a hung or abandoned
 # session from leaking a subprocess / task / sandbox indefinitely.
 TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800000"))    # s; abort one hung turn

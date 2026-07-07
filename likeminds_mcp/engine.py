@@ -108,19 +108,12 @@ def build_reply_message(response: str | None, added_files: list[str]) -> str:
 
 
 def _mcp_config_json() -> str:
-    """The --mcp-config payload. We use NO MCP server for signalling (see module
-    docstring). This carries only the optional extra servers a skill might need
-    (e.g. playwright), or an empty set. Combined with --strict-mcp-config so the
-    spawned Claude never loads the project .mcp.json — which would otherwise make it
-    connect back to THIS server (recursion) and spawn playwright every turn."""
-    servers: dict = {}
-    if config.EXTRA_MCP_CONFIG.is_file():
-        try:
-            extra = json.loads(config.EXTRA_MCP_CONFIG.read_text(encoding="utf-8"))
-            servers.update(extra.get("mcpServers", {}))
-        except Exception:  # noqa: BLE001 — ignore a malformed extra config
-            pass
-    return json.dumps({"mcpServers": servers})
+    """The --mcp-config payload: an empty server set. We use NO MCP server for
+    signalling (see module docstring), so the spawned Claude runs with no MCP servers
+    at all. Combined with --strict-mcp-config so the spawned Claude never loads the
+    project .mcp.json — which would otherwise make it connect back to THIS server
+    (recursion) and spawn every project MCP server each turn."""
+    return json.dumps({"mcpServers": {}})
 
 
 def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:

@@ -367,10 +367,6 @@ dir (best for Claude Code on the same machine).
 clients with no local filesystem).
 - `artifacts` / `files` — inline `[{name, content}]` text.
 
-A skill that needs extra MCP servers of its own (e.g. `playwright` for a browser flow)
-can declare them in an optional `likeminds_mcp/extra_mcp.json` shaped like
-`{"mcpServers": {…}}`.
-
 `**run_skill` protocol:**
 
 ```
@@ -461,7 +457,7 @@ in memory so the client's final poll can read the result.
 | **Reply timeout**   | `REPLY_TIMEOUT` wraps the wait for the user's answer; an abandoned `need_input` session is closed + purged.                                                                                                                                                                    |
 | **Subprocess kill** | `run_turn`'s `finally` kills the child on any exit/cancel — no orphans.                                                                                                                                                                                                        |
 | **Record caps**     | `MAX_SESSIONS` evicts oldest FINISHED records; `MAX_UPLOADS` evicts oldest un-consumed uploads.                                                                                                                                                                                |
-| **MCP isolation**   | Every turn uses `--strict-mcp-config` with the server's own (empty, or `extra_mcp.json`) `--mcp-config`, keeping the spawned `claude` off the project `.mcp.json` — otherwise it would connect back to *this* server (recursion) and spawn every project MCP server each turn. |
+| **MCP isolation**   | Every turn uses `--strict-mcp-config` with the server's own empty `--mcp-config`, keeping the spawned `claude` off the project `.mcp.json` — otherwise it would connect back to *this* server (recursion) and spawn every project MCP server each turn. |
 
 
 > `TURN_TIMEOUT` / `REPLY_TIMEOUT` are passed to `asyncio.wait_for`, which is in
