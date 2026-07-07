@@ -43,7 +43,8 @@ async def list_skills():
                 print(f"  {sk['name']:<28} {sk['description'][:80]}")
 
 
-async def run(skill: str, files: list[str], context: str | None, urls: list[str]):
+async def run(skill: str, files: list[str], context: str | None, urls: list[str],
+              client: str | None = None, workspace_id: str | None = None):
     artifacts = []
     for f in files:
         p = Path(f)
@@ -58,6 +59,10 @@ async def run(skill: str, files: list[str], context: str | None, urls: list[str]
 
             print(f">>> run_skill(skill={skill!r}, artifacts={len(artifacts)}) — this can take minutes…")
             payload = {"skill": skill, "artifacts": artifacts}
+            if client:
+                payload["client"] = client
+            if workspace_id:
+                payload["workspace_id"] = workspace_id
             if context:
                 payload["context"] = context
             if urls:
@@ -87,7 +92,11 @@ async def run(skill: str, files: list[str], context: str | None, urls: list[str]
             print("FINAL RESULT:")
             print(json.dumps(out, indent=2))
             if out.get("status") == "done":
-                print(f"\nDeliverable written to: outputs/mcp/{out['result_id']}/")
+                cl, ws = out.get("client"), out.get("workspace_id")
+                print(f"\nWorkspace : {cl}/{ws}")
+                print(f"KB (persistent): outputs/{cl}/{ws}/kb/")
+                print(f"Download  : {out.get('download_url')}")
+                print(f"Reuse client={cl!r} workspace_id={ws!r} in a new run to extend this KB.")
 
 
 def main():
@@ -99,12 +108,16 @@ def main():
     rp.add_argument("files", nargs="*", help="artifact files to send as inputs")
     rp.add_argument("--context", default=None)
     rp.add_argument("--url", action="append", dest="urls", default=[])
+    rp.add_argument("--client", default=None, help="tenant label (durable)")
+    rp.add_argument("--workspace-id", dest="workspace_id", default=None,
+                    help="durable project id; reuse to extend the same KB")
     args = ap.parse_args()
 
     if args.cmd == "list":
         asyncio.run(list_skills())
     else:
-        asyncio.run(run(args.skill, args.files, args.context, args.urls))
+        asyncio.run(run(args.skill, args.files, args.context, args.urls,
+                        args.client, args.workspace_id))
 
 
 if __name__ == "__main__":

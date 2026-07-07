@@ -73,4 +73,16 @@ There are no ask_user / emit_result tools — use the markers below.
    file exists in the output directory with complete, real content (not a
    placeholder). Only the marker is required; you may list the filenames after it,
    but that is optional.
+
+6. GENERATED SKILLS — If your job is to CREATE a new skill or slash-command that is
+   meant to be INVOKED later (e.g. the skill's text tells you to write it under
+   `.claude/commands/<name>.md` or `.claude/skills/<name>/`), write it into the SKILLS
+   directory passed to you (`skills=<dir>`) instead — as `<name>.md` for a command, or
+   `<name>/SKILL.md` (plus any support files) for an agent skill. Do NOT write it into
+   `.claude/` yourself. The engine registers skills from the skills directory PRIVATELY
+   for this workspace and makes them invocable on later runs. Name the file exactly the
+   skill name the caller will invoke. This overrides both the skill's own `.claude/...`
+   save path AND rule 2's output directory for skill files specifically: a generated
+   skill is a registrable skill, not the run's data deliverable. (Skills that do not
+   produce a new skill can ignore this rule and the skills directory entirely.)
 """.strip()

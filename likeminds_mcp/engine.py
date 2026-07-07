@@ -25,7 +25,7 @@ import json
 import re
 from pathlib import Path
 
-from . import config, registry
+from . import config
 from .harness import HARNESS
 from .sessions import Session
 
@@ -74,16 +74,21 @@ def build_first_message(skill: str, sess: Session, urls: list | None, context: s
     """The message that seeds the skill. Works for either kind of skill:
     Agent Skills (`.claude/skills/<name>/SKILL.md`) are invoked by asking the model
     to use the skill; slash commands (`.claude/commands/<name>.md`) keep the
-    `/<name> <args>` form. Either way we pass inputs=/output= so the harness can bind
-    the I/O edges, plus any URLs and free-form context describing WHAT to do."""
-    entry = registry.resolve_skill(skill)
-    kind = entry["kind"] if entry else "command"
+    `/<name> <args>` form. Either way we pass inputs=/output=/skills= so the harness
+    can bind the I/O edges, plus any URLs and free-form context describing WHAT to do.
+
+    The name we actually invoke comes from `sess.invoke_name` (which, for a
+    workspace-generated skill, is the transient name it was installed under), not
+    necessarily the logical `skill` the caller named."""
+    name = sess.invoke_name or skill
+    kind = sess.skill_kind or "command"
 
     lines = [
-        f"Use the {skill} skill." if kind == "skill" else f"/{skill} {sess.inputs_dir}"
+        f"Use the {name} skill." if kind == "skill" else f"/{name} {sess.inputs_dir}"
     ]
     lines.append(f"inputs={sess.inputs_dir}")
     lines.append(f"output={sess.output_dir}")
+    lines.append(f"skills={sess.skills_dir}")
     if urls:
         lines.append("Reference URLs: " + " ".join(str(u) for u in urls))
     msg = "\n".join(lines)
