@@ -11,7 +11,6 @@ from pathlib import Path
 # regardless of the directory the server is launched from.
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
-COMMANDS_DIR = PROJECT_ROOT / ".claude" / "commands"   # slash-command skills
 SKILLS_DIR = PROJECT_ROOT / ".claude" / "skills"       # multi-file Agent Skills
 SESSIONS_DIR = PROJECT_ROOT / ".sessions"   # per-session sandboxes (gitignored)
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "mcp"   # promoted deliverables (under gitignored outputs/)

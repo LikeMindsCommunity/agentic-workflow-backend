@@ -25,7 +25,7 @@ import json
 import re
 from pathlib import Path
 
-from . import config, registry
+from . import config
 from .harness import HARNESS
 from .sessions import Session
 
@@ -71,17 +71,10 @@ def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
 
 
 def build_first_message(skill: str, sess: Session, urls: list | None, context: str | None) -> str:
-    """The message that seeds the skill. Works for either kind of skill:
-    Agent Skills (`.claude/skills/<name>/SKILL.md`) are invoked by asking the model
-    to use the skill; slash commands (`.claude/commands/<name>.md`) keep the
-    `/<name> <args>` form. Either way we pass inputs=/output= so the harness can bind
-    the I/O edges, plus any URLs and free-form context describing WHAT to do."""
-    entry = registry.resolve_skill(skill)
-    kind = entry["kind"] if entry else "command"
-
-    lines = [
-        f"Use the {skill} skill." if kind == "skill" else f"/{skill} {sess.inputs_dir}"
-    ]
+    """The message that seeds the skill. Asks the model to use the named Agent Skill
+    (`.claude/skills/<name>/SKILL.md`) and passes inputs=/output= so the harness can
+    bind the I/O edges, plus any URLs and free-form context describing WHAT to do."""
+    lines = [f"Use the {skill} skill."]
     lines.append(f"inputs={sess.inputs_dir}")
     lines.append(f"output={sess.output_dir}")
     if urls:
