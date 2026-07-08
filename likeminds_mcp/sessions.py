@@ -27,7 +27,7 @@ _SESSIONS: dict[str, "Session"] = {}
 @dataclass
 class Session:
     id: str
-    skill: str                # the skill/command this session is running
+    skill: str                # the skill this session is running
     sandbox: Path             # <project>/.sessions/<id>
     inputs_dir: Path          # <sandbox>/inputs
     output_dir: Path          # <sandbox>/output  (deliverable harvested from here)
