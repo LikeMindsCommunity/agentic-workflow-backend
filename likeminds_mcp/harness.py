@@ -34,10 +34,13 @@ There are no ask_user / emit_result tools — use the markers below.
    `outputs/{client}/...`), write the deliverable THERE instead — you may keep the
    skill's internal subfolder structure underneath it. Create it if needed. Use the
    sibling `work/` directory for scratch/intermediate drafts. The engine collects the
-   deliverable from the output directory, so anything not written there is lost. If
-   (and only if) the skill's job is to modify an existing external codebase or system
-   in place, do that as the skill directs AND also write a copy of what you
-   produced/changed, plus a short summary, into the output directory.
+   deliverable from the output directory, so anything not written there is lost. If the
+   output directory ALREADY contains files when your turn begins, they are the
+   deliverable from an earlier session of this same job: read them first and CONTINUE
+   or refine them in place (do not regenerate from scratch) unless the caller's
+   instructions say otherwise. If (and only if) the skill's job is to modify an existing
+   external codebase or system in place, do that as the skill directs AND also write a
+   copy of what you produced/changed, plus a short summary, into the output directory.
 
 3. ASKING THE USER — When the skill needs a decision, clarification, missing input,
    or confirmation, ask by writing a line containing EXACTLY this marker:

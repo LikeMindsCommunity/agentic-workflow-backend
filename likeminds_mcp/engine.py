@@ -70,16 +70,36 @@ def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
     return written
 
 
-def build_first_message(skill: str, sess: Session, urls: list | None, context: str | None) -> str:
+def build_first_message(
+    skill: str,
+    sess: Session,
+    urls: list | None,
+    context: str | None,
+    continued: bool = False,
+    seeded: list[str] | None = None,
+) -> str:
     """The message that seeds the skill. Asks the model to use the named Agent Skill
     (`.claude/skills/<name>/SKILL.md`) and passes inputs=/output= so the harness can
-    bind the I/O edges, plus any URLs and free-form context describing WHAT to do."""
+    bind the I/O edges, plus any URLs and free-form context describing WHAT to do.
+
+    When `continued` is set, this run is resuming an earlier session whose deliverable
+    has already been copied into the output directory; we tell the skill to read and
+    extend it in place rather than start from scratch."""
     lines = [f"Use the {skill} skill."]
     lines.append(f"inputs={sess.inputs_dir}")
     lines.append(f"output={sess.output_dir}")
     if urls:
         lines.append("Reference URLs: " + " ".join(str(u) for u in urls))
     msg = "\n".join(lines)
+    if continued:
+        listing = ", ".join(seeded) if seeded else "the files already present there"
+        msg += (
+            "\n\nCONTINUATION: this run continues an earlier session. Its deliverable "
+            f"is ALREADY in the output directory ({listing}). Read those files in full "
+            "first, then continue the work by modifying and extending them in place per "
+            "the instructions below. Do not start from scratch or discard existing files "
+            "unless explicitly told to."
+        )
     if context:
         msg += f"\n\nContext / instructions from the caller:\n{context}"
     return msg
@@ -124,7 +144,7 @@ def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
     ]
     if config.MODEL:
         argv += ["--model", config.MODEL]
-    argv += (["--resume", sess.id] if resume else ["--session-id", sess.id])
+    argv += (["--resume", sess.cc_id] if resume else ["--session-id", sess.cc_id])
     return argv
 
 

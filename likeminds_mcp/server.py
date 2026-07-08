@@ -63,7 +63,21 @@ def _configure_auth() -> None:
 
 _configure_auth()
 
-mcp = FastMCP("likeminds", host=config.HOST, port=config.PORT)
+# Stateless transport: don't issue or track an Mcp-Session-Id. A restarted server —
+# or an `mcp-remote` proxy still holding a session id from a previous server run —
+# then can NOT fail with "Session not found" (HTTP 404); every request is
+# self-contained. Safe here because run_skill's pause/resume polling keys off an
+# APPLICATION-level session_id (returned in the tool result, passed back as an
+# argument, looked up in the in-process SESSIONS dict) — wholly independent of the
+# transport session. json_response also drops the long-lived SSE stream (whose drops
+# were the original point of failure) in favour of a plain JSON reply per POST.
+mcp = FastMCP(
+    "likeminds",
+    host=config.HOST,
+    port=config.PORT,
+    stateless_http=True,
+    json_response=True,
+)
 
 # How long a single run_skill call waits for the job state to change before
 # returning "running". Short, so each call returns promptly with fresh progress.
@@ -102,10 +116,11 @@ def _harvest(sandbox: Path) -> list[tuple[str, bytes]]:
     return []
 
 
-def _promote(skill: str, harvested: list[tuple[str, bytes]]) -> tuple[str, list[str]]:
-    """Write the harvested (name, bytes) files to outputs/mcp/<result_id>/."""
-    result_id = f"{skill}_{uuid.uuid4().hex[:8]}"
-    dest = config.RESULTS_DIR / result_id
+def _promote(session_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
+    """Write the harvested (name, bytes) files to outputs/mcp/<session_id>/ — the
+    stable, caller-addressable bucket. Continuing a session writes back to the SAME
+    bucket, so the deliverable accumulates under one id the user can save and reuse."""
+    dest = config.RESULTS_DIR / session_id
     dest.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
     for name, content in harvested:
@@ -113,7 +128,24 @@ def _promote(skill: str, harvested: list[tuple[str, bytes]]) -> tuple[str, list[
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(content)
         written.append(name)
-    return result_id, written
+    return written
+
+
+def _seed_prior_outputs(output_dir: Path, prior: Path) -> list[str]:
+    """Copy a prior session's promoted deliverable into this run's output dir so the
+    skill can read and extend it in place — harvest then captures the full updated set
+    (edited + untouched files), so writing back never loses prior work. Returns the
+    relative filenames seeded."""
+    seeded: list[str] = []
+    for p in sorted(prior.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(prior)
+        dest = output_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, dest)
+        seeded.append(str(rel))
+    return seeded
 
 
 # ----------------------------------------------------------------------------- #
@@ -173,11 +205,13 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 sess.progress = "Reading your answer…"
                 continue
 
-            # emit: harvest the deliverable, purge the sandbox, report done.
+            # emit: harvest the deliverable, purge the sandbox, report done. It is
+            # promoted to outputs/mcp/<sess.id>/ (the stable, caller-facing id), so it
+            # survives the purge and can be continued later under the same session_id.
             harvested = _harvest(sess.sandbox)
-            result_id, names = _promote(sess.skill, harvested)
+            names = _promote(sess.id, harvested)
             sessions.purge(sess)
-            sess.result = {"result_id": result_id, "summary": {"files": names}}
+            sess.result = {"result_id": sess.id, "summary": {"files": names}}
             sess.status = "done"
             return
     except asyncio.CancelledError:
@@ -212,7 +246,12 @@ def _snapshot(sess: sessions.Session) -> dict:
         return {"status": "need_input", "session_id": sess.id,
                 "questions": sess.questions, "next_step": RELAY_TEXT}
     if sess.status == "done":
-        return {"status": "done", **(sess.result or {})}
+        return {"status": "done", "session_id": sess.id, **(sess.result or {}),
+                "next_step": (
+                    f"Done. Tell the user their session_id is {sess.id} and that they "
+                    "can save it and pass it back later (with a skill + context) on a "
+                    "run_skill call to continue building on these output artifacts."
+                )}
     if sess.status == "error":
         return {"status": "error", "session_id": sess.id,
                 "message": sess.error or "unknown error"}
@@ -226,6 +265,49 @@ def _snapshot(sess: sessions.Session) -> dict:
         "files_written": n_out,
         "next_step": POLL_TEXT,
     }
+
+
+async def _start_continuation(
+    skill: str,
+    session_id: str,
+    artifacts: Optional[list],
+    files: Optional[list],
+    input_paths: Optional[list],
+    upload_refs: Optional[list],
+    urls: Optional[list],
+    context: Optional[str],
+) -> dict:
+    """Start a NEW run that continues a previously saved session: seed that session's
+    promoted output artifacts (outputs/mcp/<session_id>/) into a fresh sandbox and let
+    the skill build on them, writing the updated deliverable back under the SAME id."""
+    sid = Path(str(session_id)).name  # sanitize — never escape RESULTS_DIR
+    prior = config.RESULTS_DIR / sid
+    if not prior.is_dir() or not any(prior.iterdir()):
+        return {"status": "error",
+                "message": (f"No saved outputs for session_id '{sid}'. Omit session_id "
+                            "to start a new session.")}
+    if not registry.skill_exists(skill or ""):
+        available = ", ".join(s["name"] for s in registry.list_skills())
+        return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
+    live = sessions.get_session(sid)
+    if live is not None and not live.finished:
+        return {"status": "error",
+                "message": (f"Session '{sid}' is still active — finish or answer it "
+                            "(call with session_id + response, no skill) before continuing.")}
+    sess = sessions.new_session(skill, durable_id=sid)
+    # Stage any NEW inputs the caller attached alongside the continuation request.
+    engine._write_artifacts(sess.inputs_dir, artifacts)
+    engine._write_artifacts(sess.inputs_dir, files)
+    _copy_input_paths(sess.inputs_dir, input_paths)
+    _materialize_uploads(sess.inputs_dir, upload_refs)
+    # Seed the prior deliverable into the output dir so the skill continues in place.
+    seeded = _seed_prior_outputs(sess.output_dir, prior)
+    first_message = engine.build_first_message(
+        skill, sess, urls, context, continued=True, seeded=seeded
+    )
+    sess.task = asyncio.create_task(_drive(sess, first_message))
+    await _wait_for_change(sess)
+    return _snapshot(sess)
 
 
 # ----------------------------------------------------------------------------- #
@@ -291,8 +373,22 @@ async def run_skill(
     while status is `running`. When status is `need_input`, show the `questions` to
     the user verbatim, wait for their reply, then call again with `session_id` +
     `response` (do NOT answer them yourself) and resume polling. Stop when status is
-    `done` (deliverable at outputs/mcp/<result_id>/) or `error`.
+    `done` (deliverable at outputs/mcp/<session_id>/) or `error`.
+
+    CONTINUE a past session: pass a previously returned `session_id` TOGETHER WITH a
+    `skill` (and `context`). The server seeds that session's saved output artifacts
+    into a new run so the skill continues from them, writing the updated deliverable
+    back under the SAME session_id. The done result reports the `session_id`, so
+    surface it to the user to save and continue later.
     """
+    # Continuation: a skill AND a prior session_id together start a NEW run seeded from
+    # that session's saved outputs. (A bare poll never carries a skill, so this is
+    # unambiguous.)
+    if skill and session_id:
+        return await _start_continuation(
+            skill, session_id, artifacts, files, input_paths, upload_refs, urls, context
+        )
+
     if session_id:
         sess = sessions.get_session(session_id)
         if sess is None:
