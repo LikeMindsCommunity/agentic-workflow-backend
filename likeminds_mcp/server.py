@@ -31,7 +31,7 @@ from pathlib import Path
 from typing import Optional
 
 from dotenv import load_dotenv
-from mcp.server.fastmcp import FastMCP
+from mcp.server.fastmcp import Context, FastMCP
 
 from . import config, engine, registry, sessions
 
@@ -39,26 +39,32 @@ load_dotenv()
 
 
 def _configure_auth() -> None:
-    """Route the spawned Claude at your Claude subscription (Max/Pro) via the OAuth
-    token, instead of the provider creds in `.env`.
+    """Prepare the server's OWN fallback credential for the spawned CLI — used on any
+    turn where the caller sent no BYOK header key. The effective per-request order is:
 
-    - Map CLAUDE_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN (the var the CLI reads for a
-      long-lived subscription token from `claude setup-token`).
-    - Strip Foundry/API creds so they cannot outrank the OAuth token.
-    Set LIKEMINDS_MCP_AUTH=api to keep the .env API/Foundry creds instead."""
-    if os.environ.get("LIKEMINDS_MCP_AUTH", "subscription").strip().lower() == "api":
-        return
-    token = os.environ.get("CLAUDE_TOKEN") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if token:
-        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        1. the caller's header key    (applied per turn by engine._child_env)
+        2. a server ANTHROPIC_API_KEY  (from .env)
+        3. the Claude subscription     (CLAUDE_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN)
+
+    Steps 2 vs 3 are settled here once at startup: if a server ANTHROPIC_API_KEY is
+    present it becomes the fallback and the subscription token is dropped (the API key
+    would outrank it anyway); otherwise the subscription token is mapped into the var
+    the CLI reads. Either way we strip Foundry/gateway creds that would outrank an API
+    key, so the order above is exactly what the CLI sees."""
     for var in (
         "CLAUDE_CODE_USE_FOUNDRY",
         "ANTHROPIC_FOUNDRY_API_KEY",
         "ANTHROPIC_FOUNDRY_BASE_URL",
-        "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
     ):
         os.environ.pop(var, None)
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        os.environ.pop("CLAUDE_TOKEN", None)
+        return
+    token = os.environ.get("CLAUDE_TOKEN") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
 
 
 _configure_auth()
@@ -270,6 +276,7 @@ def _snapshot(sess: sessions.Session) -> dict:
 async def _start_continuation(
     skill: str,
     session_id: str,
+    client_key: Optional[str],
     artifacts: Optional[list],
     files: Optional[list],
     input_paths: Optional[list],
@@ -279,7 +286,8 @@ async def _start_continuation(
 ) -> dict:
     """Start a NEW run that continues a previously saved session: seed that session's
     promoted output artifacts (outputs/mcp/<session_id>/) into a fresh sandbox and let
-    the skill build on them, writing the updated deliverable back under the SAME id."""
+    the skill build on them, writing the updated deliverable back under the SAME id.
+    Carries the caller's per-request BYOK header key (client_key) into the new run."""
     sid = Path(str(session_id)).name  # sanitize — never escape RESULTS_DIR
     prior = config.RESULTS_DIR / sid
     if not prior.is_dir() or not any(prior.iterdir()):
@@ -295,6 +303,7 @@ async def _start_continuation(
                 "message": (f"Session '{sid}' is still active — finish or answer it "
                             "(call with session_id + response, no skill) before continuing.")}
     sess = sessions.new_session(skill, durable_id=sid)
+    sess.api_key = client_key  # BYOK: carry the caller's key into the continued run
     # Stage any NEW inputs the caller attached alongside the continuation request.
     engine._write_artifacts(sess.inputs_dir, artifacts)
     engine._write_artifacts(sess.inputs_dir, files)
@@ -342,6 +351,31 @@ def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
 
 
 # ----------------------------------------------------------------------------- #
+# Per-request BYOK — the caller's Anthropic key, read fresh from the request header
+# ----------------------------------------------------------------------------- #
+
+def _client_api_key(ctx: Optional[Context]) -> Optional[str]:
+    """The caller's Anthropic key from the request header (BYOK), or None.
+
+    Read fresh from the live HTTP request on every call — never stored. Under the
+    streamable-HTTP transport `ctx.request_context.request` is the Starlette request;
+    under stdio (or if the context is unavailable) there is no request, so this
+    returns None and the server falls back to its own .env creds. Accepts either a
+    bare key (`x-api-key: <key>`) or an `Authorization: Bearer <key>` value."""
+    if ctx is None:
+        return None
+    try:
+        request = ctx.request_context.request
+        val = request.headers.get(config.API_KEY_HEADER) if request is not None else None
+    except Exception:  # noqa: BLE001 — no request context (e.g. stdio) => no client key
+        return None
+    val = (val or "").strip()
+    if val.lower().startswith("bearer "):
+        val = val[len("bearer "):].strip()
+    return val or None
+
+
+# ----------------------------------------------------------------------------- #
 # Tools
 # ----------------------------------------------------------------------------- #
 
@@ -356,6 +390,7 @@ async def run_skill(
     session_id: Optional[str] = None,
     response: Optional[str] = None,
     files: Optional[list] = None,
+    ctx: Optional[Context] = None,
 ) -> dict:
     """Run any LikeMinds skill (background job + poll).
 
@@ -381,12 +416,15 @@ async def run_skill(
     back under the SAME session_id. The done result reports the `session_id`, so
     surface it to the user to save and continue later.
     """
+    # The caller's own Anthropic key (BYOK), read fresh from THIS request's header.
+    client_key = _client_api_key(ctx)
+
     # Continuation: a skill AND a prior session_id together start a NEW run seeded from
     # that session's saved outputs. (A bare poll never carries a skill, so this is
     # unambiguous.)
     if skill and session_id:
         return await _start_continuation(
-            skill, session_id, artifacts, files, input_paths, upload_refs, urls, context
+            skill, session_id, client_key, artifacts, files, input_paths, upload_refs, urls, context
         )
 
     if session_id:
@@ -394,6 +432,10 @@ async def run_skill(
         if sess is None:
             return {"status": "expired",
                     "message": "Session expired or invalid. Restart the skill."}
+        # Re-read the key per request so a rotated key takes effect on the next turn;
+        # a bare poll with no header leaves the previously captured key in place.
+        if client_key:
+            sess.api_key = client_key
         if sess.status in ("done", "error"):
             return _snapshot(sess)
         # An ANSWER is a continuation carrying non-empty reply text OR files. A bare
@@ -418,6 +460,7 @@ async def run_skill(
         available = ", ".join(s["name"] for s in registry.list_skills())
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
     sess = sessions.new_session(skill)
+    sess.api_key = client_key  # BYOK: injected into the spawned CLI env each turn
     engine._write_artifacts(sess.inputs_dir, artifacts)
     _copy_input_paths(sess.inputs_dir, input_paths)
     _materialize_uploads(sess.inputs_dir, upload_refs)

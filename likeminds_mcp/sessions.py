@@ -33,6 +33,10 @@ class Session:
     sandbox: Path             # <project>/.sessions/<cc_id>
     inputs_dir: Path          # <sandbox>/inputs
     output_dir: Path          # <sandbox>/output  (deliverable harvested from here)
+    # Caller's Anthropic key (BYOK) read fresh from the request header. In-memory only
+    # for the life of the run, never persisted; None => fall back to the server's own
+    # .env creds. The engine injects it into the spawned CLI environment per turn.
+    api_key: str | None = None
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | done | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
@@ -91,6 +95,7 @@ def purge(sess: Session) -> None:
     so the client's terminal poll can still read status + result."""
     shutil.rmtree(sess.sandbox, ignore_errors=True)
     _purge_transcript(sess.cc_id)
+    sess.api_key = None  # drop the caller's key from the retained record (hygiene)
 
 
 def _purge_transcript(session_id: str) -> None:

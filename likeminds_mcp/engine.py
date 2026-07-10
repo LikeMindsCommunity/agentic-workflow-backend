@@ -22,6 +22,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import os
 import re
 from pathlib import Path
 
@@ -200,6 +201,32 @@ def _interpret(text: str) -> dict | None:
     return None
 
 
+def _child_env(sess: Session) -> dict[str, str] | None:
+    """Environment for the spawned CLI.
+
+    Returns None to inherit the server's own environment (the .env fallback creds) —
+    the default when the caller supplied no key. When the caller sent their own
+    Anthropic key via the request header (BYOK), overlay it as ANTHROPIC_API_KEY for
+    THIS turn only and drop any subscription/Foundry creds that would otherwise
+    outrank it, so the caller's key is what authenticates and bills. The key is read
+    fresh per run and never written to disk or logs; it lives only in this child
+    process environment for the duration of the turn."""
+    key = sess.api_key
+    if not key:
+        return None
+    env = os.environ.copy()
+    env["ANTHROPIC_API_KEY"] = key
+    for var in (
+        "CLAUDE_CODE_OAUTH_TOKEN",
+        "CLAUDE_CODE_USE_FOUNDRY",
+        "ANTHROPIC_FOUNDRY_API_KEY",
+        "ANTHROPIC_FOUNDRY_BASE_URL",
+        "ANTHROPIC_AUTH_TOKEN",
+    ):
+        env.pop(var, None)
+    return env
+
+
 async def run_turn(sess: Session, message: str, resume: bool) -> dict | None:
     """Spawn one `claude -p` turn and consume its stream to completion.
 
@@ -212,6 +239,7 @@ async def run_turn(sess: Session, message: str, resume: bool) -> dict | None:
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(config.PROJECT_ROOT),
+        env=_child_env(sess),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
         limit=_STDOUT_LIMIT,

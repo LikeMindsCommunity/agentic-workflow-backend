@@ -35,7 +35,23 @@ CLAUDE_BIN = os.environ.get("CLAUDE_BIN") or shutil.which("claude") or "claude"
 # Default model for spawned turns. "opus[1m]" = the latest Opus with the 1M-token
 # context window (the `[1m]` suffix is how Claude Code opts into 1M context).
 # Override with CLAUDE_AGENT_MODEL (e.g. "sonnet", "opus", or a full model id).
+# NOTE for BYOK (below): a raw Anthropic API key only reaches 1M-context Opus if the
+# account has that access — otherwise set CLAUDE_AGENT_MODEL to a model it can serve.
 MODEL = os.environ.get("CLAUDE_AGENT_MODEL") or "opus[1m]"
+
+# ─── Per-request BYOK (bring-your-own-key) ───────────────────────────────────
+# The caller may send its own Anthropic key in a request header; the server reads it
+# fresh per request and injects it into the spawned CLI, so that turn's inference
+# bills to the caller's account. The key is never persisted (no disk, no logs) — it
+# lives only in the child process environment for the duration of the turn. This is
+# the "header shortcut" that works on Claude Code, which attaches configured headers
+# on every request. API_KEY_HEADER is the header to read the key from (default
+# x-api-key; an `Authorization: Bearer <key>` value is also accepted).
+#
+# The header key is the FIRST choice of credential per request; with no header key the
+# spawned CLI falls back to the server's own creds (see server._configure_auth), in
+# order: a server ANTHROPIC_API_KEY from .env, else the Claude subscription token.
+API_KEY_HEADER = os.environ.get("LIKEMINDS_MCP_KEY_HEADER", "x-api-key").strip() or "x-api-key"
 
 # Safety bounds (override the timeouts via env). These stop a hung or abandoned
 # session from leaking a subprocess / task / sandbox indefinitely.
