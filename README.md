@@ -287,18 +287,60 @@ venv/bin/pip install -r requirements.txt
 The server drives the **Claude Code CLI** as a subprocess, so a working `claude` must be
 on your `PATH` (override with `CLAUDE_BIN`).
 
-**2. Authenticate** — the server routes the spawned Claude at your **Claude
-subscription** (Max/Pro), not the API/Foundry creds in `.env`:
+**2. Authenticate** — per request the spawned Claude uses the **first credential
+available**, in order: (1) a caller's **own key** sent in a request header (BYOK, below),
+(2) a server **`ANTHROPIC_API_KEY`** in `.env`, (3) your **Claude subscription** (Max/Pro).
+Set whichever server fallback you want:
 
 ```bash
-claude setup-token          # requires a Claude subscription; prints a token
+claude setup-token          # subscription: prints a token for CLAUDE_TOKEN
 ```
 
-Put it in `.env` as `CLAUDE_TOKEN=…` (the server maps it to the `CLAUDE_CODE_OAUTH_TOKEN`
-the CLI reads), or log in once with the `claude` CLI and skip the token. On startup the
-server strips `CLAUDE_CODE_USE_FOUNDRY` / `ANTHROPIC_FOUNDRY_*` / `ANTHROPIC_API_KEY` /
-`ANTHROPIC_AUTH_TOKEN` so they can't outrank the subscription token. To use the `.env`
-API/Foundry creds instead, set `LIKEMINDS_MCP_AUTH=api`.
+Put the token in `.env` as `CLAUDE_TOKEN=…` (the server maps it to the
+`CLAUDE_CODE_OAUTH_TOKEN` the CLI reads), or log in once with the `claude` CLI and skip the
+token. To bill against an **Anthropic API key** instead, set `ANTHROPIC_API_KEY=…` in
+`.env` — when present it takes precedence over the subscription. On startup the server
+strips `CLAUDE_CODE_USE_FOUNDRY` / `ANTHROPIC_FOUNDRY_*` / `ANTHROPIC_AUTH_TOKEN` so they
+can't outrank these.
+
+**Per-request BYOK (bring-your-own-key).** The `.env` creds above are the server's own
+fallback. A caller can instead supply **their own Anthropic key per request** in a header;
+the server reads it fresh on each request and injects it into the spawned CLI for that
+turn only — so the caller's job authenticates and **bills to their account**, and nothing
+is stored (no disk, no logs). This is the header shortcut that works on **Claude Code**,
+which attaches configured headers on every request:
+
+```bash
+claude mcp add --transport http --scope user likeminds http://127.0.0.1:8787/mcp \
+    --header "x-api-key: sk-ant-api03-YOURKEY"
+```
+
+For a client that reaches the server through the **`mcp-remote`** stdio bridge (Claude
+Desktop, Cursor, and other stdio-only clients), pass the same header as `mcp-remote` args:
+
+```json
+"likeminds": {
+  "command": "npx",
+  "args": [
+    "-y", "mcp-remote", "http://127.0.0.1:8787/mcp",
+    "--header", "x-api-key:${ANTHROPIC_KEY}"
+  ],
+  "env": { "ANTHROPIC_KEY": "sk-ant-api03-YOURKEY" }
+}
+```
+
+Keep the header arg **space-free** (`x-api-key:${VAR}` — no space after the colon) and put
+the key in `env`: some clients (Cursor, Claude Desktop on Windows) split `args` on spaces,
+which would mangle a `"x-api-key: value"` header.
+
+The header defaults to `x-api-key` (override with `LIKEMINDS_MCP_KEY_HEADER`; an
+`Authorization: Bearer <key>` value is also accepted). A request key overrides the `.env`
+fallback; with no header key the server uses its own creds — a `.env` `ANTHROPIC_API_KEY`
+if set, else the subscription.
+Note: a raw API key only reaches 1M-context Opus if the account has that access; otherwise
+set `CLAUDE_AGENT_MODEL` to a model it can serve (e.g. `sonnet`). This header path is a
+Claude Code convenience; claude.ai and the Claude Desktop connector UI accept only OAuth or
+authless servers, so use OAuth there.
 
 **3. Run the server** from a plain terminal (it loads `.env` automatically):
 
@@ -348,6 +390,10 @@ through the `mcp-remote` bridge (`npx` fetches it — Node.js required).
    }
   ```
 4. Save and **restart Claude Desktop**.
+
+To have jobs bill to **your own** Anthropic key instead of the server's creds, add a
+`--header` arg to `args` (e.g. `"--header", "x-api-key:${ANTHROPIC_KEY}"` with the key in
+`env`) — see **Per-request BYOK** above.
 
 ### Tools exposed
 
@@ -473,8 +519,9 @@ Server env vars (put persistent ones in `.env`):
 
 | Variable                      | Description                                                                            | Default                                               |
 | ----------------------------- | -------------------------------------------------------------------------------------- | ----------------------------------------------------- |
-| `CLAUDE_TOKEN`                | Subscription token, mapped to `CLAUDE_CODE_OAUTH_TOKEN`                                | required unless `LIKEMINDS_MCP_AUTH=api` or CLI login |
-| `LIKEMINDS_MCP_AUTH`          | `subscription` (default), or `api` to keep the `.env` API/Foundry creds                | `subscription`                                        |
+| `CLAUDE_TOKEN`                | Subscription token, mapped to `CLAUDE_CODE_OAUTH_TOKEN`                                | required unless `ANTHROPIC_API_KEY` or CLI login     |
+| `ANTHROPIC_API_KEY`           | Server API-key fallback; used when a request sends no header key, ahead of the subscription | unset                                            |
+| `LIKEMINDS_MCP_KEY_HEADER`    | Header a caller's own Anthropic key (BYOK) is read from; injected into the spawned CLI  | `x-api-key`                                           |
 | `CLAUDE_AGENT_MODEL`          | Model for spawned turns                                                                | `opus[1m]` (latest Opus, 1M context)                  |
 | `CLAUDE_BIN`                  | Path to the `claude` CLI                                                               | resolved from `PATH`                                  |
 | `LIKEMINDS_MCP_TURN_TIMEOUT`  | Per-turn timeout, seconds                                                              | `1800`                                                |
