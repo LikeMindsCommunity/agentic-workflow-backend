@@ -93,22 +93,24 @@ POLL_TEXT = (
 # Output harvesting + deliverable promotion
 # ----------------------------------------------------------------------------- #
 
-def _harvest(sandbox: Path) -> list[tuple[str, bytes]]:
+def _harvest(output_dir: Path, sandbox: Path) -> list[tuple[str, bytes]]:
     """Collect the deliverable from the sandbox as raw bytes (so binary outputs like
-    PDF/DOCX/XLSX survive intact). Prefer `output/`; fall back to `work/`."""
-    for sub in ("output", "work"):
-        base = sandbox / sub
-        if not base.is_dir():
-            continue
-        files = [p for p in sorted(base.rglob("*")) if p.is_file()]
+    PDF/DOCX/XLSX survive intact). Reads from output_dir (sess.output_dir) first;
+    falls back to sandbox/work/ if output_dir is empty."""
+    if output_dir.is_dir():
+        files = [p for p in sorted(output_dir.rglob("*")) if p.is_file()]
         if files:
-            return [(str(p.relative_to(base)), p.read_bytes()) for p in files]
+            return [(str(p.relative_to(output_dir)), p.read_bytes()) for p in files]
+    work = sandbox / "work"
+    if work.is_dir():
+        files = [p for p in sorted(work.rglob("*")) if p.is_file()]
+        if files:
+            return [(str(p.relative_to(work)), p.read_bytes()) for p in files]
     return []
 
 
-def _promote(skill: str, harvested: list[tuple[str, bytes]]) -> tuple[str, list[str]]:
+def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
     """Write the harvested (name, bytes) files to outputs/mcp/<result_id>/."""
-    result_id = f"{skill}_{uuid.uuid4().hex[:8]}"
     dest = config.RESULTS_DIR / result_id
     dest.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -117,7 +119,26 @@ def _promote(skill: str, harvested: list[tuple[str, bytes]]) -> tuple[str, list[
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(content)
         written.append(name)
-    return result_id, written
+    return written
+
+
+def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
+    """Auto-register any generated skills found in harvested output.
+
+    A generated skill is identified by a file matching <skill-name>/SKILL.md.
+    It is written into .claude/skills/<skill-name>/SKILL.md so the registry
+    picks it up immediately. Returns the list of registered skill names.
+    Content is never exposed to the client — only the skill name is returned."""
+    registered: list[str] = []
+    for name, content in harvested:
+        parts = Path(name).parts
+        if len(parts) == 2 and parts[1] == "SKILL.md":
+            skill_name = parts[0]
+            dest = config.SKILLS_DIR / skill_name / "SKILL.md"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+            registered.append(skill_name)
+    return registered
 
 
 # ----------------------------------------------------------------------------- #
@@ -178,18 +199,34 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 continue
 
             # emit: harvest the deliverable, upload to R2, purge the sandbox, report done.
-            harvested = _harvest(sess.sandbox)
-            result_id, names = _promote(sess.skill, harvested)
+            harvested = _harvest(sess.output_dir, sess.sandbox)
+            names = _promote(sess.result_id, harvested)
+            if config.USE_R2 and sess.r2_keys:
+                storage.delete_inputs(sess.r2_keys)
+
+            # Auto-register any generated skills (e.g. from custom-sow-generator).
+            # Registered files are excluded from download_urls — content is never
+            # sent to the client. Only the skill name is returned.
+            registered = _register_skills(harvested)
+            deliverable = [] if registered else list(harvested)
+
             download_urls: dict = {}
-            if config.USE_R2:
+            if config.USE_R2 and deliverable:
                 try:
-                    download_urls = storage.upload_outputs(result_id, harvested)
+                    download_urls = storage.upload_outputs(sess.result_id, deliverable)
                 except Exception as e:  # noqa: BLE001 — R2 failure must not lose the result
                     download_urls = {"_error": f"R2 upload failed: {e}"}
             sessions.purge(sess)
             sess.result = {
-                "result_id": result_id,
+                "result_id": sess.result_id,
                 "summary": {"files": names},
+                **({"registered_skills": registered,
+                    "next_step": (
+                        f"Skill(s) {registered} registered successfully. "
+                        "To use a registered skill, call run_skill with "
+                        "skill='{skill_name}' and pass the client MOM via "
+                        "`context` or `artifacts`. The skill content is private."
+                    )} if registered else {}),
                 **({"download_urls": download_urls} if download_urls else {}),
             }
             sess.status = "done"
@@ -200,6 +237,8 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
     except Exception as e:  # noqa: BLE001 — surface as a job error, never crash the loop
         sess.status = "error"
         sess.error = f"{type(e).__name__}: {e}"
+        if config.USE_R2 and sess.r2_keys:
+            storage.delete_inputs(sess.r2_keys)
         sessions.purge(sess)  # cleanup on the error path too
     finally:
         sess.finished = True
@@ -358,6 +397,8 @@ async def run_skill(
             (response and response.strip()) or files or input_paths or artifacts or r2_keys
         )
         if has_answer and sess.status == "need_input":
+            if r2_keys and config.USE_R2:
+                sess.r2_keys.extend(r2_keys)
             added = (
                 engine._write_artifacts(sess.inputs_dir, artifacts)
                 + engine._write_artifacts(sess.inputs_dir, files)
@@ -373,6 +414,8 @@ async def run_skill(
         available = ", ".join(s["name"] for s in registry.list_skills())
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
     sess = sessions.new_session(skill)
+    if r2_keys and config.USE_R2:
+        sess.r2_keys.extend(r2_keys)
     engine._write_artifacts(sess.inputs_dir, artifacts)
     engine._write_artifacts(sess.inputs_dir, files)
     _copy_input_paths(sess.inputs_dir, input_paths)

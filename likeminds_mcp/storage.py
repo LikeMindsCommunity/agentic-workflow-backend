@@ -87,6 +87,24 @@ def download_inputs(r2_keys: list[str], inputs_dir: Path) -> list[str]:
     return written
 
 
+def delete_inputs(r2_keys: list[str]) -> None:
+    """Delete R2 input objects after the skill has consumed them.
+    Called after harvest so uploaded inputs don't linger in R2 indefinitely.
+    Failures are swallowed — deletion is best-effort cleanup."""
+    if not r2_keys:
+        return
+    client = _client()
+    objects = [{"Key": k} for k in r2_keys if k]
+    if objects:
+        try:
+            client.delete_objects(
+                Bucket=config.R2_BUCKET,
+                Delete={"Objects": objects, "Quiet": True},
+            )
+        except Exception:  # noqa: BLE001 — cleanup is best-effort
+            pass
+
+
 # --------------------------------------------------------------------------- #
 # OUTPUT: upload harvested deliverables and return presigned GET URLs
 # --------------------------------------------------------------------------- #

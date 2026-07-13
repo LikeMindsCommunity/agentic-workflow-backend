@@ -28,14 +28,16 @@ _SESSIONS: dict[str, "Session"] = {}
 class Session:
     id: str
     skill: str                # the skill this session is running
+    result_id: str            # stable deliverable id: "<skill>_<session-uuid>"
     sandbox: Path             # <project>/.sessions/<id>
     inputs_dir: Path          # <sandbox>/inputs
-    output_dir: Path          # <sandbox>/output  (deliverable harvested from here)
+    output_dir: Path          # <sandbox>/output/<result_id>  (deliverable harvested from here)
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | done | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
     nudges: int = 0           # how many no-signal turns we've nudged past
     questions: list = field(default_factory=list)
+    r2_keys: list = field(default_factory=list)  # accumulated R2 input keys to delete on done/error
     result: dict | None = None        # {result_id, summary} once done
     error: str | None = None
     finished: bool = False            # the driving task has returned
@@ -47,13 +49,14 @@ class Session:
 
 def new_session(skill: str) -> Session:
     sid = str(uuid.uuid4())          # valid UUID: required by `claude --session-id`
+    result_id = f"{skill}_{sid}"     # stable deliverable id, derived from session UUID
     sandbox = SESSIONS_DIR / sid
     inputs_dir = sandbox / "inputs"
-    output_dir = sandbox / "output"
+    output_dir = sandbox / "output" / result_id
     inputs_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     (sandbox / "work").mkdir(parents=True, exist_ok=True)
-    sess = Session(id=sid, skill=skill, sandbox=sandbox,
+    sess = Session(id=sid, skill=skill, result_id=result_id, sandbox=sandbox,
                    inputs_dir=inputs_dir, output_dir=output_dir)
     _SESSIONS[sid] = sess
     _gc()
