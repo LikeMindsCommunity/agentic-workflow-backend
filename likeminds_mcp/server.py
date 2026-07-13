@@ -127,7 +127,8 @@ def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
 
     A generated skill is identified by a file matching <skill-name>/SKILL.md.
     It is written into .claude/skills/<skill-name>/SKILL.md so the registry
-    picks it up immediately. Returns the list of registered skill names.
+    picks it up immediately. Also gitignores the generated directory so it is
+    never accidentally committed. Returns the list of registered skill names.
     Content is never exposed to the client — only the skill name is returned."""
     registered: list[str] = []
     for name, content in harvested:
@@ -138,7 +139,21 @@ def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
             dest.parent.mkdir(parents=True, exist_ok=True)
             dest.write_bytes(content)
             registered.append(skill_name)
+            _gitignore_generated_skill(skill_name)
     return registered
+
+
+def _gitignore_generated_skill(skill_name: str) -> None:
+    """Append the generated skill directory to .gitignore if not already present."""
+    gitignore = config.PROJECT_ROOT / ".gitignore"
+    entry = f".claude/skills/{skill_name}/"
+    try:
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if entry not in existing:
+            with gitignore.open("a", encoding="utf-8") as f:
+                f.write(f"\n# generated skill (auto-registered by likeminds-mcp)\n{entry}\n")
+    except Exception:  # noqa: BLE001 — gitignore update is best-effort
+        pass
 
 
 # ----------------------------------------------------------------------------- #
