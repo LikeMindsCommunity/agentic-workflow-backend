@@ -3,6 +3,10 @@
     "playwright": {
       "command": "npx",
       "args": ["-y", "@pvinis/playwright-stealth-mcp-server"]
+    },
+    "likeminds": {
+      "type": "http",
+      "url": "http://127.0.0.1:8787/mcp"
     }
   }
 }

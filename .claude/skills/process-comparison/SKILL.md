@@ -1,18 +1,32 @@
 ---
-description: Process approved comparison items into the approval sheet with full RCA
+name: process-comparison
+description: Read every APPROVED item from a client's comparison sheets (outputs/{client}/comparisons/*.md), run full root-cause analysis against the codebase and CLAUDE.md, and write each as a PENDING fix proposal in the client's approval sheet (outputs/{client}/approval_sheet.md), with COMP-to-BUG traceability. Proposes only; never edits source. Use to turn reviewed comparison findings into reviewable fix proposals. Triggers: "process the approved comparisons", "process-comparison", "run RCA on {client}'s approved comparison items".
 ---
 
-You are a comparison-to-fix processing agent. Read all APPROVED items from `comparison_sheet.md`, perform full root cause analysis for each, and write fix proposals to `approval_sheet.md`.
+You are a comparison-to-fix processing agent. Read all APPROVED items from this client's comparison sheets under `outputs/{client}/comparisons/`, perform full root cause analysis for each, and write fix proposals to `outputs/{client}/approval_sheet.md`.
+
+## Inputs & Paths — resolve the client first
+Sheets are stored per client under `outputs/{client}/`. Resolve `{client}` before anything else:
+1. `client=<name>` in $ARGUMENTS → use it.
+2. `output=<dir>` in $ARGUMENTS → use that directory as the client folder directly (skip inference).
+3. Otherwise infer `{client}` from context: an inputs/artifacts folder name or a client name in $ARGUMENTS or the prompt, or the parent folder of a `kb=<dir>` if one is given.
+4. Still unresolved → if exactly one `outputs/*/` client directory exists, use it; otherwise ASK the user which client and STOP. Never guess.
+
+Resolved paths (create parents if missing):
+- **Comparison sheets (read):** `outputs/{client}/comparisons/*.md` — a client can have many. Process APPROVED items across all of them, unless a `comparison=<path>` argument names a single sheet.
+- **Approval sheet (write):** `outputs/{client}/approval_sheet.md` — one per client.
+
+With `output=<dir>`, use `<dir>/comparisons/*.md` and `<dir>/approval_sheet.md`.
 
 ## Step 1 — Read Comparison Sheet
 
-Read `comparison_sheet.md` from the repository root. Parse the table rows.
-Find all rows with Should Fix = `APPROVED`.
+Read every comparison sheet for this client — all `.md` files under `outputs/{client}/comparisons/` (or only the sheet named by a `comparison=<path>` argument, if given). Parse the table rows in each.
+Find all rows with Should Fix = `APPROVED` across them, and remember which sheet file each APPROVED row came from (needed for Step 5).
 
-If no APPROVED rows found, print:
+If no APPROVED rows found in any sheet, print:
 ```
-No APPROVED items in comparison_sheet.md.
-Open comparison_sheet.md and change Should Fix to APPROVED for items you want analyzed, then re-run /process-comparison.
+No APPROVED items in outputs/{client}/comparisons/.
+Open a comparison sheet under outputs/{client}/comparisons/ and change Should Fix to APPROVED for items you want analyzed, then re-run the process-comparison skill.
 ```
 Then STOP.
 
@@ -111,12 +125,12 @@ Respect ALL rules listed in the `## Constraints` section of CLAUDE.md.
 
 ---
 
-## Step 4 — Write to approval_sheet.md
+## Step 4 — Write to outputs/{client}/approval_sheet.md
 
-Read existing Bug IDs in `approval_sheet.md` to determine the next sequential ID.
+Read existing Bug IDs in `outputs/{client}/approval_sheet.md` to determine the next sequential ID.
 Format: `BUG-YYYY-MM-DD-NNN` (sequential per day)
 
-For each analyzed comparison item, append a new row to the approval_sheet.md table:
+For each analyzed comparison item, append a new row to the outputs/{client}/approval_sheet.md table:
 
 | Column | Value |
 |---|---|
@@ -128,15 +142,15 @@ For each analyzed comparison item, append a new row to the approval_sheet.md tab
 | Root Cause | What is wrong in the source and why — note if code, prompt/template, config, data, or both |
 | Affected Files | Source file(s) with line ranges. If source not identified: generated file location for reference. Separate multiple files with `<br>` |
 | Fix Description | Plain text description of the change. For binary sources: include "Regenerate output after fix" |
-| Testing Notes | "Re-run `/find-bugs` with same generated and expected files to verify this discrepancy is resolved" |
+| Testing Notes | "Re-run the find-bugs-{client} skill with the same generated and expected files to verify this discrepancy is resolved" |
 | Status | `PENDING` |
 | Reviewed By | `_pending_` |
 
 ---
 
-## Step 5 — Update comparison_sheet.md
+## Step 5 — Update the source comparison sheet
 
-For each processed APPROVED row in `comparison_sheet.md`:
+For each processed APPROVED row, go back to the comparison sheet under `outputs/{client}/comparisons/` that it came from (tracked in Step 1) and:
 - Fill in the `Linked Bug ID` column with the assigned BUG ID (e.g., `BUG-2026-04-14-003`)
 
 This creates traceability: `COMP-XXX → BUG-YYY`
@@ -166,20 +180,20 @@ Print a complete summary:
 ───────────────────────────────────────────
 
   Next steps:
-    1. Open approval_sheet.md — review the new PENDING rows
+    1. Open outputs/{client}/approval_sheet.md — review the new PENDING rows
     2. Change Status to APPROVED or REJECTED
-    3. Run /apply-fixes to apply all approved fixes
+    3. Run the apply-fixes skill to apply all approved fixes
 ```
 
 ---
 
 ## Important Rules
 
-1. **One BUG ID per COMP ID.** Each approved comparison item becomes exactly one row in approval_sheet.md. Do not merge or split.
+1. **One BUG ID per COMP ID.** Each approved comparison item becomes exactly one row in outputs/{client}/approval_sheet.md. Do not merge or split.
 
-2. **Traceability is mandatory.** Always fill in the Linked Bug ID column in comparison_sheet.md after writing to approval_sheet.md.
+2. **Traceability is mandatory.** Always fill in the Linked Bug ID column in the source comparison sheet (under `outputs/{client}/comparisons/`) after writing to `outputs/{client}/approval_sheet.md`.
 
-3. **Respect the approval_sheet.md format exactly.** The downstream `/apply-fixes` command depends on parsing this table. Use the same column format as `/fix-bug`.
+3. **Respect the outputs/{client}/approval_sheet.md format exactly.** The downstream apply-fixes skill depends on parsing this table. Use the same column format as diagnose-bug.
 
 4. **Don't skip items.** Process ALL APPROVED rows, even if you cannot identify the source. For those, set Confidence = LOW and describe what manual investigation is needed.
 
