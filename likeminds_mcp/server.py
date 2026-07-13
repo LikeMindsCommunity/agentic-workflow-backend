@@ -453,7 +453,7 @@ async def run_skill(
     """Run any LikeMinds skill (background job + poll).
 
     First call: provide `skill` (any name from `list_skills`, e.g. 'kb-builder',
-    'config-agent', 'generate-document') and its inputs. `context` says WHAT to do
+    'config-agent', 'setup-document-generator') and its inputs. `context` says WHAT to do
     (a prompt / SOW / instructions). Ways to supply files:
     - `input_paths` — absolute paths to local files (best for binary/large files;
       only when you have a real local path, e.g. Claude Code).
