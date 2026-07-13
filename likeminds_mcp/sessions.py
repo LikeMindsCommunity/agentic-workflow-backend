@@ -30,9 +30,10 @@ class Session:
     id: str                   # durable id: names outputs/mcp/<id>/ + the poll handle
     cc_id: str                # Claude Code session id for --session-id/--resume (fresh per run)
     skill: str                # the skill this session is running
+    result_id: str            # stable deliverable id "<skill>_<durable-id>" — names the output bucket (local + R2)
     sandbox: Path             # <project>/.sessions/<cc_id>
     inputs_dir: Path          # <sandbox>/inputs
-    output_dir: Path          # <sandbox>/output  (deliverable harvested from here)
+    output_dir: Path          # <sandbox>/output/<result_id>  (deliverable harvested from here)
     # Caller's Anthropic key (BYOK) read fresh from the request header. In-memory only
     # for the life of the run, never persisted; None => fall back to the server's own
     # .env creds. The engine injects it into the spawned CLI environment per turn.
@@ -42,6 +43,7 @@ class Session:
     progress: str = ""        # human-readable "what it's doing now", shown on poll
     nudges: int = 0           # how many no-signal turns we've nudged past
     questions: list = field(default_factory=list)
+    r2_keys: list = field(default_factory=list)  # accumulated R2 input keys to delete on done/error
     result: dict | None = None        # {result_id, summary} once done
     error: str | None = None
     finished: bool = False            # the driving task has returned
@@ -53,19 +55,20 @@ class Session:
 
 def new_session(skill: str, durable_id: str | None = None) -> Session:
     """Create a session record. Pass `durable_id` to CONTINUE an earlier session — it
-    names the caller-facing poll handle and the output bucket (outputs/mcp/<id>/).
+    names the caller-facing poll handle and the output bucket (outputs/mcp/<result_id>/).
     Omit it for a brand-new session (the id is then a fresh UUID). The Claude Code
     session id (`cc_id`) is ALWAYS fresh, so reusing a durable id never collides with a
     purged CC transcript; the sandbox is keyed by cc_id so lineages never clash."""
     cc_id = str(uuid.uuid4())        # valid UUID: required by `claude --session-id`
     sid = durable_id or cc_id
+    result_id = f"{skill}_{sid}"     # stable deliverable id (output bucket), stable across a durable session's turns
     sandbox = SESSIONS_DIR / cc_id
     inputs_dir = sandbox / "inputs"
-    output_dir = sandbox / "output"
+    output_dir = sandbox / "output" / result_id
     inputs_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     (sandbox / "work").mkdir(parents=True, exist_ok=True)
-    sess = Session(id=sid, cc_id=cc_id, skill=skill, sandbox=sandbox,
+    sess = Session(id=sid, cc_id=cc_id, skill=skill, result_id=result_id, sandbox=sandbox,
                    inputs_dir=inputs_dir, output_dir=output_dir)
     _SESSIONS[sid] = sess
     _gc()

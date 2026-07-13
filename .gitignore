@@ -49,3 +49,8 @@ razorpay-creds.json
 pubnub-creds.json
 outputs/getstream/runs/
 /misc
+
+# generated skills (auto-registered by likeminds-mcp)
+.claude/skills/generate-exotel-ivr-sow/
+# generated skill (auto-registered by likeminds-mcp)
+.claude/skills/generate-prudential-pensions-zambia-sow/

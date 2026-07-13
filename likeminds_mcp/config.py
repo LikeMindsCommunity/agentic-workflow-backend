@@ -25,8 +25,9 @@ ASK_MARKER = "<<<LM_ASK>>>"
 DONE_MARKER = "<<<LM_DONE>>>"
 
 # Local HTTP bind for the MCP server. Clients connect at http://HOST:PORT/mcp .
-HOST = "127.0.0.1"
-PORT = 8787
+# Set LIKEMINDS_MCP_HOST=0.0.0.0 in production to accept external connections.
+HOST = os.environ.get("LIKEMINDS_MCP_HOST", "127.0.0.1")
+PORT = int(os.environ.get("LIKEMINDS_MCP_PORT", "8787"))
 
 # The Claude Code CLI we drive as a subprocess (one process per turn). Override
 # with CLAUDE_BIN; otherwise resolve from PATH.
@@ -58,4 +59,14 @@ API_KEY_HEADER = os.environ.get("LIKEMINDS_MCP_KEY_HEADER", "x-api-key").strip()
 TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800000"))    # s; abort one hung turn
 REPLY_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_REPLY_TIMEOUT", "3600000"))  # s; close an unanswered session
 MAX_SESSIONS = 500   # evict oldest FINISHED session records beyond this
-MAX_UPLOADS = 100    # evict oldest un-consumed uploads beyond this
+
+# Cloudflare R2 — output delivery for remote clients.
+# When all four vars are set, harvested deliverables are uploaded to R2 and
+# presigned download URLs are returned in the done snapshot alongside result_id.
+# Falls back to local-only (outputs/mcp/) when any var is missing.
+R2_BUCKET     = os.environ.get("R2_BUCKET")
+R2_ACCESS_KEY = os.environ.get("R2_ACCESS_KEY_ID")
+R2_SECRET_KEY = os.environ.get("R2_SECRET_ACCESS_KEY")
+R2_ENDPOINT   = os.environ.get("R2_ENDPOINT")
+R2_URL_EXPIRY = int(os.environ.get("R2_URL_EXPIRY", "3600"))  # presigned URL TTL in seconds
+USE_R2        = all([R2_BUCKET, R2_ACCESS_KEY, R2_SECRET_KEY, R2_ENDPOINT])

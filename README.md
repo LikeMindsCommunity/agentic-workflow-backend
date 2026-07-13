@@ -34,21 +34,22 @@ agentic-workflow-backend/
 │   │   └── playbooks/                #   api-integration, document-from-template, nodeflow, fallback
 │   └── settings.json                 # Claude Code settings
 ├── likeminds_mcp/                    # local MCP server that exposes every skill over HTTP
-│   ├── server.py                     #   FastMCP HTTP server
+│   ├── server.py                     #   FastMCP HTTP server + 4 tools + background driver
 │   ├── engine.py                     #   runs one `claude -p` turn, parses the signal markers
 │   ├── harness.py                    #   skill-agnostic I/O envelope (appended to the system prompt)
 │   ├── sessions.py                   #   in-process session records + sandbox/transcript purge
 │   ├── registry.py                   #   indexes .claude/skills so any skill is runnable
-│   ├── config.py                     #   paths, host/port, model, markers, safety bounds
+│   ├── storage.py                    #   Cloudflare R2 integration: upload inputs, deliver outputs
+│   ├── config.py                     #   paths, host/port, model, markers, safety bounds, R2 config
 │   ├── __main__.py                   #   `python -m likeminds_mcp` entrypoint
 
 ├── inputs/                           # drop client artifacts here (gitignored)
 ├── outputs/                          # deliverables (gitignored)
 │   ├── {client}/                     #   per client: kb/, approval_sheet.md, comparisons/
-│   └── mcp/<result_id>/              #   deliverables harvested from MCP skill runs
+│   └── mcp/<result_id>/              #   local copy of deliverables from MCP skill runs
 ├── .mcp.json                         # registers the likeminds server for the Claude Code CLI
-├── .env / .env.example               # CLAUDE_TOKEN and other env (.env is gitignored)
-├── requirements.txt                  # MCP server deps — just `mcp` + `python-dotenv`
+├── .env / .env.example               # CLAUDE_TOKEN + R2 creds and other env (.env is gitignored)
+├── requirements.txt                  # MCP server deps: mcp + python-dotenv + boto3
 └── README.md                         # this file
 ```
 
@@ -292,11 +293,11 @@ so nothing is parked in memory while a human answers.
 
 ### Quick start
 
-**1. Install** (once) — the server needs only `mcp` + `python-dotenv`:
+**1. Install** (once):
 
 ```bash
 python3 -m venv venv
-venv/bin/pip install -r requirements.txt
+venv/bin/pip install -r requirements.txt      # mcp + python-dotenv + boto3
 ```
 
 The server drives the **Claude Code CLI** as a subprocess, so a working `claude` must be
@@ -413,30 +414,43 @@ To have jobs bill to **your own** Anthropic key instead of the server's creds, a
 ### Tools exposed
 
 
-| Tool          | What it does                                                                                                                                                         |
-| ------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `run_skill`   | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. Deliverables land in `outputs/mcp/<result_id>/`. |
-| `upload_file` | Stage a file for clients with no local filesystem (regular chat); returns an id to pass back as `upload_refs`.                                                       |
-| `list_skills` | List every Agent Skill the server can run.                                                                                                                           |
+| Tool             | What it does                                                                                                                                                 |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `run_skill`      | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file. |
+| `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. Use for Claude Code / any client that can make HTTP requests. PUT the file to `upload_url`, then pass `r2_key` to `run_skill` via `r2_keys`. |
+| `upload_file`    | Upload file content through the server to R2. Returns `{r2_key, name, bytes}`. Use for Claude Desktop and claude.ai chat (no HTTP client available). Pass `r2_key` to `run_skill` via `r2_keys`. |
+| `list_skills`    | List every Agent Skill the server can run.                                                                                                                   |
 
 
-**Passing files to a skill:**
+**Passing files to a skill — choose by client type:**
 
-- `input_paths` — absolute **local** paths, copied byte-for-byte into the session inputs
-dir (best for Claude Code on the same machine).
-- `upload_refs` — call `upload_file(name, content)` first, then pass the returned id (for
-clients with no local filesystem).
-- `artifacts` / `files` — inline `[{name, content}]` text.
+| Method | Best for | How |
+| --- | --- | --- |
+| `get_upload_url` + HTTP PUT → `r2_keys` | Claude Code CLI (can run `curl`) | Call `get_upload_url(filename)`, PUT file bytes to `upload_url`, pass `r2_key` in `run_skill(r2_keys=[…])` |
+| `upload_file(name, content)` → `r2_keys` | Claude Desktop, claude.ai chat (no HTTP client) | Call `upload_file(name, content, encoding="utf-8"\|"base64")`, pass returned `r2_key` in `run_skill(r2_keys=[…])` |
+| `input_paths` | Claude Code on the **same machine** as the server | Pass absolute local paths; server copies them into the session |
+| `artifacts` / `files` | Any client, small text content only | Inline `[{name, content}]` — no R2 needed |
 
-`**run_skill` protocol:**
+**`run_skill` protocol:**
 
 ```
-run_skill(skill, artifacts?, input_paths?, upload_refs?, urls?, context?) →
-  {status:"running",    session_id, progress, files_written, next_step}  # poll again with ONLY session_id
-  {status:"need_input", session_id, questions[], next_step}              # relay verbatim, then call with session_id + response
-  {status:"done",       result_id, summary}                             # deliverable at outputs/mcp/<result_id>/
+# First call — start the skill
+run_skill(skill, context?, r2_keys?, artifacts?, input_paths?, urls?) →
+  {status:"running",    session_id, progress, files_written, next_step}  # keep polling
+
+# Poll calls — ONLY session_id, no other args
+run_skill(session_id) →
+  {status:"running",    session_id, progress, files_written, next_step}  # keep polling
+  {status:"need_input", session_id, questions[], next_step}              # relay questions verbatim, wait for user reply
+
+# Answer call — session_id + response (optionally add r2_keys/artifacts/files for file attachments)
+run_skill(session_id, response, r2_keys?) →
+  {status:"running", …}   # resume polling
+  {status:"done",    result_id, summary:{files:[…]}, download_urls:{filename: presigned_url, …}}
   {status:"expired"|"error", message}
 ```
+
+**Receiving outputs:** When `status` is `done`, `download_urls` maps each output filename to a presigned R2 GET URL (valid 1 hour by default). The client fetches them directly from R2. A local copy also lands in `outputs/mcp/<result_id>/` on the server.
 
 ---
 
@@ -449,9 +463,14 @@ process, pausing to ask the user questions and returning finished files by refer
 ```
 Claude client ──run_skill──▶  likeminds server  ──spawns──▶  claude -p  (runs the skill)
       ▲                            │  (background task)          │
-      │◀──── poll / questions ─────┤                             │ reads inputs, writes output
+      │◀──── poll / questions ─────┤                             │ reads inputs/, writes output/
       │────── answers ─────────────▶  ──resume──▶  claude -p  ◀──┘
-      │◀──── result_id (done) ──────┘         (same session, next turn)
+      │◀──── download_urls (done) ──┘         (same session, next turn)
+                                          ▲           │
+              Cloudflare R2 ─────────────┘           │ upload_outputs → presigned GET URLs
+              (inputs PUT by client,                  ▼
+               downloaded into sandbox,    outputs/ uploaded → r2, sandbox purged
+               outputs uploaded on done)
 ```
 
 **Core ideas:**
@@ -469,21 +488,23 @@ races and goes missing — a marker never does.
 - **Skill-agnostic harness.** Appended via `--append-system-prompt`, it remaps only the
 I/O edges (inputs dir / `<<<LM_ASK>>>` / `<<<LM_DONE>>>` / the authoritative output
 dir). The skill file itself is never edited.
-- **Deliverable harvested from disk.** On `<<<LM_DONE>>>` the engine copies the output
-directory byte-for-byte (so PDFs/DOCX/XLSX survive) to `outputs/mcp/<result_id>/`, then
-purges the session sandbox and its transcript.
+- **Deliverable harvested from disk.** On `<<<LM_DONE>>>` the server reads every output
+file byte-for-byte (so PDFs/DOCX/XLSX survive), promotes a local copy to
+`outputs/mcp/<result_id>/`, uploads each file to R2, and returns presigned GET URLs in
+the `done` snapshot. The session sandbox and its Claude Code transcript are then purged.
 
 **Modules:**
 
 
 | Module        | Responsibility                                                                                                     |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `server.py`   | FastMCP HTTP server + the 3 tools; the background driver `_drive`; output harvest/promote; auth config; long-poll. |
+| `server.py`   | FastMCP HTTP server + 4 tools (`run_skill`, `get_upload_url`, `upload_file`, `list_skills`); background driver `_drive`; output harvest/promote; auth config; long-poll. |
+| `storage.py`  | Cloudflare R2 integration: presigned PUT URLs for direct client uploads, server-side `upload_bytes`, `download_inputs` into session sandbox, `upload_outputs` after `<<<LM_DONE>>>`. |
 | `engine.py`   | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
 | `harness.py`  | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
 | `sessions.py` | Lightweight in-process session records + sandbox/transcript purge + record GC.                                     |
 | `registry.py` | Indexes `.claude/skills/*/SKILL.md` so any skill is runnable.                                                      |
-| `config.py`   | Paths, host/port, CLI binary, model, markers, safety bounds.                                                       |
+| `config.py`   | Paths, host/port, CLI binary, model, markers, safety bounds, R2 config.                                            |
 | `__main__.py` | `python -m likeminds_mcp` entrypoint (streamable-HTTP).                                                            |
 
 
@@ -539,8 +560,56 @@ Server env vars (put persistent ones in `.env`):
 | `LIKEMINDS_MCP_KEY_HEADER`    | Header a caller's own Anthropic key (BYOK) is read from; injected into the spawned CLI  | `x-api-key`                                           |
 | `CLAUDE_AGENT_MODEL`          | Model for spawned turns                                                                | `opus[1m]` (latest Opus, 1M context)                  |
 | `CLAUDE_BIN`                  | Path to the `claude` CLI                                                               | resolved from `PATH`                                  |
+| `LIKEMINDS_MCP_HOST`          | Bind address for the HTTP server                                                       | `127.0.0.1` (loopback; set `0.0.0.0` for remote)     |
+| `LIKEMINDS_MCP_PORT`          | Port for the HTTP server                                                               | `8787`                                                |
 | `LIKEMINDS_MCP_TURN_TIMEOUT`  | Per-turn timeout, seconds                                                              | `1800`                                                |
 | `LIKEMINDS_MCP_REPLY_TIMEOUT` | Wait-for-user-reply timeout, seconds                                                   | `3600`                                                |
 | `MCP_TOOL_TIMEOUT`            | Client-side tool-call timeout in ms (raise for long-running skills; set on the client) | client default                                        |
+| `R2_BUCKET`                   | Cloudflare R2 bucket name                                                              | (R2 disabled if any R2 var is missing)                |
+| `R2_ACCESS_KEY_ID`            | R2 access key                                                                          |                                                       |
+| `R2_SECRET_ACCESS_KEY`        | R2 secret key                                                                          |                                                       |
+| `R2_ENDPOINT`                 | R2 account endpoint (`https://<account_id>.r2.cloudflarestorage.com`)                 |                                                       |
+| `R2_URL_EXPIRY`               | Presigned GET URL TTL for output downloads, seconds                                    | `3600` (1 hour)                                       |
+
+**R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` and `upload_file` return an error, and `run_skill` does not return `download_urls`. Deliverables are still written to `outputs/mcp/<result_id>/` on the server.
+
+### Production deployment
+
+To run the server on a remote machine so any client can reach it:
+
+1. Set `LIKEMINDS_MCP_HOST=0.0.0.0` (or the specific bind IP) and `LIKEMINDS_MCP_PORT` in `.env`.
+2. Set all four `R2_*` variables. All file I/O goes through R2 — inputs are uploaded to R2 by the client before `run_skill` and downloaded into the session sandbox by the server; outputs are uploaded to R2 after `<<<LM_DONE>>>` and presigned GET URLs are returned to the client.
+3. Set `CLAUDE_TOKEN` (or log the CLI in on the server machine with `claude setup-token`).
+4. Start the server: `venv/bin/python -m likeminds_mcp`.
+5. Point clients at the public URL instead of `127.0.0.1:8787`:
+   - Claude Code: `claude mcp add --transport http likeminds https://<your-host>/mcp --scope user`
+   - Claude Desktop: replace `http://127.0.0.1:8787/mcp` with the public URL in `mcp-remote` args.
+
+**File input flow (remote clients):**
+
+```
+# Claude Code (has curl)
+1. get_upload_url("file.pdf") → {upload_url, r2_key}
+2. curl -X PUT upload_url --data-binary @file.pdf
+3. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
+
+# Claude Desktop / claude.ai chat (no HTTP client)
+1. upload_file("file.txt", "<content>", encoding="utf-8") → {r2_key, …}
+   # or for binary:
+   upload_file("file.bin", "<base64>", encoding="base64") → {r2_key, …}
+2. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
+```
+
+**Output delivery:**
+
+```
+run_skill(session_id) →
+  {status:"done", result_id:"kb-builder_abc12345",
+   summary:{files:["kb.md","playbook.md"]},
+   download_urls:{
+     "kb.md":      "https://<account>.r2.cloudflarestorage.com/outputs/…?X-Amz-Expires=3600&…",
+     "playbook.md":"https://…"
+   }}
+```
 
 

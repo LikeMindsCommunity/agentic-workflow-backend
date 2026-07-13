@@ -2040,6 +2040,15 @@ The generated skill must use this rendering chain in order, falling back if a to
 
 The compiler embeds all four commands in the generated skill so the agent picks the first available.
 
+**Rule 11b: Post-render cleanup — only SOW.pdf delivered to client**
+
+The generated skill must include a cleanup step immediately after the side-by-side verification pass confirms SOW.pdf is good. All intermediate build artefacts (sow.html, assets/, temp images, .py scripts, etc.) must be deleted from the output directory before signalling done. Only SOW.pdf remains for delivery.
+
+The compiler must embed this exact cleanup block in the generated skill's final phase:
+```bash
+cd <output_dir> && find . ! -name 'SOW.pdf' ! -path '.' -delete && find . -empty -type d -delete
+```
+
 **Rule 12: HTML output — assets and self-containment**
 
 The final HTML the generated skill produces must follow these rules:
