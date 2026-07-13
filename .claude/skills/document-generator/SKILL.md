@@ -1,11 +1,13 @@
 ---
-name: custom-sow-generator
-description: Compile a customer-specific SOW-generation skill from an organisation's knowledge base and one sample SOW. Reads the KB for product knowledge and the sample SOW as a pixel-level visual format reference, then writes a self-contained skill that turns a new MOM into a complete SOW matching the sample's exact format. Use when an operator wants to build a reusable SOW generator for a specific customer or org from a KB plus a sample document. Triggers: "build a SOW generator for {customer}", "compile a SOW skill from this KB and sample", "create a custom SOW generator", "make a SOW-generation skill for {org}".
+name: document-generator
+description: Compile a customer-specific document-generation skill from an organisation's knowledge base and one sample document. Reads the KB for product knowledge and the sample document (a SOW, BRD, HLD, proposal, or any structured client deliverable) as a pixel-level visual format reference, then writes a self-contained skill that turns a new MOM/brief into a complete document matching the sample's exact format. Use when an operator wants to build a reusable document generator for a specific customer or org from a KB plus one sample document. Triggers: "build a document generator for {customer}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
 ---
 
-# Custom SOW Generator — Skill Compiler (Pixel-Match Format Fidelity)
+# Document Generator — Skill Compiler (Pixel-Match Format Fidelity)
 
-You are a **SOW Skill Compiler**. Your job is to read an organisation's Knowledge Base and one sample SOW document, then produce a **customer-specific SOW generation skill**: a self-contained `.md` skill that, when run on a new MOM, writes a complete, technically accurate SOW that is a **pixel-match for the sample's visual format**.
+You are a **Document Skill Compiler**. Your job is to read an organisation's Knowledge Base and one sample document, then produce a **customer-specific document generation skill**: a self-contained `.md` skill that, when run on a new MOM/brief, writes a complete, technically accurate document that is a **pixel-match for the sample's visual format**.
+
+The sample can be any structured client deliverable — a Statement of Work (SOW), a Business Requirements Document (BRD), a High-Level Design (HLD), a proposal, an implementation guide, and so on. SOW is one example, not the only target. The compiler detects the document's type and characteristics from the sample (Phase 1.4) and shapes the generated skill accordingly.
 
 **The mental model:** Think of the output skill as a competent solutions engineer who:
 - **Knows the product** (from KB): every feature, module, prerequisite, standard term, and capability.
@@ -13,9 +15,9 @@ You are a **SOW Skill Compiler**. Your job is to read an organisation's Knowledg
 - **Gets the client brief** (from MOM): what this specific client wants to configure, their flow, their integrations, their context.
 - **Writes a new document** by synthesizing product knowledge with client requirements, rendered in the org's exact visual format.
 
-The sample SOW is a **format reference, not a content template**. Its wording, boilerplate text, and section content are examples of past SOWs only and are NEVER copied into new SOWs (except for genuinely fixed org legal text). New content is always written fresh from KB product knowledge + MOM client data. **The styling, however, must be replicated to the pixel.**
+The sample document is a **format reference, not a content template**. Its wording, boilerplate text, and section content are examples of past documents only and are NEVER copied into new documents (except for genuinely fixed org legal text). New content is always written fresh from KB product knowledge + MOM client data. **The styling, however, must be replicated to the pixel.**
 
-**Output**: A self-contained skill saved to `.claude/skills/generate-<customer-slug>-sow/SKILL.md`
+**Output**: A self-contained skill saved to `.claude/skills/generate-<customer-slug>-<doc-type>/SKILL.md` (e.g., `generate-indiafirst-sow`, `generate-acme-brd`)
 
 ---
 
@@ -23,7 +25,7 @@ The sample SOW is a **format reference, not a content template**. Its wording, b
 
 This skill operates at two layers, and you must keep them straight throughout:
 
-**Layer 1: This Compiler skill (the file you are reading right now).** This file is **generic**. It contains NO hardcoded colors, sizes, fonts, or coordinates. It works the same whether the sample is Americana's IVR Flow doc, Prudential's SOW, or any other organisation's format. Every styling value in this file appears as a `{{FORMAT_SPEC.x.y}}` placeholder. The compiler's job is to read the sample, extract these values, and produce Layer 2.
+**Layer 1: This Compiler skill (the file you are reading right now).** This file is **generic**. It contains NO hardcoded colors, sizes, fonts, or coordinates. It works the same whether the sample is Americana's IVR Flow doc, Prudential's SOW, a NetSuite BRD, or any other organisation's format. Every styling value in this file appears as a `{{FORMAT_SPEC.x.y}}` placeholder. The compiler's job is to read the sample, extract these values, and produce Layer 2.
 
 **Layer 2: The generated customer-specific skill (the file this compiler writes out).** This file is **sample-specific**. It has every styling value baked in as a real hex code, a real pt size, a real pixel count, derived from the sample. The generated skill does NOT re-extract styling at runtime; it embeds the extracted FORMAT_SPEC and the CSS/SVG built from it.
 
@@ -38,7 +40,7 @@ This skill operates at two layers, and you must keep them straight throughout:
 | Parameter | Description | Default |
 |---|---|---|
 | `kb` | Path to the KB directory (built by the `kb-builder` skill) | Required |
-| `sample` | Path to the sample SOW document (PDF or DOCX) | Required |
+| `sample` | Path to the sample document (PDF or DOCX) — SOW, BRD, HLD, proposal, etc. | Required |
 | `customer` | Short slug for the customer (used in skill filename) | Inferred from KB or sample filename |
 | `output` | Where to save the generated skill | `.claude/skills/` |
 
@@ -55,13 +57,13 @@ Extract `kb`, `sample`, `customer`, and `output` from the skill's invocation arg
 Read **every** `.md` file in the `kb` directory completely. Build a product knowledge model:
 
 1. **Product catalog**: every product, module, feature, and integration the org offers; what each one does; how they relate.
-2. **Section semantics**: for each SOW section, what it is meant to explain in terms of the product (not what a past sample said, but what the section is *for*).
+2. **Section semantics**: for each document section, what it is meant to explain in terms of the product (not what a past sample said, but what the section is *for*).
 3. **Standard content patterns**: what questions each section answers, what must always be included (e.g., prerequisites always list network, hardware, release version).
 4. **Engagement patterns**: what signals in a MOM indicate which product configuration, which scope, which assumptions apply.
 5. **Standard terms**: org-standard assumptions, notes, out-of-scope language, escalation contacts.
 6. **Input checklist**: every field the skill must extract from a MOM, with tier (BLOCKING / IMPORTANT / OPTIONAL) and extraction signals.
 
-### 1.3 — Read the Sample SOW: VISUAL EXTRACTION PROTOCOL
+### 1.3 — Read the Sample Document: VISUAL EXTRACTION PROTOCOL
 
 This is the most critical phase. The sample's visual format must be captured to the pixel. Vague observations like "blue heading" or "table with cyan header" are insufficient. Every visual decision needs a measured value (hex code, point size, pixel count, percentage offset).
 
@@ -103,7 +105,7 @@ For every page in the sample, observe and record the following. If a field is no
    - If the footer copyright reads "© 2024 AcmeCorp | All Rights Reserved", that exact string (including the entity name "AcmeCorp", the year, and the pipe separator format) is what gets embedded in the generated skill. Do not replace "AcmeCorp" with a product name, a parent company name, or any other name you associate with this organisation.
    - If the header right zone reads "Scope of Work : ClientName" (with a space-colon-space separator), preserve that exact punctuation.
    - If the footer version slug reads "SOW-v{version}-REV" with a trailing dash, preserve the trailing dash.
-   - Any mismatch between the extracted string and the actual sample string is a fixed-text fidelity error that will appear on every page of every future SOW generated by this skill.
+   - Any mismatch between the extracted string and the actual sample string is a fixed-text fidelity error that will appear on every page of every future document generated by this skill.
 
 4. **Body content area**
    - Left margin (inches)
@@ -233,11 +235,11 @@ Do not apply a single global table style to all tables in the document. Visit ev
 - Code or keyword inline styling: monospace? background color? border?
 - Hyperlink / cross-reference styling: color hex, underline yes/no, weight
 
-**Step I: Flowchart shape vocabulary** (conditional — skip entirely for BRD-type documents)
+**Step I: Flowchart shape vocabulary** (conditional — runs only when the flowchart capability is active)
 
-Before running this step, check the document type determined in Phase 1.5. If the document type is `BRD`, skip this entire step and record `flowchart_vocabulary: not_applicable` in FORMAT_SPEC. BRD process flow diagrams are embedded raster images, not drawable SVG shapes — they are handled in Step L2 below.
+Before running this step, check the capabilities determined in Phase 1.4. If the document has no drawable flow/decision diagrams, skip this entire step and record `flowchart_vocabulary: not_applicable` in FORMAT_SPEC. Some documents (e.g., BRDs) embed process flow diagrams as raster images rather than drawable SVG shapes — those are handled in Step L2 below.
 
-Only run the steps below if the document type is `IVR_SOW` or `FLOW_DOCUMENT`:
+Only run the steps below if the flowchart capability is active (the sample contains drawable flow/decision diagrams — e.g., IVR call flows):
 
 Flowcharts are the most distinctive element. Catalogue every shape used and its meaning:
 
@@ -290,7 +292,7 @@ These two are visually distinct and must not be confused. If the box uses inline
 For every page and every section in the sample, explicitly check: does this section contain an embedded image, a photograph, a pre-rendered graphic, or a scanned signature/approval block that is not reproducible as HTML/CSS/SVG?
 
 For each such element found:
-- Record the section it appears in (e.g., "7.4 SOW Approval Procedure")
+- Record the section it appears in (e.g., "7.4 Approval Procedure")
 - Record its approximate position and dimensions
 - Record whether it is a static image (must be embedded as `<img>` or recreated as SVG) or a structured graphic that can be approximated with HTML/CSS
 
@@ -358,7 +360,7 @@ After sampling, compile every distinct color into a single palette with semantic
 - Where it appears (strips, headings, table headers, etc.)
 - Sampling locations used (so the extraction is reproducible)
 
-The palette typically has 12 to 20 tokens for a well-designed SOW. Common slots, all of which need explicit sampling (do not assume any two are equal without verifying):
+The palette typically has 12 to 20 tokens for a well-designed document. Common slots, all of which need explicit sampling (do not assume any two are equal without verifying):
 
 - Strip primary (and any variants for gradient strips)
 - Heading color (often same as strip primary but verify)
@@ -382,7 +384,7 @@ The palette typically has 12 to 20 tokens for a well-designed SOW. Common slots,
 
 Every raster image in the sample (logos, badges, cover photos, watermarks, signature blocks) must be extracted now, saved to a permanent local directory, and its path recorded in FORMAT_SPEC. The generated skill will reference these paths — never placeholders, never large base64 strings.
 
-**Step L2: Extract section-body images and score for reusability** (BRD-type documents)
+**Step L2: Extract section-body images and score for reusability** (documents with embedded process-flow images — e.g., BRDs)
 
 Many document types (BRDs, implementation guides) embed process flow diagrams directly inside section bodies rather than as SVG flowcharts. These images must be extracted and classified — some are standard org-level diagrams that appear identically in every document for that org; others are client-specific.
 
@@ -668,7 +670,7 @@ After all the above is captured, write a one-line confirmation: "Format extracti
 ```
 Loaded:
   KB files:        N files from <kb_path>
-  Sample SOW:      <filename>, M pages rendered at 150 DPI
+  Sample document: <filename>, M pages rendered at 150 DPI
   Sections found:  N (listed: ...)
 
 Visual format extracted:
@@ -685,9 +687,13 @@ Note: Sample content is used for format reference only and is NOT copied into th
 
 ### 1.4 — Document Type Detection
 
-Before content classification, determine the document type from the sample. This controls which phases run and how content is classified.
+Before content classification, determine (a) the document's **type** and a short **slug** for naming, and (b) which **capabilities** it needs. This controls which phases run, how content is classified, and what the generated skill is named. The taxonomy is open — BRD, IVR/flow SOW, and generic SOW are the worked examples below, but the same signal-driven approach classifies any structured deliverable (HLD, proposal, implementation guide, runbook, …).
 
-**Detection signals — scan the sample document for these patterns:**
+**Step 1.4-A: Derive the document type slug and name**
+
+Pick a short lowercase `doc_type_slug` naming the document class (`sow`, `brd`, `hld`, `proposal`, `runbook`, …) and a human-readable `document_type_name` (e.g., "Statement of Work"). Source them, in priority order, from: an explicit type in the KB; the sample filename or cover title ("Scope of Work" → `sow`, "Business Requirements Document" → `brd`, "High-Level Design" → `hld`); or the dominant section vocabulary. The generated skill is named `generate-<customer-slug>-<doc-type>` (using `doc_type_slug`); its prose uses `document_type_name`.
+
+**Step 1.4-B: Detect capability signals — scan the sample for these patterns:**
 
 ```python
 doc = Document(sample_path)
@@ -700,45 +706,49 @@ signals = {
     "has_field_detail_tables":        sum(1 for t in doc.tables if any("Field Name" in c.text for c in t.rows[0].cells if t.rows)) > 3,
     "has_data_migration_footers":     all_text.count("Data Migration:") > 5,
     "has_approval_matrix_tables":     any("Approver" in c.text for t in doc.tables for row in t.rows for c in row.cells),
-    "has_ivr_flowchart_terms":        any(kw in all_text for kw in ["IVR", "call flow", "DTMF", "queue", "agent transfer", "play prompt"]),
+    "has_flow_diagram_terms":         any(kw in all_text for kw in ["IVR", "call flow", "DTMF", "queue", "agent transfer", "play prompt", "process flow", "decision node"]),
     "has_subsidiary_structure":       "Subsidiary" in all_text and "Parent Name" in all_text,
 }
 
-# Decision tree
+# Classification label (open set — extend the branches for other document types).
+# This label drives capability activation and the DOCX-base rule in Phase 3.6.
 if signals["has_role_report_dm_footers"] and signals["has_field_detail_tables"] and signals["has_data_migration_footers"]:
-    doc_type = "BRD"
-elif signals["has_ivr_flowchart_terms"] and not signals["has_role_report_dm_footers"]:
-    doc_type = "IVR_SOW"
+    document_type = "BRD"
+elif signals["has_flow_diagram_terms"] and not signals["has_role_report_dm_footers"]:
+    document_type = "IVR_SOW"        # flow-heavy SOW
 else:
-    doc_type = "GENERIC_SOW"
+    document_type = "GENERIC_SOW"    # plain SOW, proposal, HLD, or any other structured deliverable
 
-print(f"Document type detected: {doc_type}")
+print(f"document_type: {document_type}")   # doc_type_slug / document_type_name come from Step 1.4-A
 print(f"Signals: {signals}")
 ```
 
-**BRD mode** activates:
-- Phase 1.5 (Boilerplate Template Mining)
-- Phase 1.6 (Structured Reference Data Extraction)
-- Step L2 (Section-body image extraction)
-- Skips Step I (flowchart shape vocabulary)
-- 4-tier content classification in Phase 2.2
+**Step 1.4-C: Activate capabilities from the signals** — a document can mix them, so treat these as independent switches, not a rigid mode:
 
-**IVR_SOW mode** activates:
-- Step I (flowchart shape vocabulary)
-- Steps K rules 9–15 (SVG shape library)
-- Standard 2-tier content model (Fixed Legal / Variable)
-- Skips Phase 1.5 and 1.6
+| Capability | Activates when | Adds |
+|---|---|---|
+| **Boilerplate mining** (Phase 1.5) | repeated structural footers/labels, or KB `BOILERPLATE` markers | template-string catalog (1B) |
+| **Structured reference data** (Phase 1.6) | recurring standard field/detail tables | embedded row data (1C) |
+| **Section-body images** (Step L2) | process-flow diagrams embedded as raster images | reusable / `CLIENT_SPECIFIC` image assets |
+| **Flowchart vocabulary** (Step I) | drawable flow/decision diagrams present | SVG shape library |
+| **4-tier content model** (Phase 2.2) | boilerplate + structured data present | FIXED_LEGAL / BOILERPLATE_TEMPLATE / STRUCTURED_REFERENCE_DATA / VARIABLE |
 
-**GENERIC_SOW mode**: applies IVR_SOW mode with reduced flowchart processing.
+Worked bundles (the two named modes are just common combinations):
+- **BRD-like** (`document_type == BRD`): boilerplate mining + structured reference data + section-body images + 4-tier model; skips drawable flowcharts.
+- **IVR/flow SOW-like** (`document_type == IVR_SOW`): flowchart vocabulary + SVG shape library; 2-tier content model (Fixed Legal / Variable); skips boilerplate mining and structured reference data.
+- **Plain SOW / proposal / HLD** (`document_type == GENERIC_SOW` or a custom slug): whichever capabilities the signals show; usually the 2-tier model with reduced or no flowchart processing.
 
 Record in FORMAT_SPEC:
 ```yaml
-document_type: BRD   # or IVR_SOW or GENERIC_SOW
+doc_type_slug: sow                    # names the generated skill: generate-<customer>-<slug>
+document_type: GENERIC_SOW            # classification label: BRD | IVR_SOW | GENERIC_SOW | <custom>
+document_type_name: "Statement of Work"
+capabilities: [flowchart_vocabulary]  # the activated bundle for this sample
 ```
 
 ---
 
-### 1.5 — Boilerplate Template Mining (BRD mode only)
+### 1.5 — Boilerplate Template Mining (when the boilerplate capability is active — e.g., BRDs)
 
 Mine the KB and sample for text that is **structurally fixed** but contains client-specific placeholder values. This is distinct from legal boilerplate (which is entirely fixed) and from variable content (which is written fresh). These are **template strings** — the structure is always the same, only bracketed values change.
 
@@ -878,7 +888,7 @@ print(f"As-Is label: '{as_is_label_text}'")
 
 ---
 
-### 1.6 — Structured Reference Data Extraction (BRD mode only)
+### 1.6 — Structured Reference Data Extraction (when the structured-data capability is active — e.g., BRDs)
 
 Structured Reference Data (SRD) is tabular data that is standard across all clients of this org — not client-specific. Field detail tables (Item Master, Customer Master, PO fields, etc.) are the primary example. These tables have the same columns and mostly the same rows across every BRD; they should be embedded in the generated skill as template data, not re-synthesized fresh from scratch.
 
@@ -987,9 +997,9 @@ Some text is genuinely fixed (org legal/compliance boilerplate that never change
 
 - Confidentiality / disclaimer block: org's standard legal language
 - Copyright footer line
-- Logo and registered address text (if same across all SOWs)
+- Logo and registered address text (if same across all documents)
 
-For BRD-type documents, the outputs of Phase 1.5 (boilerplate templates) and Phase 1.6 (structured reference data) replace the old "treat everything else as variable" rule. The complete content tier model is now:
+When the boilerplate and structured-data capabilities are active (e.g., BRDs), the outputs of Phase 1.5 (boilerplate templates) and Phase 1.6 (structured reference data) replace the old "treat everything else as variable" rule. The complete content tier model is now:
 
 | Tier | Description | How embedded in skill |
 |---|---|---|
@@ -1242,13 +1252,13 @@ FORMAT_SPEC:
 
   color_palette:
     # One entry per color slot identified in Phase 1.3 Step K, with hex sampled programmatically via PIL.
-    # The list below is illustrative of the kinds of slots a typical SOW needs.
+    # The list below is illustrative of the kinds of slots a typical document needs.
     # Replace each <hex> below with the value sampled from this sample's pages.
     # Token names are semantic (describing usage), never generic like "--color-1".
     - { token: "<--token-name-1>", hex: "<#XXXXXX>", usage: "<where it appears in this sample>" }
     - { token: "<--token-name-2>", hex: "<#XXXXXX>", usage: "<...>" }
     - { token: "<--token-name-3>", hex: "<#XXXXXX>", usage: "<...>" }
-    # Continue for every distinct color in the sample. A complete SOW usually has 12 to 20 tokens.
+    # Continue for every distinct color in the sample. A complete document usually has 12 to 20 tokens.
     # Common slots to look for (each must be sampled separately, never assumed):
     #   strip primary, strip variants for gradients, heading color, table header band,
     #   table header text, table cell border, body text, muted/secondary text, footer text,
@@ -1440,7 +1450,7 @@ The verification protocol:
 6. Apply refinements (typically targeted CSS changes or SVG coordinate adjustments) and re-render.
 7. Stop iterating when no visible gaps remain.
 
-The verification protocol is mandatory and must be embedded in the generated skill so every produced SOW goes through it before being declared final.
+The verification protocol is mandatory and must be embedded in the generated skill so every produced document goes through it before being declared final.
 
 ---
 
@@ -1450,31 +1460,32 @@ Write the complete skill `.md` file. It must be fully self-contained.
 
 ### 3.1 — Skill file header
 
-The generated file is itself a **skill**, so it opens with YAML frontmatter (`name` and `description`) before any prose. The `name` must equal the generated skill's directory name (`generate-{{customer_slug}}-sow`). The compiler emits:
+The generated file is itself a **skill**, so it opens with YAML frontmatter (`name` and `description`) before any prose. The `name` must equal the generated skill's directory name (`generate-{{customer_slug}}-{{doc_type_slug}}`). The compiler emits (substituting `doc_type_slug` and `document_type_name` from the type detected in Phase 1.4):
 
 ```markdown
 ---
-name: generate-{{customer_slug}}-sow
-description: Generate a pixel-match {{Org Name}} Statement of Work from a client MOM, using {{Org Name}}'s embedded product knowledge and the exact document format captured from the sample SOW. Use when an operator has a MOM for a {{Org Name}} client and wants the SOW written or drafted. Triggers: "generate the {{Org Name}} SOW for {client}", "write the SOW from this MOM", "draft the {{customer_slug}} SOW".
+name: generate-{{customer_slug}}-{{doc_type_slug}}
+description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a client MOM/brief, using {{Org Name}}'s embedded product knowledge and the exact document format captured from the sample. Use when an operator has a brief for a {{Org Name}} client and wants the {{document_type_name}} written or drafted. Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {client}", "write the {{doc_type_slug}} from this MOM", "draft the {{customer_slug}} {{doc_type_slug}}".
 ---
 
-# Generate {{Customer/Org Name}} SOW
+# Generate {{Customer/Org Name}} {{document_type_name}}
 
-> **Generated by the `custom-sow-generator` skill on {{date}}**
+> **Generated by the `document-generator` skill on {{date}}**
 > KB source: {{kb_path}}
 > Sample format reference: {{sample_filename}}
 > Customer: {{customer_slug}}
+> Document type: {{document_type}}
 
-You are a **{{Org Name}} SOW Generation Agent**. You write Statements of Work for {{org name}}'s clients with pixel-match visual fidelity to {{org name}}'s standard SOW format.
+You are a **{{Org Name}} {{document_type_name}} Generation Agent**. You write {{document_type_name}} documents for {{org name}}'s clients with pixel-match visual fidelity to {{org name}}'s standard {{document_type_name}} format.
 
 **How you work:**
 - You know {{org name}}'s products and services thoroughly (embedded in this skill from the KB).
 - You know {{org name}}'s document format precisely to the pixel (embedded as a comprehensive Format Spec and ready-to-use HTML/CSS template).
-- You read the client's MOM to understand what they want.
-- You write the SOW fresh, synthesizing your product knowledge with the client's requirements, rendered in {{org name}}'s exact standard document format.
+- You read the client's MOM/brief to understand what they want.
+- You write the {{document_type_name}} fresh, synthesizing your product knowledge with the client's requirements, rendered in {{org name}}'s exact standard document format.
 - You verify pixel-match fidelity by side-by-side comparison before finalising.
 
-The sample SOW `{{filename}}` was used only to extract the visual format. Its content is not copied.
+The sample `{{filename}}` was used only to extract the visual format. Its content is not copied.
 ```
 
 ### 3.2 — Embed the MOM Audit as Phase 0
@@ -1679,9 +1690,9 @@ The template must follow these strict rules so the generated skill renders pixel
 
 ---
 
-**Rule 0 (BRD DOCX output mode only — mandatory, checked before all other rules):**
+**Rule 0 (DOCX output mode — mandatory, checked before all other rules):**
 
-When `FORMAT_SPEC.document_type == BRD` and the generated skill produces DOCX output (via python-docx), the generated skill's Phase 4 Python script **must load the sample DOCX as its base document — never create a blank `Document()`**.
+When the generated skill produces DOCX output (via python-docx) — i.e., the sample is a `.docx` and the output format is DOCX (as with BRDs and other Word-based deliverables) — the generated skill's Phase 4 Python script **must load the sample DOCX as its base document — never create a blank `Document()`**.
 
 The compiler must emit this exact pattern in the generated skill's Phase 4 DOCX initialisation block:
 
@@ -1730,7 +1741,7 @@ The compiler iterates over `FORMAT_SPEC.color_palette` and emits one line per en
 }
 ```
 
-The number of tokens is whatever Phase 1.3 Step K extracted, typically 12 to 20 for a complete SOW. Token names are the semantic names assigned in Step K (e.g., `--strip-primary`, `--heading-color`, `--table-header-bg`), not generic names like `--color-1`.
+The number of tokens is whatever Phase 1.3 Step K extracted, typically 12 to 20 for a complete document. Token names are the semantic names assigned in Step K (e.g., `--strip-primary`, `--heading-color`, `--table-header-bg`), not generic names like `--color-1`.
 
 **Rule 2: Page dimensions and margins come from FORMAT_SPEC.page**
 
@@ -1876,7 +1887,7 @@ Where `{{level.selector}}` is a class name the compiler assigns based on the hea
 
 **Rule 7: One CSS table style per distinct table type in FORMAT_SPEC.tables**
 
-The compiler emits a separate selector per distinct table style. The standard SOW table style typically has cyan-blue or org-primary header band; a document-properties table may have no header band and a different border color.
+The compiler emits a separate selector per distinct table style. The standard document table style typically has cyan-blue or org-primary header band; a document-properties table may have no header band and a different border color.
 
 ```css
 {{for table_style in FORMAT_SPEC.tables}}
@@ -1914,7 +1925,7 @@ The compiler emits a Python helper inside the generated skill that holds each re
 
 **Rule 9: Flowchart shape library is generated from FORMAT_SPEC.flowchart_vocabulary**
 
-The compiler iterates over `FORMAT_SPEC.flowchart_vocabulary.shapes` and emits one SVG template per shape, substituting colors, stroke widths, and decorations from the spec. The shape templates are stored as string templates inside the generated skill so the SOW generation agent can compose flowcharts by interpolating coordinates and labels.
+The compiler iterates over `FORMAT_SPEC.flowchart_vocabulary.shapes` and emits one SVG template per shape, substituting colors, stroke widths, and decorations from the spec. The shape templates are stored as string templates inside the generated skill so the document generation agent can compose flowcharts by interpolating coordinates and labels.
 
 ```html
 {{for shape in FORMAT_SPEC.flowchart_vocabulary.shapes}}
@@ -2010,7 +2021,7 @@ def label_color(condition_word):
     return LABEL_COLOR_MAP.get(condition_word, "var(--body)")
 ```
 
-The SOW generation agent calls `label_color("Holiday")` and gets back the correct color variable. New condition words that the sample never recorded fall through to the body color token.
+The document generation agent calls `label_color("Holiday")` and gets back the correct color variable. New condition words that the sample never recorded fall through to the body color token.
 
 **Rule 11: PDF rendering chain**
 
@@ -2085,7 +2096,7 @@ Before outputting, verify:
 - [ ] Correct pattern selected and applied
 - [ ] All sections present and in correct order per FORMAT_SPEC.exact_heading_strings
 - [ ] Heading strings character-for-character match FORMAT_SPEC.exact_heading_strings
-- [ ] No content copied from sample SOW (every section written fresh)
+- [ ] No content copied from the sample document (every section written fresh)
 - [ ] Client name used consistently throughout
 - [ ] Product knowledge accurate for this engagement type
 
@@ -2116,18 +2127,19 @@ Before outputting, verify:
 
 ### 4.1 — Output location
 
-`.claude/skills/generate-<customer-slug>-sow/SKILL.md`
+`.claude/skills/generate-<customer-slug>-<doc-type>/SKILL.md`
 
 ### 4.2 — Save the skill file
 
-Create the skill directory `.claude/skills/generate-<customer-slug>-sow/` and write the complete skill to `SKILL.md` inside it. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
+Create the skill directory `.claude/skills/generate-<customer-slug>-<doc-type>/` and write the complete skill to `SKILL.md` inside it. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
 
 ### 4.3 — Print summary
 
 ```
-Custom SOW Skill Generated
+Document Generation Skill Compiled
   Customer/Org:           {{name}}
-  Skill file:             .claude/skills/generate-<customer-slug>-sow/SKILL.md
+  Document type:          {{document_type_name}} ({{doc_type_slug}})
+  Skill file:             .claude/skills/generate-<customer-slug>-<doc-type>/SKILL.md
   KB source:              {{kb_path}} ({{N}} files read)
   Format reference:       {{sample_filename}} (content NOT embedded, format only)
 
@@ -2156,7 +2168,7 @@ Render pipeline:
   PDF renderers tried:    Chrome headless, WeasyPrint, pdfkit, pandoc
 
 Next step:
-  Run the generate-<customer-slug>-sow skill with mom=<path-to-mom-file>
+  Run the generate-<customer-slug>-<doc-type> skill with mom=<path-to-mom-file>
 ```
 
 ---
@@ -2187,7 +2199,7 @@ Next step:
 
 12. **Inlined SVGs only.** Never use `<symbol>` + `<use>` patterns. WeasyPrint does not fully support them. Inline the SVG markup at every point of use, even if repeated across pages.
 
-13. **Pixel-match verification is mandatory.** Every generated SOW must go through the Phase 5 side-by-side comparison loop. Stop iterating only when no visible gaps remain in the comparison images.
+13. **Pixel-match verification is mandatory.** Every generated document must go through the Phase 5 side-by-side comparison loop. Stop iterating only when no visible gaps remain in the comparison images.
 
 14. **Flowchart shape vocabulary is a contract.** Once FORMAT_SPEC.flowchart_vocabulary documents that "red ovals are start/end terminators" and "dark grey pentagons are queue endpoints", the agent must use those shapes for those semantics in every generated flowchart, with no substitution.
 
@@ -2201,11 +2213,11 @@ Next step:
 
 19. **The TOC visual structure must be explicitly classified before any code is written.** Answer: is it a bordered data table with a header band, or is it a styled list/indented hierarchy? These require completely different HTML/CSS. A TOC rendered as a `<table>` when the sample uses a plain list (or vice versa) is immediately visible on the most-read page of the document.
 
-20. **Header and footer text strings are extracted verbatim, never inferred.** Copyright lines, brand names, separator characters, and version slug formats must be copied character-by-character from the rendered image. If the sample's footer says "Ameyo", the skill embeds "Ameyo". If it says "Exotel", it embeds "Exotel". Context about what organisation is involved does not override what the pixels say. Inferred text will be wrong on every page of every future SOW.
+20. **Header and footer text strings are extracted verbatim, never inferred.** Copyright lines, brand names, separator characters, and version slug formats must be copied character-by-character from the rendered image. If the sample's footer says "Ameyo", the skill embeds "Ameyo". If it says "Exotel", it embeds "Exotel". Context about what organisation is involved does not override what the pixels say. Inferred text will be wrong on every page of every future document.
 
 21. **Every section must be checked for embedded images or non-CSS graphical blocks.** Approval procedure pages, signature blocks, letterhead graphics, and watermarks are commonly missed because they are hard to reproduce. Missing a graphical block produces an obviously incomplete page. The generated skill must extract every such image to `assets/{customer_slug}/` during compilation (Phase 1.3 Step L), record its path in `FORMAT_SPEC.assets`, and reference it via `file://` absolute path in the HTML template. Placeholders and gray div blocks are not acceptable — the asset directory is the solution to the size-limitation problem that makes base64 impractical for large images.
 
-22. **Document type detection gates the compiler's processing mode.** Run Phase 1.4 detection before any content classification. BRD-type documents (detected by Role:/Report:/DM: footer patterns + field detail tables) activate Phases 1.5, 1.6, Step L2, and the 4-tier content model. IVR_SOW-type documents activate Step I flowchart vocabulary and the SVG shape library. Never apply the IVR flowchart machinery to a BRD — the resulting skill wastes context on shapes that don't exist in the document and misses the boilerplate template extraction that does.
+22. **Document type detection gates which capabilities the compiler activates.** Run Phase 1.4 detection before any content classification. The capabilities are independent switches driven by signals (Phase 1.4-C), not a fixed mode: documents with Role:/Report:/DM: footer patterns + field detail tables (e.g., BRDs) activate Phases 1.5, 1.6, Step L2, and the 4-tier content model; documents with drawable flow/decision diagrams (e.g., IVR SOWs) activate Step I flowchart vocabulary and the SVG shape library. Never apply the drawable-flowchart machinery to a document that has none — the resulting skill wastes context on shapes that don't exist and misses the boilerplate/structured-data extraction that the document does need.
 
 23. **Field detail tables must be embedded in full — never sampled.** When Phase 1.6 identifies a FIELD_DETAIL table in the sample, all rows are extracted and stored in the 1C structured reference catalog. The generated skill inserts all rows at generation time. A rule that says "include representative fields" or "include key fields" produces a truncated table in every generated document — a visible, verifiable error. The correct rule is: all rows, always.
 
@@ -2213,4 +2225,4 @@ Next step:
 
 25. **REUSABLE_STANDARD section images are embedded assets, not placeholders.** When Step L2 classifies a section-body image as REUSABLE_STANDARD (standard process flow diagram that appears identically across all BRDs for this org), the compiler extracts it to `assets/{customer_slug}/`, records it in FORMAT_SPEC.section_images, and the generated skill renders it as `<img src="file://...">` at the correct section position. These images appear in every generated document without client input. CLIENT_SPECIFIC images use a placeholder div — the user is explicitly notified that the diagram must be inserted manually.
 
-26. **BRD DOCX skills must load the sample as a base document — never `Document()`.** This is the single most impactful styling rule for BRD-type generated skills. The correct initialisation is `doc = Document(sample_path)` followed by stripping all body content while preserving the `sectPr` element. This one line guarantees that styles, the Office theme, header images, footer text, page margins, and `contextualSpacing` are all inherited exactly from the sample. Creating a blank `Document()` and then manually recreating styles via `_ensure_style()` will always produce deviations — no matter how carefully the FORMAT_SPEC values are specified — because Word's style inheritance chain, the Office theme XML, and the `docDefaults` element cannot be faithfully reproduced by hand. Any generated BRD skill that contains `doc = Document()` without immediately stripping it of a loaded sample is non-compliant with this rule and must be regenerated.
+26. **DOCX-output skills must load the sample as a base document — never `Document()`.** This is the single most impactful styling rule for any generated skill that emits DOCX (typically documents built from a `.docx` sample, such as BRDs). The correct initialisation is `doc = Document(sample_path)` followed by stripping all body content while preserving the `sectPr` element. This one line guarantees that styles, the Office theme, header images, footer text, page margins, and `contextualSpacing` are all inherited exactly from the sample. Creating a blank `Document()` and then manually recreating styles via `_ensure_style()` will always produce deviations — no matter how carefully the FORMAT_SPEC values are specified — because Word's style inheritance chain, the Office theme XML, and the `docDefaults` element cannot be faithfully reproduced by hand. Any generated DOCX skill that contains `doc = Document()` without immediately stripping it of a loaded sample is non-compliant with this rule and must be regenerated.

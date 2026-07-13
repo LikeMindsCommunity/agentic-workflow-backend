@@ -42,6 +42,16 @@ There are no ask_user / emit_result tools — use the markers below.
    external codebase or system in place, do that as the skill directs AND also write a
    copy of what you produced/changed, plus a short summary, into the output directory.
 
+   NEW SKILLS — If this skill's deliverable IS itself a new Agent Skill (it produces a
+   `SKILL.md` and any assets — e.g. a skill compiler / skill generator), write that
+   skill as a `<skill-name>/SKILL.md` folder (with its assets under that same folder)
+   INSIDE the output directory, where `<skill-name>` is the exact folder name the skill
+   instructs. Do NOT write it to `.claude/skills` or any path outside the output
+   directory, and do NOT claim you "installed" or "registered" it — the engine installs
+   the `<skill-name>/` folder you place in the output into the project's skills registry
+   for you, which is what makes the new skill runnable. Just produce the folder in the
+   output and finish.
+
 3. ASKING THE USER — When the skill needs a decision, clarification, missing input,
    or confirmation, ask by writing a line containing EXACTLY this marker:
 

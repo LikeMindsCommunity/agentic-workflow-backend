@@ -137,6 +137,50 @@ def _promote(session_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
     return written
 
 
+def _install_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
+    """Register any skill-shaped deliverable into the project's live skills dir.
+
+    A skill-creation skill (document-generator, generate-find-bugs-skill,
+    skill-creator, …) produces a NEW Agent Skill — a `SKILL.md` plus its assets. But
+    the harness makes every skill write its deliverable into the sandbox output dir, so
+    a freshly built skill would otherwise land only in outputs/mcp/<id>/ and never be
+    discoverable by registry._index(). This step deterministically copies each skill
+    folder found in the harvest into SKILLS_DIR/<name>/, so list_skills / run_skill pick
+    it up on the very next call — independent of where (or whether) the spawned model
+    tried to install it. The deliverable is still promoted to outputs/mcp/<id>/ as well.
+
+    A skill's root is the directory holding its SKILL.md; that directory's name is the
+    skill name (matching how registry keys skills by folder). If a SKILL.md sits at the
+    harvest root, the whole harvest is one skill and the name comes from its frontmatter
+    `name:`. Returns the names of the skills installed."""
+    roots: dict[str, str] = {}   # path-prefix under the harvest -> skill name
+    for rel, content in harvested:
+        if Path(rel).name != "SKILL.md":
+            continue
+        parent = Path(rel).parent
+        if str(parent) == ".":
+            name = registry.frontmatter_field(content.decode("utf-8", "replace"), "name")
+            prefix = ""
+        else:
+            name = parent.name
+            prefix = str(parent) + "/"
+        name = Path(name.strip()).name  # sanitize: no path separators / traversal
+        if name:
+            roots[prefix] = name
+
+    installed: list[str] = []
+    for prefix, name in roots.items():
+        dest_root = config.SKILLS_DIR / name
+        for rel, content in harvested:
+            if not rel.startswith(prefix):
+                continue
+            out = dest_root / rel[len(prefix):]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(content)
+        installed.append(name)
+    return installed
+
+
 def _seed_prior_outputs(output_dir: Path, prior: Path) -> list[str]:
     """Copy a prior session's promoted deliverable into this run's output dir so the
     skill can read and extend it in place — harvest then captures the full updated set
@@ -216,8 +260,12 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
             # survives the purge and can be continued later under the same session_id.
             harvested = _harvest(sess.sandbox)
             names = _promote(sess.id, harvested)
+            registered = _install_skills(harvested)
             sessions.purge(sess)
-            sess.result = {"result_id": sess.id, "summary": {"files": names}}
+            summary = {"files": names}
+            if registered:
+                summary["skills_registered"] = registered
+            sess.result = {"result_id": sess.id, "summary": summary}
             sess.status = "done"
             return
     except asyncio.CancelledError:
@@ -252,12 +300,22 @@ def _snapshot(sess: sessions.Session) -> dict:
         return {"status": "need_input", "session_id": sess.id,
                 "questions": sess.questions, "next_step": RELAY_TEXT}
     if sess.status == "done":
-        return {"status": "done", "session_id": sess.id, **(sess.result or {}),
-                "next_step": (
-                    f"Done. Tell the user their session_id is {sess.id} and that they "
-                    "can save it and pass it back later (with a skill + context) on a "
-                    "run_skill call to continue building on these output artifacts."
-                )}
+        result = sess.result or {}
+        registered = (result.get("summary") or {}).get("skills_registered")
+        save_note = (
+            f"Tell the user their session_id is {sess.id} and that they can save it and "
+            "pass it back later (with a skill + context) on a run_skill call to continue "
+            "building on these output artifacts."
+        )
+        if registered:
+            next_step = (
+                "Done. Registered new skill(s) into this server's .claude/skills so they "
+                "resolve on the next list_skills/run_skill call: "
+                + ", ".join(registered) + ". " + save_note
+            )
+        else:
+            next_step = "Done. " + save_note
+        return {"status": "done", "session_id": sess.id, **result, "next_step": next_step}
     if sess.status == "error":
         return {"status": "error", "session_id": sess.id,
                 "message": sess.error or "unknown error"}

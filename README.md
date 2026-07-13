@@ -24,7 +24,7 @@ agentic-workflow-backend/
 │   │   ├── code-agent/               #   KB + SOW → integration code, wired into your repo
 │   │   ├── api-agent/                #   KB + SOW → LLD / execution document
 │   │   ├── runner-agent/             #   execute an LLD live (HTTP calls or browser actions)
-│   │   ├── custom-sow-generator/     #   compile a per-client SOW generator from a KB + one sample
+│   │   ├── document-generator/       #   compile a per-client document generator from a KB + one sample
 │   │   ├── generate-find-bugs-skill/ #   KB → a per-client find-bugs-{client} checker skill
 │   │   ├── diagnose-bug/             #   validate a bug report → PENDING row in the approval sheet
 │   │   ├── process-comparison/       #   approved comparison findings → approval sheet (with RCA)
@@ -210,19 +210,20 @@ api-agent    kb=outputs/getstream/kb/ sow=inputs/feed.md     ->  outputs/getstre
 runner-agent lld=outputs/getstream/lld/feed.md               ->  live run + run record
 ```
 
-### Document and SOW generators
+### Document generators
 
-#### `custom-sow-generator` — compile a per-client SOW skill
+#### `document-generator` — compile a per-client document skill
 
-Reads an organisation's KB plus **one sample SOW** (used as a pixel-level visual format
-reference) and writes a self-contained skill that turns a new MOM into a complete SOW
-matching the sample's exact format.
+Reads an organisation's KB plus **one sample document** (a SOW, BRD, HLD, proposal, or any
+structured deliverable, used as a pixel-level visual format reference) and writes a
+self-contained skill that turns a new MOM/brief into a complete document matching the
+sample's exact format.
 
 
-|              |                                                                                           |
-| ------------ | ----------------------------------------------------------------------------------------- |
-| **Triggers** | *"build a SOW generator for {customer}"*, *"compile a SOW skill from this KB and sample"* |
-| **Output**   | a new `.claude/skills/<customer>-sow/` skill                                              |
+|              |                                                                                                     |
+| ------------ | --------------------------------------------------------------------------------------------------- |
+| **Triggers** | *"build a document generator for {customer}"*, *"compile a document skill from this KB and sample"* |
+| **Output**   | a new `.claude/skills/generate-<customer>-<doc-type>/` skill                                        |
 
 
 ### Automated bug-fix loop

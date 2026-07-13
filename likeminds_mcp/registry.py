@@ -12,17 +12,37 @@ from __future__ import annotations
 from .config import SKILLS_DIR
 
 
-def _frontmatter_description(text: str) -> str:
-    """Pull `description:` out of a YAML frontmatter block, if present."""
+def frontmatter_field(text: str, field: str) -> str:
+    """Pull a top-level `<field>:` value out of a YAML frontmatter block, if present.
+
+    Handles a plain single-line value (`field: text`, quotes stripped) and a YAML
+    block scalar (`field: >-` / `|` followed by an indented block — the form
+    skill-generators emit for long descriptions), flattening the block to one line.
+    Returns "" if the field is absent or there is no frontmatter."""
     lines = text.splitlines()
     if not lines or lines[0].strip() != "---":
         return ""
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            break
-        if lines[i].lstrip().startswith("description:"):
-            return lines[i].split(":", 1)[1].strip()
+    end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), len(lines))
+    prefix = field + ":"
+    for i in range(1, end):
+        line = lines[i]
+        if line[:1].isspace() or not line.startswith(prefix):
+            continue  # only a top-level (unindented) frontmatter key
+        value = line[len(prefix):].strip()
+        if value[:1] in ("|", ">"):  # block scalar: flatten the indented body
+            body = []
+            for nxt in lines[i + 1:end]:
+                if nxt.strip() and not nxt[:1].isspace():
+                    break  # a dedented line ends the block
+                body.append(nxt.strip())
+            return " ".join(p for p in body if p)
+        return value.strip("\"'").strip()
     return ""
+
+
+def _frontmatter_description(text: str) -> str:
+    """Pull `description:` out of a YAML frontmatter block, if present."""
+    return frontmatter_field(text, "description")
 
 
 def _first_meaningful_line(text: str) -> str:
