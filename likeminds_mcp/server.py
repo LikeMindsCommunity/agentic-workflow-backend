@@ -1,4 +1,4 @@
-"""FastMCP server: the client-facing tools `run_skill`, `upload_file`, `list_skills`.
+"""FastMCP server: the client-facing tools `run_skill`, `get_upload_url`, `list_skills`.
 
 Execution model — background asyncio task + long-poll (avoids the client's MCP
 idle timeout). A skill turn can run for minutes, far longer than the client's
@@ -12,8 +12,13 @@ States: running -> need_input <-> running -> ... -> done | error
   - running     : a turn is executing; keep polling.
   - need_input  : the skill asked; relay the questions, then call again with
                   session_id + response.
-  - done        : finished; deliverable harvested to outputs/mcp/<result_id>/.
+  - done        : finished; deliverable uploaded to R2 with presigned download URLs.
   - error       : the run failed.
+
+File input flow (remote clients):
+  1. call get_upload_url(filename) -> {upload_url, r2_key}
+  2. HTTP PUT file bytes to upload_url directly (server memory never touched)
+  3. pass r2_key(s) to run_skill via r2_keys — server downloads into inputs dir
 
 Everything runs on the server's single event loop — the background driver is an
 asyncio.Task, not a thread — so there are no cross-loop objects and nothing is
@@ -30,12 +35,9 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from dotenv import load_dotenv
 from mcp.server.fastmcp import FastMCP
 
-from . import config, engine, registry, sessions
-
-load_dotenv()
+from . import config, engine, registry, sessions, storage
 
 
 def _configure_auth() -> None:
@@ -73,9 +75,11 @@ RELAY_TEXT = (
     "Show these question(s) to the user verbatim and wait for their reply. They may "
     "answer, or reply 'done' to stop and finish with whatever is complete. Then call "
     "run_skill again with this session_id and their `response`. To attach a file "
-    "with the answer: if you have a real local path use `input_paths`; otherwise "
-    "call the `upload_file` tool first and pass the returned id in `upload_refs` on "
-    "the SAME run_skill call. Do NOT answer the question yourself."
+    "with the answer: if you have a real local path use `input_paths`; if you can "
+    "make HTTP requests call get_upload_url first, PUT the file to the returned "
+    "upload_url, then pass the r2_key in `r2_keys`; if you cannot make HTTP requests "
+    "(Claude Desktop / claude.ai chat) call upload_file(name, content) and pass the "
+    "returned r2_key in `r2_keys` on the SAME run_skill call. Do NOT answer the question yourself."
 )
 POLL_TEXT = (
     "Still working. Tell the user the current `progress` and `files_written`, then "
@@ -89,22 +93,24 @@ POLL_TEXT = (
 # Output harvesting + deliverable promotion
 # ----------------------------------------------------------------------------- #
 
-def _harvest(sandbox: Path) -> list[tuple[str, bytes]]:
+def _harvest(output_dir: Path, sandbox: Path) -> list[tuple[str, bytes]]:
     """Collect the deliverable from the sandbox as raw bytes (so binary outputs like
-    PDF/DOCX/XLSX survive intact). Prefer `output/`; fall back to `work/`."""
-    for sub in ("output", "work"):
-        base = sandbox / sub
-        if not base.is_dir():
-            continue
-        files = [p for p in sorted(base.rglob("*")) if p.is_file()]
+    PDF/DOCX/XLSX survive intact). Reads from output_dir (sess.output_dir) first;
+    falls back to sandbox/work/ if output_dir is empty."""
+    if output_dir.is_dir():
+        files = [p for p in sorted(output_dir.rglob("*")) if p.is_file()]
         if files:
-            return [(str(p.relative_to(base)), p.read_bytes()) for p in files]
+            return [(str(p.relative_to(output_dir)), p.read_bytes()) for p in files]
+    work = sandbox / "work"
+    if work.is_dir():
+        files = [p for p in sorted(work.rglob("*")) if p.is_file()]
+        if files:
+            return [(str(p.relative_to(work)), p.read_bytes()) for p in files]
     return []
 
 
-def _promote(skill: str, harvested: list[tuple[str, bytes]]) -> tuple[str, list[str]]:
+def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
     """Write the harvested (name, bytes) files to outputs/mcp/<result_id>/."""
-    result_id = f"{skill}_{uuid.uuid4().hex[:8]}"
     dest = config.RESULTS_DIR / result_id
     dest.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -113,7 +119,41 @@ def _promote(skill: str, harvested: list[tuple[str, bytes]]) -> tuple[str, list[
         out.parent.mkdir(parents=True, exist_ok=True)
         out.write_bytes(content)
         written.append(name)
-    return result_id, written
+    return written
+
+
+def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
+    """Auto-register any generated skills found in harvested output.
+
+    A generated skill is identified by a file matching <skill-name>/SKILL.md.
+    It is written into .claude/skills/<skill-name>/SKILL.md so the registry
+    picks it up immediately. Also gitignores the generated directory so it is
+    never accidentally committed. Returns the list of registered skill names.
+    Content is never exposed to the client — only the skill name is returned."""
+    registered: list[str] = []
+    for name, content in harvested:
+        parts = Path(name).parts
+        if len(parts) == 2 and parts[1] == "SKILL.md":
+            skill_name = parts[0]
+            dest = config.SKILLS_DIR / skill_name / "SKILL.md"
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(content)
+            registered.append(skill_name)
+            _gitignore_generated_skill(skill_name)
+    return registered
+
+
+def _gitignore_generated_skill(skill_name: str) -> None:
+    """Append the generated skill directory to .gitignore if not already present."""
+    gitignore = config.PROJECT_ROOT / ".gitignore"
+    entry = f".claude/skills/{skill_name}/"
+    try:
+        existing = gitignore.read_text(encoding="utf-8") if gitignore.exists() else ""
+        if entry not in existing:
+            with gitignore.open("a", encoding="utf-8") as f:
+                f.write(f"\n# generated skill (auto-registered by likeminds-mcp)\n{entry}\n")
+    except Exception:  # noqa: BLE001 — gitignore update is best-effort
+        pass
 
 
 # ----------------------------------------------------------------------------- #
@@ -173,11 +213,37 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 sess.progress = "Reading your answer…"
                 continue
 
-            # emit: harvest the deliverable, purge the sandbox, report done.
-            harvested = _harvest(sess.sandbox)
-            result_id, names = _promote(sess.skill, harvested)
+            # emit: harvest the deliverable, upload to R2, purge the sandbox, report done.
+            harvested = _harvest(sess.output_dir, sess.sandbox)
+            names = _promote(sess.result_id, harvested)
+            if config.USE_R2 and sess.r2_keys:
+                storage.delete_inputs(sess.r2_keys)
+
+            # Auto-register any generated skills (e.g. from custom-sow-generator).
+            # Registered files are excluded from download_urls — content is never
+            # sent to the client. Only the skill name is returned.
+            registered = _register_skills(harvested)
+            deliverable = [] if registered else list(harvested)
+
+            download_urls: dict = {}
+            if config.USE_R2 and deliverable:
+                try:
+                    download_urls = storage.upload_outputs(sess.result_id, deliverable)
+                except Exception as e:  # noqa: BLE001 — R2 failure must not lose the result
+                    download_urls = {"_error": f"R2 upload failed: {e}"}
             sessions.purge(sess)
-            sess.result = {"result_id": result_id, "summary": {"files": names}}
+            sess.result = {
+                "result_id": sess.result_id,
+                "summary": {"files": names},
+                **({"registered_skills": registered,
+                    "next_step": (
+                        f"Skill(s) {registered} registered successfully. "
+                        "To use a registered skill, call run_skill with "
+                        "skill='{skill_name}' and pass the client MOM via "
+                        "`context` or `artifacts`. The skill content is private."
+                    )} if registered else {}),
+                **({"download_urls": download_urls} if download_urls else {}),
+            }
             sess.status = "done"
             return
     except asyncio.CancelledError:
@@ -186,6 +252,8 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
     except Exception as e:  # noqa: BLE001 — surface as a job error, never crash the loop
         sess.status = "error"
         sess.error = f"{type(e).__name__}: {e}"
+        if config.USE_R2 and sess.r2_keys:
+            storage.delete_inputs(sess.r2_keys)
         sessions.purge(sess)  # cleanup on the error path too
     finally:
         sess.finished = True
@@ -232,24 +300,9 @@ def _snapshot(sess: sessions.Session) -> dict:
 # Inputs plumbing
 # ----------------------------------------------------------------------------- #
 
-# In-memory uploads store: upload_ref -> {"name": str, "data": bytes}. Lets a client
-# that can't pass a local file path (e.g. the regular Claude chat) push a file's
-# content in, then reference it by ref on run_skill.
-UPLOADS: dict[str, dict] = {}
-
-
-def _materialize_uploads(inputs_dir: Path, refs: list | None) -> list[str]:
-    added: list[str] = []
-    for ref in refs or []:
-        item = UPLOADS.pop(str(ref), None)
-        if item:
-            (inputs_dir / item["name"]).write_bytes(item["data"])
-            added.append(item["name"])
-    return added
-
-
 def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
-    """Copy local files (incl. binaries) into the session inputs dir."""
+    """Copy local files (incl. binaries) into the session inputs dir.
+    Only works when the server and client share the same filesystem (local use)."""
     copied: list[str] = []
     for p in paths or []:
         src = Path(str(p)).expanduser()
@@ -264,11 +317,62 @@ def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
 # ----------------------------------------------------------------------------- #
 
 @mcp.tool()
+async def get_upload_url(filename: str) -> dict:
+    """Get a presigned URL to upload a file directly to R2 storage.
+
+    Call this BEFORE run_skill when you have a file to pass as input.
+    Steps:
+      1. Call get_upload_url(filename) -> {upload_url, r2_key}
+      2. HTTP PUT the raw file bytes to upload_url (no auth header needed)
+      3. Pass r2_key to run_skill via the `r2_keys` parameter
+
+    This uploads directly from the client to R2 — the server never holds
+    the file bytes in memory. The upload URL is valid for 5 minutes.
+    For plain text content you can skip this and use run_skill's `artifacts`
+    parameter directly instead.
+    """
+    if not config.USE_R2:
+        return {"error": "R2 is not configured on this server. Use `artifacts` for text content."}
+    upload_url, r2_key = storage.presigned_put_url(filename)
+    return {
+        "upload_url": upload_url,
+        "r2_key": r2_key,
+        "instructions": "HTTP PUT your file bytes to upload_url, then pass r2_key to run_skill via r2_keys.",
+    }
+
+
+@mcp.tool()
+async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
+    """Upload a file to R2 storage by passing its content directly (for Claude Desktop
+    and claude.ai chat clients that cannot make HTTP PUT requests).
+
+    Pass the file content as a string:
+      - encoding="utf-8"   — plain text content (default)
+      - encoding="base64"  — binary content base64-encoded
+
+    Returns {r2_key, name, bytes}. Pass r2_key to run_skill via the `r2_keys`
+    parameter on the same or a subsequent call.
+
+    For Claude Code CLI clients that can run curl, prefer get_upload_url instead
+    (it uploads directly to R2 without passing bytes through the server).
+    """
+    if not config.USE_R2:
+        return {"error": "R2 is not configured on this server. Cannot upload file."}
+    clean = Path(name).name or "upload.bin"
+    try:
+        data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
+    except Exception as e:
+        return {"error": f"could not decode content: {e}"}
+    r2_key = storage.upload_bytes(clean, data)
+    return {"r2_key": r2_key, "name": clean, "bytes": len(data)}
+
+
+@mcp.tool()
 async def run_skill(
     skill: Optional[str] = None,
     artifacts: Optional[list] = None,
     input_paths: Optional[list] = None,
-    upload_refs: Optional[list] = None,
+    r2_keys: Optional[list] = None,
     urls: Optional[list] = None,
     context: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -280,18 +384,19 @@ async def run_skill(
     First call: provide `skill` (any name from `list_skills`, e.g. 'kb-builder',
     'config-agent', 'generate-document') and its inputs. `context` says WHAT to do
     (a prompt / SOW / instructions). Ways to supply files:
-    - `input_paths` — absolute paths to local files (best for binary/large files;
-      only when you have a real local path, e.g. Claude Code).
-    - `upload_refs` — ids from the `upload_file` tool (when you have NO local path,
-      e.g. the regular Claude chat: call upload_file first, pass the ref).
-    - `artifacts` / `files` — inline text content ([{name, content}]).
+    - `r2_keys`     — R2 keys from get_upload_url (preferred for all file types).
+                      Call get_upload_url first, PUT the file to the returned
+                      upload_url, then pass the r2_key here.
+    - `input_paths` — absolute local paths (only works when client and server share
+                      the same filesystem, e.g. Claude Code CLI on the same machine).
+    - `artifacts` / `files` — inline text content [{name, content}] for small text.
     You get back `status: "running"` with a `session_id`.
 
     Then POLL: call again with ONLY that `session_id` (no other args). Keep polling
     while status is `running`. When status is `need_input`, show the `questions` to
     the user verbatim, wait for their reply, then call again with `session_id` +
     `response` (do NOT answer them yourself) and resume polling. Stop when status is
-    `done` (deliverable at outputs/mcp/<result_id>/) or `error`.
+    `done` (download_urls contains presigned URLs to fetch each result file) or `error`.
     """
     if session_id:
         sess = sessions.get_session(session_id)
@@ -304,14 +409,16 @@ async def run_skill(
         # session_id (or an empty response) is just a poll — it must NOT finish the
         # run. Only deliver a reply while the skill is actually waiting for one.
         has_answer = bool(
-            (response and response.strip()) or files or input_paths or artifacts or upload_refs
+            (response and response.strip()) or files or input_paths or artifacts or r2_keys
         )
         if has_answer and sess.status == "need_input":
+            if r2_keys and config.USE_R2:
+                sess.r2_keys.extend(r2_keys)
             added = (
                 engine._write_artifacts(sess.inputs_dir, artifacts)
                 + engine._write_artifacts(sess.inputs_dir, files)
                 + _copy_input_paths(sess.inputs_dir, input_paths)
-                + _materialize_uploads(sess.inputs_dir, upload_refs)
+                + (storage.download_inputs(r2_keys, sess.inputs_dir) if config.USE_R2 else [])
             )
             _deliver_reply(sess, engine.build_reply_message(response, added))
         await _wait_for_change(sess)
@@ -322,35 +429,17 @@ async def run_skill(
         available = ", ".join(s["name"] for s in registry.list_skills())
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
     sess = sessions.new_session(skill)
+    if r2_keys and config.USE_R2:
+        sess.r2_keys.extend(r2_keys)
     engine._write_artifacts(sess.inputs_dir, artifacts)
+    engine._write_artifacts(sess.inputs_dir, files)
     _copy_input_paths(sess.inputs_dir, input_paths)
-    _materialize_uploads(sess.inputs_dir, upload_refs)
+    if config.USE_R2:
+        storage.download_inputs(r2_keys, sess.inputs_dir)
     first_message = engine.build_first_message(skill, sess, urls, context)
     sess.task = asyncio.create_task(_drive(sess, first_message))
     await _wait_for_change(sess)
     return _snapshot(sess)
-
-
-@mcp.tool()
-async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
-    """Upload a file's content so a skill can use it — for clients with NO local
-    filesystem path to pass (e.g. the regular Claude chat).
-
-    Provide the file's full content as `content` (plain text, or base64 with
-    encoding='base64' for binary). Returns an `upload_ref`; pass that ref to
-    run_skill's `upload_refs` — on the first call as an input, or on a continuation
-    to answer with a file. Prefer run_skill's `input_paths` when you have a real
-    local file path (e.g. Claude Code)."""
-    clean = Path(name).name or "upload.bin"
-    try:
-        data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
-    except Exception as e:  # noqa: BLE001
-        return {"error": f"could not decode content ({encoding}): {e}"}
-    ref = "up_" + uuid.uuid4().hex[:12]
-    UPLOADS[ref] = {"name": clean, "data": data}
-    while len(UPLOADS) > config.MAX_UPLOADS:   # evict oldest un-consumed uploads
-        UPLOADS.pop(next(iter(UPLOADS)))
-    return {"upload_ref": ref, "name": clean, "bytes": len(data)}
 
 
 @mcp.tool()
