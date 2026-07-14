@@ -24,7 +24,7 @@ agentic-workflow-backend/
 │   │   ├── code-agent/               #   KB + SOW → integration code, wired into your repo
 │   │   ├── api-agent/                #   KB + SOW → LLD / execution document
 │   │   ├── runner-agent/             #   execute an LLD live (HTTP calls or browser actions)
-│   │   ├── setup-document-generator/ #   one call: artifacts → KB → per-client generator
+│   │   ├── create-document-generator/ #   one call: artifacts → KB → per-client generator
 │   │   ├── document-generator/       #   compile a per-client document generator from a KB + one sample
 │   │   ├── generate-find-bugs-skill/ #   KB → a per-client find-bugs-{client} checker skill
 │   │   ├── diagnose-bug/             #   validate a bug report → PENDING row in the approval sheet
@@ -214,7 +214,7 @@ runner-agent lld=outputs/getstream/lld/feed.md               ->  live run + run 
 
 ### Document generators
 
-#### `setup-document-generator` — one call: KB + compiled generator
+#### `create-document-generator` — one call: KB + compiled generator
 
 The one-time entry point. Runs `kb-builder` then `document-generator` in a single session:
 builds (or extends) the client KB from raw artifacts, then compiles a reusable

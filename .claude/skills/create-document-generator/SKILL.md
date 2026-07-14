@@ -1,9 +1,9 @@
 ---
-name: setup-document-generator
-description: One-call setup for a per-client document generator. From a client's raw artifacts it builds (or extends) the knowledge base with kb-builder, then compiles a reusable generate-<client>-<doctype> skill with document-generator — both in a single session, handing the KB from the first step to the second. Use when onboarding a new client or document type from scratch and you want the KB and the generator produced together in one go, instead of running kb-builder and document-generator as separate manual steps. When it finishes, you call the generated generate-<client>-<doctype> skill with a MOM/brief to produce each document. Inputs: inputs=<artifacts dir>, sample=<one format-reference document>, optional customer / prompt. Triggers: "set up a document generator for {client}", "onboard {client} from these artifacts", "build the KB and the {doctype} generator for {client}", "setup-document-generator".
+name: create-document-generator
+description: One-call setup for a per-client document generator. From a client's raw artifacts it builds (or extends) the knowledge base with kb-builder, then compiles a reusable generate-<client>-<doctype> skill with document-generator — both in a single session, handing the KB from the first step to the second. Use when onboarding a new client or document type from scratch and you want the KB and the generator produced together in one go, instead of running kb-builder and document-generator as separate manual steps. When it finishes, you call the generated generate-<client>-<doctype> skill with a MOM/brief to produce each document. Inputs: inputs=<artifacts dir>, sample=<one format-reference document>, optional customer / prompt. Triggers: "set up a document generator for {client}", "onboard {client} from these artifacts", "build the KB and the {doctype} generator for {client}", "create-document-generator".
 ---
 
-# setup-document-generator — one-call setup for a per-client document generator
+# create-document-generator — one-call setup for a per-client document generator
 
 You take a client's raw artifacts and a single sample document and, in **one session**, produce two things: the client's **knowledge base** and a **ready-to-run `generate-<client>-<doctype>` skill**. After this runs once, the operator generates documents by calling that generated skill with a MOM/brief — this skill is the one-time setup, not the per-document step.
 
