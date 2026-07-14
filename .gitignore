@@ -52,3 +52,5 @@ outputs/getstream/runs/
 
 # generated skills (auto-registered by likeminds-mcp)
 .claude/skills/generate-exotel-ivr-sow/
+# generated skill (auto-registered by likeminds-mcp)
+.claude/skills/generate-prudential-pensions-zambia-sow/
