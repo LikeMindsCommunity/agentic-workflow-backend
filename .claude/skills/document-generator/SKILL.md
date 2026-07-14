@@ -2040,13 +2040,13 @@ The generated skill must use this rendering chain in order, falling back if a to
 
 The compiler embeds all four commands in the generated skill so the agent picks the first available.
 
-**Rule 11b: Post-render cleanup — only SOW.pdf delivered to client**
+**Rule 11b: Post-render cleanup — only the final {{document_type_name}} PDF delivered to client**
 
-The generated skill must include a cleanup step immediately after the side-by-side verification pass confirms SOW.pdf is good. All intermediate build artefacts (sow.html, assets/, temp images, .py scripts, etc.) must be deleted from the output directory before signalling done. Only SOW.pdf remains for delivery.
+The generated skill must include a cleanup step immediately after the side-by-side verification pass confirms the final PDF is good. All intermediate build artefacts (the working .html, assets/, temp images, .py scripts, etc.) must be deleted from the output directory before signalling done. Only the deliverable PDF remains for delivery — named after the document type in uppercase (`SOW.pdf`, `BRD.pdf`, `HLD.pdf`, … i.e. `doc_type_slug` uppercased).
 
-The compiler must embed this exact cleanup block in the generated skill's final phase:
+The compiler must embed this cleanup block in the generated skill's final phase, with `{{DOC_TYPE_SLUG}}` replaced by the uppercased `doc_type_slug` so the filter keeps the real deliverable (e.g. `SOW.pdf` for `sow`, `BRD.pdf` for `brd`):
 ```bash
-cd <output_dir> && find . ! -name 'SOW.pdf' ! -path '.' -delete && find . -empty -type d -delete
+cd <output_dir> && find . ! -name '{{DOC_TYPE_SLUG}}.pdf' ! -path '.' -delete && find . -empty -type d -delete
 ```
 
 **Rule 12: HTML output — assets and self-containment**
