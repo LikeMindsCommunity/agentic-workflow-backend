@@ -1,8 +1,9 @@
 """In-process session records for the resume-per-turn engine.
 
-A session is now a LIGHTWEIGHT record: an id (a real UUID, reused as Claude Code's
-own session id for `--session-id` / `--resume`), a sandbox on disk, and the job
-state polled by the client. There is NO live SDK client, worker thread, or event
+A session is now a LIGHTWEIGHT record: a durable id (names the output bucket and the
+caller-facing poll handle), a fresh Claude Code session id (`cc_id`, used for
+`--session-id` / `--resume`), a sandbox on disk, and the job state polled by the
+client. There is NO live SDK client, worker thread, or event
 loop parked between turns — Claude Code's on-disk session store carries the
 conversation, and each turn is a fresh `claude -p` subprocess. That makes the store
 cheap to hold, survivable across a server restart, and free of the cross-loop and
@@ -26,12 +27,17 @@ _SESSIONS: dict[str, "Session"] = {}
 
 @dataclass
 class Session:
-    id: str
+    id: str                   # durable id: names outputs/mcp/<id>/ + the poll handle
+    cc_id: str                # Claude Code session id for --session-id/--resume (fresh per run)
     skill: str                # the skill this session is running
-    result_id: str            # stable deliverable id: "<skill>_<session-uuid>"
-    sandbox: Path             # <project>/.sessions/<id>
+    result_id: str            # stable deliverable id "<skill>_<durable-id>" — names the output bucket (local + R2)
+    sandbox: Path             # <project>/.sessions/<cc_id>
     inputs_dir: Path          # <sandbox>/inputs
     output_dir: Path          # <sandbox>/output/<result_id>  (deliverable harvested from here)
+    # Caller's Anthropic key (BYOK) read fresh from the request header. In-memory only
+    # for the life of the run, never persisted; None => fall back to the server's own
+    # .env creds. The engine injects it into the spawned CLI environment per turn.
+    api_key: str | None = None
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | done | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
@@ -47,16 +53,22 @@ class Session:
     pending_reply: str = ""           # the reply handed to the driver
 
 
-def new_session(skill: str) -> Session:
-    sid = str(uuid.uuid4())          # valid UUID: required by `claude --session-id`
-    result_id = f"{skill}_{sid}"     # stable deliverable id, derived from session UUID
-    sandbox = SESSIONS_DIR / sid
+def new_session(skill: str, durable_id: str | None = None) -> Session:
+    """Create a session record. Pass `durable_id` to CONTINUE an earlier session — it
+    names the caller-facing poll handle and the output bucket (outputs/mcp/<result_id>/).
+    Omit it for a brand-new session (the id is then a fresh UUID). The Claude Code
+    session id (`cc_id`) is ALWAYS fresh, so reusing a durable id never collides with a
+    purged CC transcript; the sandbox is keyed by cc_id so lineages never clash."""
+    cc_id = str(uuid.uuid4())        # valid UUID: required by `claude --session-id`
+    sid = durable_id or cc_id
+    result_id = f"{skill}_{sid}"     # stable deliverable id (output bucket), stable across a durable session's turns
+    sandbox = SESSIONS_DIR / cc_id
     inputs_dir = sandbox / "inputs"
     output_dir = sandbox / "output" / result_id
     inputs_dir.mkdir(parents=True, exist_ok=True)
     output_dir.mkdir(parents=True, exist_ok=True)
     (sandbox / "work").mkdir(parents=True, exist_ok=True)
-    sess = Session(id=sid, skill=skill, result_id=result_id, sandbox=sandbox,
+    sess = Session(id=sid, cc_id=cc_id, skill=skill, result_id=result_id, sandbox=sandbox,
                    inputs_dir=inputs_dir, output_dir=output_dir)
     _SESSIONS[sid] = sess
     _gc()
@@ -85,7 +97,8 @@ def purge(sess: Session) -> None:
     ANY terminal path (done OR error). The tiny Session record is kept in the store
     so the client's terminal poll can still read status + result."""
     shutil.rmtree(sess.sandbox, ignore_errors=True)
-    _purge_transcript(sess.id)
+    _purge_transcript(sess.cc_id)
+    sess.api_key = None  # drop the caller's key from the retained record (hygiene)
 
 
 def _purge_transcript(session_id: str) -> None:

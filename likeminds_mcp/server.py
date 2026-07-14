@@ -35,37 +35,63 @@ import uuid
 from pathlib import Path
 from typing import Optional
 
-from mcp.server.fastmcp import FastMCP
+from dotenv import load_dotenv
+from mcp.server.fastmcp import Context, FastMCP
 
 from . import config, engine, registry, sessions, storage
 
+# Load .env when this module is imported directly. The `python -m likeminds_mcp`
+# entrypoint also loads it before importing config, so R2 / other computed constants
+# in config.py resolve from the environment regardless of how the server is started.
+load_dotenv()
+
 
 def _configure_auth() -> None:
-    """Route the spawned Claude at your Claude subscription (Max/Pro) via the OAuth
-    token, instead of the provider creds in `.env`.
+    """Prepare the server's OWN fallback credential for the spawned CLI — used on any
+    turn where the caller sent no BYOK header key. The effective per-request order is:
 
-    - Map CLAUDE_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN (the var the CLI reads for a
-      long-lived subscription token from `claude setup-token`).
-    - Strip Foundry/API creds so they cannot outrank the OAuth token.
-    Set LIKEMINDS_MCP_AUTH=api to keep the .env API/Foundry creds instead."""
-    if os.environ.get("LIKEMINDS_MCP_AUTH", "subscription").strip().lower() == "api":
-        return
-    token = os.environ.get("CLAUDE_TOKEN") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
-    if token:
-        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
+        1. the caller's header key    (applied per turn by engine._child_env)
+        2. a server ANTHROPIC_API_KEY  (from .env)
+        3. the Claude subscription     (CLAUDE_TOKEN -> CLAUDE_CODE_OAUTH_TOKEN)
+
+    Steps 2 vs 3 are settled here once at startup: if a server ANTHROPIC_API_KEY is
+    present it becomes the fallback and the subscription token is dropped (the API key
+    would outrank it anyway); otherwise the subscription token is mapped into the var
+    the CLI reads. Either way we strip Foundry/gateway creds that would outrank an API
+    key, so the order above is exactly what the CLI sees."""
     for var in (
         "CLAUDE_CODE_USE_FOUNDRY",
         "ANTHROPIC_FOUNDRY_API_KEY",
         "ANTHROPIC_FOUNDRY_BASE_URL",
-        "ANTHROPIC_API_KEY",
         "ANTHROPIC_AUTH_TOKEN",
     ):
         os.environ.pop(var, None)
+    if os.environ.get("ANTHROPIC_API_KEY"):
+        os.environ.pop("CLAUDE_CODE_OAUTH_TOKEN", None)
+        os.environ.pop("CLAUDE_TOKEN", None)
+        return
+    token = os.environ.get("CLAUDE_TOKEN") or os.environ.get("CLAUDE_CODE_OAUTH_TOKEN")
+    if token:
+        os.environ["CLAUDE_CODE_OAUTH_TOKEN"] = token
 
 
 _configure_auth()
 
-mcp = FastMCP("likeminds", host=config.HOST, port=config.PORT)
+# Stateless transport: don't issue or track an Mcp-Session-Id. A restarted server —
+# or an `mcp-remote` proxy still holding a session id from a previous server run —
+# then can NOT fail with "Session not found" (HTTP 404); every request is
+# self-contained. Safe here because run_skill's pause/resume polling keys off an
+# APPLICATION-level session_id (returned in the tool result, passed back as an
+# argument, looked up in the in-process SESSIONS dict) — wholly independent of the
+# transport session. json_response also drops the long-lived SSE stream (whose drops
+# were the original point of failure) in favour of a plain JSON reply per POST.
+mcp = FastMCP(
+    "likeminds",
+    host=config.HOST,
+    port=config.PORT,
+    stateless_http=True,
+    json_response=True,
+)
 
 # How long a single run_skill call waits for the job state to change before
 # returning "running". Short, so each call returns promptly with fresh progress.
@@ -110,7 +136,10 @@ def _harvest(output_dir: Path, sandbox: Path) -> list[tuple[str, bytes]]:
 
 
 def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
-    """Write the harvested (name, bytes) files to outputs/mcp/<result_id>/."""
+    """Write the harvested (name, bytes) files to outputs/mcp/<result_id>/ — the stable,
+    caller-addressable bucket. Continuing a session writes back to the SAME bucket (the
+    result_id is stable across a durable session), so the deliverable accumulates under
+    one id the user can save and reuse."""
     dest = config.RESULTS_DIR / result_id
     dest.mkdir(parents=True, exist_ok=True)
     written: list[str] = []
@@ -123,23 +152,44 @@ def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
 
 
 def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
-    """Auto-register any generated skills found in harvested output.
+    """Auto-register any generated skills found in the harvested output.
 
-    A generated skill is identified by a file matching <skill-name>/SKILL.md.
-    It is written into .claude/skills/<skill-name>/SKILL.md so the registry
-    picks it up immediately. Also gitignores the generated directory so it is
-    never accidentally committed. Returns the list of registered skill names.
-    Content is never exposed to the client — only the skill name is returned."""
+    A generated skill is a directory containing a SKILL.md. Two shapes are handled:
+      - nested: `<skill-name>/SKILL.md` (+ any sibling asset files under that folder) —
+                the skill name is the folder name.
+      - root:   a `SKILL.md` at the harvest root means the WHOLE harvest is one skill;
+                the name comes from its frontmatter `name:` field.
+    Each skill's FULL folder (SKILL.md plus all its assets, at any depth) is copied into
+    .claude/skills/<name>/ so the registry picks it up on the next call, and the generated
+    directory is gitignored so it is never accidentally committed. The caller keeps the
+    registered content private (excluded from the client-facing deliverable); only the
+    skill names are returned."""
+    roots: dict[str, str] = {}   # path-prefix under the harvest -> skill name
+    for rel, content in harvested:
+        if Path(rel).name != "SKILL.md":
+            continue
+        parent = Path(rel).parent
+        if str(parent) == ".":
+            name = registry.frontmatter_field(content.decode("utf-8", "replace"), "name")
+            prefix = ""
+        else:
+            name = parent.name
+            prefix = str(parent) + "/"
+        name = Path((name or "").strip()).name  # sanitize: no path separators / traversal
+        if name:
+            roots[prefix] = name
+
     registered: list[str] = []
-    for name, content in harvested:
-        parts = Path(name).parts
-        if len(parts) == 2 and parts[1] == "SKILL.md":
-            skill_name = parts[0]
-            dest = config.SKILLS_DIR / skill_name / "SKILL.md"
-            dest.parent.mkdir(parents=True, exist_ok=True)
-            dest.write_bytes(content)
-            registered.append(skill_name)
-            _gitignore_generated_skill(skill_name)
+    for prefix, name in roots.items():
+        dest_root = config.SKILLS_DIR / name
+        for rel, content in harvested:
+            if not rel.startswith(prefix):
+                continue
+            out = dest_root / rel[len(prefix):]
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_bytes(content)
+        registered.append(name)
+        _gitignore_generated_skill(name)
     return registered
 
 
@@ -154,6 +204,23 @@ def _gitignore_generated_skill(skill_name: str) -> None:
                 f.write(f"\n# generated skill (auto-registered by likeminds-mcp)\n{entry}\n")
     except Exception:  # noqa: BLE001 — gitignore update is best-effort
         pass
+
+
+def _seed_prior_outputs(output_dir: Path, prior: Path) -> list[str]:
+    """Copy a prior session's promoted deliverable into this run's output dir so the
+    skill can read and extend it in place — harvest then captures the full updated set
+    (edited + untouched files), so writing back never loses prior work. Returns the
+    relative filenames seeded."""
+    seeded: list[str] = []
+    for p in sorted(prior.rglob("*")):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(prior)
+        dest = output_dir / rel
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(p, dest)
+        seeded.append(str(rel))
+    return seeded
 
 
 # ----------------------------------------------------------------------------- #
@@ -213,15 +280,18 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 sess.progress = "Reading your answer…"
                 continue
 
-            # emit: harvest the deliverable, upload to R2, purge the sandbox, report done.
+            # emit: harvest the deliverable, promote it locally, upload to R2, register any
+            # generated skills, then purge. Promoted to outputs/mcp/<result_id>/ and (when R2
+            # is configured) uploaded for download; it survives the purge so the session can
+            # be continued later under the same session_id.
             harvested = _harvest(sess.output_dir, sess.sandbox)
             names = _promote(sess.result_id, harvested)
             if config.USE_R2 and sess.r2_keys:
                 storage.delete_inputs(sess.r2_keys)
 
-            # Auto-register any generated skills (e.g. from custom-sow-generator).
-            # Registered files are excluded from download_urls — content is never
-            # sent to the client. Only the skill name is returned.
+            # Auto-register any generated skills (e.g. from a document-generator run).
+            # Registered skill files are private: excluded from the R2 deliverable and
+            # never sent to the client — only the skill name is returned.
             registered = _register_skills(harvested)
             deliverable = [] if registered else list(harvested)
 
@@ -235,13 +305,7 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
             sess.result = {
                 "result_id": sess.result_id,
                 "summary": {"files": names},
-                **({"registered_skills": registered,
-                    "next_step": (
-                        f"Skill(s) {registered} registered successfully. "
-                        "To use a registered skill, call run_skill with "
-                        "skill='{skill_name}' and pass the client MOM via "
-                        "`context` or `artifacts`. The skill content is private."
-                    )} if registered else {}),
+                **({"registered_skills": registered} if registered else {}),
                 **({"download_urls": download_urls} if download_urls else {}),
             }
             sess.status = "done"
@@ -280,7 +344,22 @@ def _snapshot(sess: sessions.Session) -> dict:
         return {"status": "need_input", "session_id": sess.id,
                 "questions": sess.questions, "next_step": RELAY_TEXT}
     if sess.status == "done":
-        return {"status": "done", **(sess.result or {})}
+        result = sess.result or {}
+        registered = result.get("registered_skills")
+        save_note = (
+            f"Tell the user their session_id is {sess.id} and that they can save it and "
+            "pass it back later (with a skill + context) on a run_skill call to continue "
+            "building on these output artifacts."
+        )
+        if registered:
+            next_step = (
+                "Done. Registered new skill(s) into this server's .claude/skills so they "
+                "resolve on the next list_skills/run_skill call: "
+                + ", ".join(registered) + ". " + save_note
+            )
+        else:
+            next_step = "Done. " + save_note
+        return {"status": "done", "session_id": sess.id, **result, "next_step": next_step}
     if sess.status == "error":
         return {"status": "error", "session_id": sess.id,
                 "message": sess.error or "unknown error"}
@@ -294,6 +373,57 @@ def _snapshot(sess: sessions.Session) -> dict:
         "files_written": n_out,
         "next_step": POLL_TEXT,
     }
+
+
+async def _start_continuation(
+    skill: str,
+    session_id: str,
+    client_key: Optional[str],
+    artifacts: Optional[list],
+    files: Optional[list],
+    input_paths: Optional[list],
+    r2_keys: Optional[list],
+    urls: Optional[list],
+    context: Optional[str],
+) -> dict:
+    """Start a NEW run that continues a previously saved session: seed that session's
+    promoted output artifacts (outputs/mcp/<result_id>/) into a fresh sandbox and let
+    the skill build on them, writing the updated deliverable back under the SAME id.
+    Carries the caller's per-request BYOK header key (client_key) into the new run."""
+    sid = Path(str(session_id)).name  # sanitize — never escape RESULTS_DIR
+    if not registry.skill_exists(skill or ""):
+        available = ", ".join(s["name"] for s in registry.list_skills())
+        return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
+    # The deliverable bucket is keyed by result_id (<skill>_<durable-id>) — the same id
+    # the continued run promotes back to, so seeding reads exactly what the last run wrote.
+    prior = config.RESULTS_DIR / f"{skill}_{sid}"
+    if not prior.is_dir() or not any(prior.iterdir()):
+        return {"status": "error",
+                "message": (f"No saved outputs for session_id '{sid}' with skill '{skill}'. "
+                            "Omit session_id to start a new session.")}
+    live = sessions.get_session(sid)
+    if live is not None and not live.finished:
+        return {"status": "error",
+                "message": (f"Session '{sid}' is still active — finish or answer it "
+                            "(call with session_id + response, no skill) before continuing.")}
+    sess = sessions.new_session(skill, durable_id=sid)
+    sess.api_key = client_key  # BYOK: carry the caller's key into the continued run
+    if r2_keys and config.USE_R2:
+        sess.r2_keys.extend(r2_keys)
+    # Stage any NEW inputs the caller attached alongside the continuation request.
+    engine._write_artifacts(sess.inputs_dir, artifacts)
+    engine._write_artifacts(sess.inputs_dir, files)
+    _copy_input_paths(sess.inputs_dir, input_paths)
+    if config.USE_R2:
+        storage.download_inputs(r2_keys, sess.inputs_dir)
+    # Seed the prior deliverable into the output dir so the skill continues in place.
+    seeded = _seed_prior_outputs(sess.output_dir, prior)
+    first_message = engine.build_first_message(
+        skill, sess, urls, context, continued=True, seeded=seeded
+    )
+    sess.task = asyncio.create_task(_drive(sess, first_message))
+    await _wait_for_change(sess)
+    return _snapshot(sess)
 
 
 # ----------------------------------------------------------------------------- #
@@ -310,6 +440,31 @@ def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
             shutil.copy2(src, inputs_dir / src.name)
             copied.append(src.name)
     return copied
+
+
+# ----------------------------------------------------------------------------- #
+# Per-request BYOK — the caller's Anthropic key, read fresh from the request header
+# ----------------------------------------------------------------------------- #
+
+def _client_api_key(ctx: Optional[Context]) -> Optional[str]:
+    """The caller's Anthropic key from the request header (BYOK), or None.
+
+    Read fresh from the live HTTP request on every call — never stored. Under the
+    streamable-HTTP transport `ctx.request_context.request` is the Starlette request;
+    under stdio (or if the context is unavailable) there is no request, so this
+    returns None and the server falls back to its own .env creds. Accepts either a
+    bare key (`x-api-key: <key>`) or an `Authorization: Bearer <key>` value."""
+    if ctx is None:
+        return None
+    try:
+        request = ctx.request_context.request
+        val = request.headers.get(config.API_KEY_HEADER) if request is not None else None
+    except Exception:  # noqa: BLE001 — no request context (e.g. stdio) => no client key
+        return None
+    val = (val or "").strip()
+    if val.lower().startswith("bearer "):
+        val = val[len("bearer "):].strip()
+    return val or None
 
 
 # ----------------------------------------------------------------------------- #
@@ -378,11 +533,12 @@ async def run_skill(
     session_id: Optional[str] = None,
     response: Optional[str] = None,
     files: Optional[list] = None,
+    ctx: Optional[Context] = None,
 ) -> dict:
     """Run any LikeMinds skill (background job + poll).
 
     First call: provide `skill` (any name from `list_skills`, e.g. 'kb-builder',
-    'config-agent', 'generate-document') and its inputs. `context` says WHAT to do
+    'config-agent', 'setup-document-generator') and its inputs. `context` says WHAT to do
     (a prompt / SOW / instructions). Ways to supply files:
     - `r2_keys`     — R2 keys from get_upload_url (preferred for all file types).
                       Call get_upload_url first, PUT the file to the returned
@@ -396,13 +552,36 @@ async def run_skill(
     while status is `running`. When status is `need_input`, show the `questions` to
     the user verbatim, wait for their reply, then call again with `session_id` +
     `response` (do NOT answer them yourself) and resume polling. Stop when status is
-    `done` (download_urls contains presigned URLs to fetch each result file) or `error`.
+    `done` (download_urls has presigned URLs to fetch each result file when R2 is
+    configured; the deliverable is also saved server-side under outputs/mcp/<result_id>/)
+    or `error`.
+
+    CONTINUE a past session: pass a previously returned `session_id` TOGETHER WITH a
+    `skill` (and `context`). The server seeds that session's saved output artifacts
+    into a new run so the skill continues from them, writing the updated deliverable
+    back under the SAME session_id. The done result reports the `session_id`, so
+    surface it to the user to save and continue later.
     """
+    # The caller's own Anthropic key (BYOK), read fresh from THIS request's header.
+    client_key = _client_api_key(ctx)
+
+    # Continuation: a skill AND a prior session_id together start a NEW run seeded from
+    # that session's saved outputs. (A bare poll never carries a skill, so this is
+    # unambiguous.)
+    if skill and session_id:
+        return await _start_continuation(
+            skill, session_id, client_key, artifacts, files, input_paths, r2_keys, urls, context
+        )
+
     if session_id:
         sess = sessions.get_session(session_id)
         if sess is None:
             return {"status": "expired",
                     "message": "Session expired or invalid. Restart the skill."}
+        # Re-read the key per request so a rotated key takes effect on the next turn;
+        # a bare poll with no header leaves the previously captured key in place.
+        if client_key:
+            sess.api_key = client_key
         if sess.status in ("done", "error"):
             return _snapshot(sess)
         # An ANSWER is a continuation carrying non-empty reply text OR files. A bare
@@ -429,6 +608,7 @@ async def run_skill(
         available = ", ".join(s["name"] for s in registry.list_skills())
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
     sess = sessions.new_session(skill)
+    sess.api_key = client_key  # BYOK: injected into the spawned CLI env each turn
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
     engine._write_artifacts(sess.inputs_dir, artifacts)

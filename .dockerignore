@@ -1,9 +1,23 @@
-venv/
+# VCS + Python cruft
+.git/
 __pycache__/
 *.pyc
+*.egg-info/
+.pytest_cache/
+.DS_Store
+
+# local virtualenv + secrets — never bake secrets into the image
+venv/
 .env
+.env.local
+
+# runtime data — created inside the container (or mounted as volumes), not shipped
+.sessions/
 outputs/
 inputs/docs/scraped/
-*.md
-!README.md
-.git/
+
+# local-only extras
+misc/
+
+# NOTE: do NOT exclude *.md — .claude/skills/**/SKILL.md ARE the skills and must
+# ship in the image.
