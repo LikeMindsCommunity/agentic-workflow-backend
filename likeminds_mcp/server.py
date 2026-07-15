@@ -38,7 +38,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, engine, registry, sessions, storage
+from . import config, db, engine, oauth, registry, sessions, storage
 
 # Load .env when this module is imported directly. The `python -m likeminds_mcp`
 # entrypoint also loads it before importing config, so R2 / other computed constants
@@ -85,12 +85,41 @@ _configure_auth()
 # argument, looked up in the in-process SESSIONS dict) — wholly independent of the
 # transport session. json_response also drops the long-lived SSE stream (whose drops
 # were the original point of failure) in favour of a plain JSON reply per POST.
+# OAuth 2.1 (optional, MCP_OAUTH_ENABLED): when on, the SDK mounts /authorize, /token,
+# /register, /revoke, both .well-known metadata docs, and bearer-validates every /mcp
+# request; we supply the storage/identity half (oauth.provider), and the same Gupshup OTP
+# page becomes the /authorize login UI. Requires Mongo + a public URL (the issuer). When
+# off, the server keeps the header-based identity path (USER_ID_HEADER) unchanged.
+_auth_provider = None
+_auth_settings = None
+if config.MCP_OAUTH_ENABLED:
+    if not (config.USE_MONGO and config.PUBLIC_BASE_URL):
+        raise RuntimeError(
+            "MCP_OAUTH_ENABLED requires MONGODB_URI + MONGODB_DB_NAME and PUBLIC_BASE_URL."
+        )
+    from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
+
+    _auth_provider = oauth.provider
+    _auth_settings = AuthSettings(
+        issuer_url=config.PUBLIC_BASE_URL,
+        resource_server_url=f"{config.PUBLIC_BASE_URL}/mcp",
+        client_registration_options=ClientRegistrationOptions(
+            enabled=True,
+            valid_scopes=[config.OAUTH_SCOPE],
+            default_scopes=[config.OAUTH_SCOPE],
+        ),
+        revocation_options=RevocationOptions(enabled=True),
+        required_scopes=[config.OAUTH_SCOPE],
+    )
+
 mcp = FastMCP(
     "likeminds",
     host=config.HOST,
     port=config.PORT,
     stateless_http=True,
     json_response=True,
+    auth_server_provider=_auth_provider,
+    auth=_auth_settings,
 )
 
 # How long a single run_skill call waits for the job state to change before
@@ -151,8 +180,9 @@ def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
     return written
 
 
-def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
-    """Auto-register any generated skills found in the harvested output.
+def _register_skills(harvested: list[tuple[str, bytes]], tenant: Optional[str]) -> list[str]:
+    """Auto-register any generated skills found in the harvested output — PRIVATELY to
+    `tenant`.
 
     A generated skill is a directory containing a SKILL.md. Two shapes are handled:
       - nested: `<skill-name>/SKILL.md` (+ any sibling asset files under that folder) —
@@ -160,11 +190,17 @@ def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
       - root:   a `SKILL.md` at the harvest root means the WHOLE harvest is one skill;
                 the name comes from its frontmatter `name:` field.
     Each skill's FULL folder (SKILL.md plus all its assets, at any depth) is copied into
-    .claude/skills/<name>/ so the registry picks it up on the next call, and the generated
-    directory is gitignored so it is never accidentally committed. The caller keeps the
-    registered content private (excluded from the client-facing deliverable); only the
-    skill names are returned."""
-    roots: dict[str, str] = {}   # path-prefix under the harvest -> skill name
+    .claude/skills/<clean>__u_<tenant>/ so ONLY that tenant sees it on the next call, and
+    the folder is gitignored. The copied SKILL.md's `name:` frontmatter is rewritten to
+    the owner-suffixed folder name so the spawned CLI resolves exactly this tenant's copy
+    (several tenants may share the same clean name). Only the CLEAN names are returned.
+
+    Registration requires a tenant: an anonymous run must NOT install a skill (a global
+    install would leak it to every caller), so with tenant=None nothing is registered and
+    the run instead returns the skill files to the caller as its deliverable."""
+    if not tenant:
+        return []
+    roots: dict[str, str] = {}   # path-prefix under the harvest -> CLEAN skill name
     for rel, content in harvested:
         if Path(rel).name != "SKILL.md":
             continue
@@ -180,16 +216,22 @@ def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
             roots[prefix] = name
 
     registered: list[str] = []
-    for prefix, name in roots.items():
-        dest_root = config.SKILLS_DIR / name
+    for prefix, clean in roots.items():
+        folder = registry.owned_folder(clean, tenant)
+        dest_root = config.SKILLS_DIR / folder
         for rel, content in harvested:
             if not rel.startswith(prefix):
                 continue
-            out = dest_root / rel[len(prefix):]
+            sub = rel[len(prefix):]
+            out = dest_root / sub
             out.parent.mkdir(parents=True, exist_ok=True)
+            if sub == "SKILL.md":  # the skill's own manifest: force the owner-suffixed name
+                content = registry.rewrite_frontmatter_name(
+                    content.decode("utf-8", "replace"), folder
+                ).encode("utf-8")
             out.write_bytes(content)
-        registered.append(name)
-        _gitignore_generated_skill(name)
+        registered.append(clean)
+        _gitignore_generated_skill(folder)
     return registered
 
 
@@ -292,7 +334,7 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
             # Auto-register any generated skills (e.g. from a document-generator run).
             # Registered skill files are private: excluded from the R2 deliverable and
             # never sent to the client — only the skill name is returned.
-            registered = _register_skills(harvested)
+            registered = _register_skills(harvested, sess.tenant)
             deliverable = [] if registered else list(harvested)
 
             download_urls: dict = {}
@@ -379,6 +421,7 @@ async def _start_continuation(
     skill: str,
     session_id: str,
     client_key: Optional[str],
+    tenant: Optional[str],
     artifacts: Optional[list],
     files: Optional[list],
     input_paths: Optional[list],
@@ -389,10 +432,12 @@ async def _start_continuation(
     """Start a NEW run that continues a previously saved session: seed that session's
     promoted output artifacts (outputs/mcp/<result_id>/) into a fresh sandbox and let
     the skill build on them, writing the updated deliverable back under the SAME id.
-    Carries the caller's per-request BYOK header key (client_key) into the new run."""
+    Carries the caller's per-request BYOK header key (client_key) and tenant into the
+    new run; the skill is resolved in the caller's tenant scope."""
     sid = Path(str(session_id)).name  # sanitize — never escape RESULTS_DIR
-    if not registry.skill_exists(skill or ""):
-        available = ", ".join(s["name"] for s in registry.list_skills())
+    entry = registry.resolve_skill(skill or "", tenant)
+    if entry is None:
+        available = ", ".join(s["name"] for s in registry.list_skills(tenant))
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
     # The deliverable bucket is keyed by result_id (<skill>_<durable-id>) — the same id
     # the continued run promotes back to, so seeding reads exactly what the last run wrote.
@@ -408,6 +453,7 @@ async def _start_continuation(
                             "(call with session_id + response, no skill) before continuing.")}
     sess = sessions.new_session(skill, durable_id=sid)
     sess.api_key = client_key  # BYOK: carry the caller's key into the continued run
+    sess.tenant = tenant       # ownership + private-skill registration scope
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
     # Stage any NEW inputs the caller attached alongside the continuation request.
@@ -419,7 +465,7 @@ async def _start_continuation(
     # Seed the prior deliverable into the output dir so the skill continues in place.
     seeded = _seed_prior_outputs(sess.output_dir, prior)
     first_message = engine.build_first_message(
-        skill, sess, urls, context, continued=True, seeded=seeded
+        entry["folder"], sess, urls, context, continued=True, seeded=seeded
     )
     sess.task = asyncio.create_task(_drive(sess, first_message))
     await _wait_for_change(sess)
@@ -452,8 +498,10 @@ def _client_api_key(ctx: Optional[Context]) -> Optional[str]:
     Read fresh from the live HTTP request on every call — never stored. Under the
     streamable-HTTP transport `ctx.request_context.request` is the Starlette request;
     under stdio (or if the context is unavailable) there is no request, so this
-    returns None and the server falls back to its own .env creds. Accepts either a
-    bare key (`x-api-key: <key>`) or an `Authorization: Bearer <key>` value."""
+    returns None and the server falls back to its own .env creds. Read ONLY from
+    config.API_KEY_HEADER (default `x-api-key`) — the `Authorization` header is reserved
+    for the OAuth bearer token, so BYOK and OAuth ride on the request together without
+    colliding. A `Bearer ` prefix on the x-api-key value itself is tolerated."""
     if ctx is None:
         return None
     try:
@@ -465,6 +513,44 @@ def _client_api_key(ctx: Optional[Context]) -> Optional[str]:
     if val.lower().startswith("bearer "):
         val = val[len("bearer "):].strip()
     return val or None
+
+
+def _tenant_token(ctx: Optional[Context]) -> Optional[str]:
+    """The caller's raw login token from the request header (config.USER_ID_HEADER), or
+    None. Read fresh per request under the streamable-HTTP transport, exactly like the
+    BYOK key; resolved to a tenant via db.resolve_tenant. Never stored. Only used when
+    OAuth is OFF — with OAuth on, identity comes from the bearer token instead."""
+    if ctx is None:
+        return None
+    try:
+        request = ctx.request_context.request
+        val = request.headers.get(config.USER_ID_HEADER) if request is not None else None
+    except Exception:  # noqa: BLE001 — no request context (e.g. stdio) => no token
+        return None
+    return (val or "").strip() or None
+
+
+def _authed_user_id() -> Optional[str]:
+    """The verified user id from the OAuth bearer token, when OAuth is enabled and the
+    request carried a valid token (the SDK's bearer middleware has already validated it).
+    None when OAuth is off or there is no auth context (e.g. a public route)."""
+    try:
+        from mcp.server.auth.middleware.auth_context import get_access_token
+        at = get_access_token()
+    except Exception:  # noqa: BLE001 — no auth context
+        return None
+    return getattr(at, "user_id", None) if at is not None else None
+
+
+async def _resolve_tenant(ctx: Optional[Context]) -> Optional[str]:
+    """The caller's tenant. With OAuth ON, it's the bearer token's verified user id (the
+    middleware guarantees a valid token reached here). With OAuth OFF, it's the
+    USER_ID_HEADER token, validated against Mongo when configured. Both normalize through
+    db._tenant_key so a user keeps the SAME tenant across the header and OAuth paths."""
+    uid = _authed_user_id()
+    if uid:
+        return db._tenant_key(uid)
+    return await db.resolve_tenant(_tenant_token(ctx))
 
 
 # ----------------------------------------------------------------------------- #
@@ -562,20 +648,31 @@ async def run_skill(
     back under the SAME session_id. The done result reports the `session_id`, so
     surface it to the user to save and continue later.
     """
-    # The caller's own Anthropic key (BYOK), read fresh from THIS request's header.
+    # The caller's own Anthropic key (BYOK) and login token, read fresh from THIS
+    # request's headers. The token resolves to a tenant (a verified-user id under Mongo,
+    # or the opaque token in dev); custom skills are scoped to it and it owns any session
+    # it starts.
     client_key = _client_api_key(ctx)
+    tenant = await _resolve_tenant(ctx)
 
     # Continuation: a skill AND a prior session_id together start a NEW run seeded from
     # that session's saved outputs. (A bare poll never carries a skill, so this is
     # unambiguous.)
     if skill and session_id:
         return await _start_continuation(
-            skill, session_id, client_key, artifacts, files, input_paths, r2_keys, urls, context
+            skill, session_id, client_key, tenant,
+            artifacts, files, input_paths, r2_keys, urls, context,
         )
 
     if session_id:
         sess = sessions.get_session(session_id)
         if sess is None:
+            return {"status": "expired",
+                    "message": "Session expired or invalid. Restart the skill."}
+        # Tenant isolation on the poll/answer surface: a DIFFERENT verified tenant may
+        # not touch someone else's session. (An unresolved/anonymous caller still needs
+        # the unguessable session_id, so only a positive tenant mismatch is rejected.)
+        if sess.tenant is not None and tenant is not None and sess.tenant != tenant:
             return {"status": "expired",
                     "message": "Session expired or invalid. Restart the skill."}
         # Re-read the key per request so a rotated key takes effect on the next turn;
@@ -603,12 +700,14 @@ async def run_skill(
         await _wait_for_change(sess)
         return _snapshot(sess)
 
-    # First call — validate, seed inputs, start the background driver, return promptly.
-    if not registry.skill_exists(skill or ""):
-        available = ", ".join(s["name"] for s in registry.list_skills())
+    # First call — validate in the caller's tenant scope, seed inputs, start the driver.
+    entry = registry.resolve_skill(skill or "", tenant)
+    if entry is None:
+        available = ", ".join(s["name"] for s in registry.list_skills(tenant))
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}
-    sess = sessions.new_session(skill)
+    sess = sessions.new_session(entry["name"])
     sess.api_key = client_key  # BYOK: injected into the spawned CLI env each turn
+    sess.tenant = tenant       # ownership + private-skill registration scope
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
     engine._write_artifacts(sess.inputs_dir, artifacts)
@@ -616,13 +715,27 @@ async def run_skill(
     _copy_input_paths(sess.inputs_dir, input_paths)
     if config.USE_R2:
         storage.download_inputs(r2_keys, sess.inputs_dir)
-    first_message = engine.build_first_message(skill, sess, urls, context)
+    first_message = engine.build_first_message(entry["folder"], sess, urls, context)
     sess.task = asyncio.create_task(_drive(sess, first_message))
     await _wait_for_change(sess)
     return _snapshot(sess)
 
 
 @mcp.tool()
-async def list_skills() -> dict:
-    """Return the available skill names and one-line descriptions."""
-    return {"skills": registry.list_skills()}
+async def list_skills(ctx: Optional[Context] = None) -> dict:
+    """Return the available skill names and one-line descriptions.
+
+    Scoped to the caller's tenant (from the login-token header): the shared built-in
+    skills, plus any custom skills this tenant created. Skills disabled globally by the
+    server admin are never listed."""
+    tenant = await _resolve_tenant(ctx)
+    return {"skills": registry.list_skills(tenant)}
+
+
+# ----------------------------------------------------------------------------- #
+# Browser-facing login (email OTP) — mounted on the same ASGI app as /mcp.
+# Imported here, after `mcp` exists, so the routes attach to this instance.
+# ----------------------------------------------------------------------------- #
+from . import web  # noqa: E402
+
+web.register(mcp)

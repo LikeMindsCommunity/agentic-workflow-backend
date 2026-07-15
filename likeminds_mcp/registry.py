@@ -1,15 +1,35 @@
-"""Skill registry: index the Agent Skills the server can run.
+"""Skill registry: index the Agent Skills the server can run, scoped per tenant.
 
-Agent Skills live at `.claude/skills/<name>/SKILL.md` (multi-file, e.g. kb-builder)
-and are invoked by asking the model to use the skill with inputs=/output= args.
+Agent Skills live at `.claude/skills/<folder>/SKILL.md` and are invoked by asking the
+model to use the skill with inputs=/output= args. Skills come in two flavours:
 
-The dispatch tool validates a requested skill against this index; `list_skills`
-returns the catalog. Adding a skill is dropping a folder here — no code change.
+  - BUILT-IN (shared): the folder name is the skill name (e.g. `kb-builder`). Visible
+    to everyone.
+  - CUSTOM (per-tenant): a skill a tenant generated at runtime, stored with an owner
+    suffix `<clean-name>__u_<token>`. Visible ONLY to the tenant whose token matches.
+    The suffix is also written into the SKILL.md `name:` frontmatter so the spawned
+    CLI resolves EXACTLY that tenant's copy even though several tenants may share the
+    same clean name.
+
+On top of that a GLOBAL kill-switch (config.DISABLED_SKILLS_FILE / _ENV) hides named
+skills from BOTH listing and resolution, so a disabled skill can be neither listed nor
+run by anyone.
+
+The dispatch tool validates a requested skill against this index (passing the caller's
+tenant); `list_skills` returns the tenant-scoped catalog. Adding a built-in is still
+just dropping a folder here — no code change.
 """
 
 from __future__ import annotations
 
-from .config import SKILLS_DIR
+import json
+
+from .config import DISABLED_SKILLS_ENV, DISABLED_SKILLS_FILE, SKILLS_DIR
+
+# Separates a custom skill's clean name from its owner token in the folder name and in
+# the SKILL.md `name:`. Chosen so it can't be confused with a normal kebab-case skill
+# name, and the token half (alnum only) can never contain it.
+OWNER_SEP = "__u_"
 
 
 def frontmatter_field(text: str, field: str) -> str:
@@ -40,6 +60,40 @@ def frontmatter_field(text: str, field: str) -> str:
     return ""
 
 
+def rewrite_frontmatter_name(text: str, new_name: str) -> str:
+    """Return `text` with its top-level frontmatter `name:` set to `new_name`.
+
+    Used when registering a custom skill so its `name:` matches its owner-suffixed
+    folder — that is how the spawned CLI is made to resolve exactly one tenant's copy.
+    Inserts a `name:` (or a whole frontmatter block) when none is present."""
+    trailing = "\n" if text.endswith("\n") else ""
+    lines = text.splitlines()
+    if lines and lines[0].strip() == "---":
+        end = next((i for i in range(1, len(lines)) if lines[i].strip() == "---"), None)
+        if end is not None:
+            for i in range(1, end):
+                s = lines[i]
+                if not s[:1].isspace() and s.startswith("name:"):
+                    lines[i] = f"name: {new_name}"
+                    return "\n".join(lines) + trailing
+            lines.insert(1, f"name: {new_name}")  # frontmatter, but no name key
+            return "\n".join(lines) + trailing
+    return f"---\nname: {new_name}\n---\n" + text  # no frontmatter at all
+
+
+def split_owner(folder: str) -> tuple[str, str | None]:
+    """`generate-x__u_abc123` -> ('generate-x', 'abc123'); a built-in -> (folder, None)."""
+    clean, sep, owner = folder.rpartition(OWNER_SEP)
+    if sep and clean and owner:
+        return clean, owner
+    return folder, None
+
+
+def owned_folder(clean: str, tenant: str) -> str:
+    """The on-disk folder / invocation name for a tenant's custom skill."""
+    return f"{clean}{OWNER_SEP}{tenant}"
+
+
 def _frontmatter_description(text: str) -> str:
     """Pull `description:` out of a YAML frontmatter block, if present."""
     return frontmatter_field(text, "description")
@@ -62,27 +116,60 @@ def _first_meaningful_line(text: str) -> str:
     return ""
 
 
-def _index() -> dict[str, dict]:
-    """name -> {name, description} for every Agent Skill under SKILLS_DIR."""
+def _disabled() -> set[str]:
+    """Names/folders globally disabled — from the JSON file and the env override.
+    Best-effort: a missing or malformed file just yields the env set."""
+    names: set[str] = {p.strip() for p in DISABLED_SKILLS_ENV.split(",") if p.strip()}
+    try:
+        if DISABLED_SKILLS_FILE.is_file():
+            data = json.loads(DISABLED_SKILLS_FILE.read_text(encoding="utf-8"))
+            for n in data.get("disabled") or []:
+                if isinstance(n, str) and n.strip():
+                    names.add(n.strip())
+    except Exception:  # noqa: BLE001 — a bad kill-switch file must not break listing
+        pass
+    return names
+
+
+def _index(tenant: str | None = None) -> dict[str, dict]:
+    """clean-name -> {name, description, folder} for every skill VISIBLE to `tenant`.
+
+    Visible = every built-in, plus custom skills owned by `tenant`. Globally-disabled
+    skills (by clean name OR exact folder) are excluded. A tenant's own custom skill
+    shadows a built-in of the same clean name (built-ins are indexed first, owned
+    skills overwrite)."""
+    if not SKILLS_DIR.is_dir():
+        return {}
+    disabled = _disabled()
+    rows = []
+    for skill_md in sorted(SKILLS_DIR.glob("*/SKILL.md")):
+        folder = skill_md.parent.name
+        clean, owner = split_owner(folder)
+        rows.append((skill_md, folder, clean, owner))
+    rows.sort(key=lambda r: r[3] is not None)  # built-ins (owner None) first, owned last
+
     out: dict[str, dict] = {}
-    if SKILLS_DIR.is_dir():
-        for skill_md in sorted(SKILLS_DIR.glob("*/SKILL.md")):
-            name = skill_md.parent.name
-            text = skill_md.read_text(encoding="utf-8")
-            desc = _frontmatter_description(text) or _first_meaningful_line(text)
-            out[name] = {"name": name, "description": desc[:200]}
+    for skill_md, folder, clean, owner in rows:
+        if clean in disabled or folder in disabled:
+            continue
+        if owner is not None and owner != tenant:  # someone else's private skill
+            continue
+        text = skill_md.read_text(encoding="utf-8")
+        desc = _frontmatter_description(text) or _first_meaningful_line(text)
+        out[clean] = {"name": clean, "description": desc[:200], "folder": folder}
     return out
 
 
-def list_skills() -> list[dict[str, str]]:
-    """Return [{name, description}] for every skill."""
-    return [{"name": e["name"], "description": e["description"]} for e in _index().values()]
+def list_skills(tenant: str | None = None) -> list[dict[str, str]]:
+    """Return [{name, description}] for every skill visible to `tenant`."""
+    return [{"name": e["name"], "description": e["description"]} for e in _index(tenant).values()]
 
 
-def resolve_skill(name: str) -> dict | None:
-    """Return {name, description} for a skill, or None if unknown."""
-    return _index().get(name) if name else None
+def resolve_skill(name: str, tenant: str | None = None) -> dict | None:
+    """Return {name, description, folder} for a skill visible to `tenant`, else None.
+    `folder` is the name to hand the CLI (owner-suffixed for a tenant's custom skill)."""
+    return _index(tenant).get(name) if name else None
 
 
-def skill_exists(name: str) -> bool:
-    return resolve_skill(name) is not None
+def skill_exists(name: str, tenant: str | None = None) -> bool:
+    return resolve_skill(name, tenant) is not None
