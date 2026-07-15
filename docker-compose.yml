@@ -1,0 +1,50 @@
+# Local stack: MongoDB + the likeminds_mcp server.
+#
+#   docker compose up --build -d
+#
+# The MCP server reads its secrets/config from .env (CLAUDE_TOKEN, R2_*,
+# EMAIL_GHUPSHAP_KEY, MONGODB_DB_NAME, …). Two values are overridden below because they
+# differ INSIDE the container network:
+#   • MONGODB_URI     — must use the `mongo` service name, not localhost.
+#   • PUBLIC_BASE_URL — must be an address a client can actually reach (the /login page
+#                       prints it into the copy-paste config); 0.0.0.0 is not connectable.
+
+services:
+  mongo:
+    image: mongo:7
+    container_name: likeminds-mongo
+    restart: unless-stopped
+    # Bound to loopback so Mongo isn't exposed on your network. The mcp service reaches
+    # it over the internal compose network regardless — drop this block if you don't
+    # need host access (e.g. mongosh from your machine).
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD", "mongosh", "--quiet", "--eval", "db.adminCommand('ping').ok"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
+  mcp:
+    build: .
+    container_name: likeminds-mcp
+    restart: unless-stopped
+    depends_on:
+      mongo:
+        condition: service_healthy
+    env_file: .env
+    ports:
+      - "8787:8787"
+    # Headless Chromium (used by the document skills) crashes on Docker's default 64M SHM.
+    shm_size: "1g"
+    volumes:
+      # Persist deliverables across restarts. A named volume (not a host bind) keeps the
+      # non-root container user's ownership intact. Sessions stay ephemeral by design.
+      - mcp_outputs:/app/outputs
+
+volumes:
+  mongo_data:
+  mcp_outputs:
