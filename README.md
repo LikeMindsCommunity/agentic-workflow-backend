@@ -548,6 +548,117 @@ in memory so the client's final poll can read the result.
 
 ---
 
+## Accounts, login & skill privacy
+
+By default every skill the server exposes is shared. Multi-tenant mode adds a stable
+per-user token so that **custom skills a user generates stay private to that user**,
+while the shared built-in skills stay visible to everyone.
+
+### Signing in
+
+1. Open `https://<your-host>/login` in a browser.
+2. Enter your work email → a one-time code is emailed (via Gupshup's hosted OTP service).
+3. Enter the code → the page returns your **access token** (stable, reusable) and a
+   ready-to-paste MCP config.
+4. Add the token to your MCP client so it is sent on every request in the `x-user-id`
+   header:
+
+   ```
+   claude mcp add --transport http --scope user likeminds https://<your-host>/mcp \
+       --header "x-user-id: <your-token>"
+   ```
+
+The token is the user's id in the Mongo registry; the code is generated, emailed, and
+verified by Gupshup, so the server never stores OTPs. This header is orthogonal to the
+BYOK `x-api-key` header: **`x-user-id` says who you are; `x-api-key` says who pays.**
+
+### What isolation you get
+
+- `list_skills` and `run_skill` are **scoped to the caller's token**: the built-in
+  skills plus only that caller's own generated skills. Another user's custom skills are
+  never listed or runnable.
+- A generated skill is stored on the server as `<skill-name>__u_<token>` and
+  auto-registered **only** for the tenant that created it (its `SKILL.md` name is
+  rewritten to match, so the right tenant's copy always resolves even if two tenants
+  pick the same skill name). An anonymous caller (no / unverified token) can still run
+  built-ins, but a skill it generates is returned as a downloadable deliverable rather
+  than installed.
+- Isolation here is a **registry filter** — skills are co-located on disk and filtered
+  by token — which is enough to keep tenants from seeing or running each other's skills.
+
+**No database?** If `MONGODB_URI` is unset the server still runs: there is no `/login`
+page, and any `x-user-id` value is trusted opaquely as a tenant key (fine for local dev
+or a trusted network). Set Mongo + `EMAIL_GHUPSHAP_KEY` in production to require verified
+login.
+
+### Disabling a skill for everyone
+
+To hide a skill from **all** users — both `list_skills` and `run_skill` — add its name
+to `disabled_skills.json` at the project root:
+
+```json
+{ "disabled": ["some-skill", "another-skill"] }
+```
+
+The file is read fresh on each call, so changes take effect with no restart. A disabled
+skill can be neither listed nor run by anyone (including its owner). You can also set
+`LIKEMINDS_MCP_DISABLED_SKILLS=a,b` as an env override, merged with the file.
+
+### Automatic login (OAuth 2.1) — recommended
+
+Instead of pasting a token, let the MCP client run the login for you. When
+`MCP_OAUTH_ENABLED=true`, the server is a full OAuth 2.1 authorization server and Claude
+(claude.ai, Desktop, Claude Code) does the browser handshake itself — **no token is ever
+copied by hand**:
+
+```
+1. Client calls /mcp with no token  →  401 + WWW-Authenticate (points at the metadata)
+2. Client discovers the auth server and AUTO-OPENS the browser to /authorize
+3. User verifies email via the SAME Gupshup OTP page (it doubles as the login UI)
+4. Browser redirects back to the client with a code → client swaps it for a token (PKCE)
+5. Client stores + auto-refreshes the token, sends `Authorization: Bearer` on every call
+```
+
+The user just clicks **Connect** (or, on Claude Code, runs `claude mcp add <url>` with no
+`--header`) and enters their email + code. The access token maps to the Mongo user id =
+the same tenant as the header path, so private skills carry over.
+
+The MCP SDK mounts everything except identity: `/authorize`, `/token`, `/register` (dynamic
+client registration), `/revoke`, and both `/.well-known/*` metadata documents. We supply
+only the storage + the OTP login. Requires `MONGODB_URI` and a **real, reachable**
+`PUBLIC_BASE_URL` (the OAuth issuer — use `https://…` in production; `http://localhost:8787`
+for local, never `0.0.0.0`).
+
+**`x-api-key` still works alongside OAuth.** `Authorization` now carries the OAuth token
+(identity); your own Anthropic key (billing/BYOK) rides on the separate `x-api-key` header,
+which you can still attach on Claude Code. The two never collide.
+
+When OAuth is **on**, every `/mcp` call requires a valid token (no anonymous access). When
+**off**, the server uses the header-based `x-user-id` path described above. Flip it with a
+single env var, so you can cut over when ready.
+
+| Variable | Description | Default |
+| --- | --- | --- |
+| `MCP_OAUTH_ENABLED` | Turn the OAuth authorization server + bearer enforcement on | `false` |
+| `MCP_OAUTH_ACCESS_TTL` | Access-token lifetime, seconds | `3600` |
+| `MCP_OAUTH_REFRESH_TTL` | Refresh-token lifetime, seconds | `2592000` (30d) |
+| `MCP_OAUTH_CODE_TTL` | Auth-code / pending-login lifetime, seconds | `600` |
+| `MCP_OAUTH_SCOPE` | The single scope issued/required | `mcp` |
+
+### Login / tenancy env vars
+
+| Variable                             | Description                                                                                  | Default                          |
+| ------------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------- |
+| `LIKEMINDS_MCP_USER_HEADER`          | Header the caller's login token (tenant id) is read from; scopes custom skills               | `x-user-id`                      |
+| `MONGODB_URI`                        | Mongo connection string for the user/tenant registry; enables verified login                 | unset (login off; opaque tokens) |
+| `MONGODB_DB_NAME`                    | Mongo database name                                                                          | unset                            |
+| `MONGODB_USERS_COLLECTION`           | Collection holding user rows                                                                  | `users`                          |
+| `EMAIL_GHUPSHAP_KEY`                 | Gupshup TwoFactorAuth key used to email + verify OTPs                                         | unset (login off)                |
+| `PUBLIC_BASE_URL`                    | Public origin shown in the `/login` copy-paste config (set behind a proxy)                   | derived from the request         |
+| `LIKEMINDS_MCP_TENANT_CACHE_TTL`     | Seconds to cache a token→verified lookup so polls don't hit Mongo each call                   | `300`                            |
+| `LIKEMINDS_MCP_DISABLED_SKILLS_FILE` | JSON file of skills hidden globally from list + run                                           | `disabled_skills.json`           |
+| `LIKEMINDS_MCP_DISABLED_SKILLS`      | Comma-separated skills to disable globally (merged with the file)                            | unset                            |
+
 ## Configuration
 
 Server env vars (put persistent ones in `.env`):

@@ -38,6 +38,10 @@ class Session:
     # for the life of the run, never persisted; None => fall back to the server's own
     # .env creds. The engine injects it into the spawned CLI environment per turn.
     api_key: str | None = None
+    # The caller's tenant (from the login-token header), or None for anonymous. Owns
+    # this session: enforced on poll/continue, and names where a generated skill is
+    # registered (only a tenant may install a private custom skill).
+    tenant: str | None = None
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | done | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
