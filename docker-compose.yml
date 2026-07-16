@@ -1,22 +1,19 @@
-# Local stack: MongoDB + the likeminds_mcp server.
+# Local dev stack: the likeminds_mcp server.
 #
 #   docker compose up --build -d
 #
-# The MCP server reads its secrets/config from .env (CLAUDE_TOKEN, R2_*,
-# EMAIL_GHUPSHAP_KEY, MONGODB_DB_NAME, …). Two values are overridden below because they
-# differ INSIDE the container network:
-#   • MONGODB_URI     — must use the `mongo` service name, not localhost.
-#   • PUBLIC_BASE_URL — must be an address a client can actually reach (the /login page
-#                       prints it into the copy-paste config); 0.0.0.0 is not connectable.
+# All config/secrets come from .env (CLAUDE_TOKEN, R2_*, MONGODB_URI, MONGODB_DB_NAME,
+# EMAIL_GHUPSHAP_KEY, PUBLIC_BASE_URL, …). Mongo is HOSTED (Atlas) — there is no local
+# database container; MONGODB_URI just points at the cluster.
+#
+# NOTE: PUBLIC_BASE_URL must be an address clients can actually reach and must match the
+# URL they connect to exactly (it's the OAuth issuer) — never 0.0.0.0.
 
 services:
   mcp:
     build: .
     container_name: likeminds-mcp
     restart: unless-stopped
-    depends_on:
-      mongo:
-        condition: service_healthy
     env_file: .env
     ports:
       - "8787:8787"
@@ -28,5 +25,4 @@ services:
       - mcp_outputs:/app/outputs
 
 volumes:
-  mongo_data:
   mcp_outputs:
