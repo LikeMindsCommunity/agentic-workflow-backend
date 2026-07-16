@@ -73,10 +73,6 @@ MONGODB_URI = os.environ.get("MONGODB_URI")
 MONGODB_DB_NAME = os.environ.get("MONGODB_DB_NAME")
 MONGODB_USERS_COLLECTION = os.environ.get("MONGODB_USERS_COLLECTION", "users")
 USE_MONGO = bool(MONGODB_URI and MONGODB_DB_NAME)
-# Optional TLS CA bundle for a managed Mongo (e.g. AWS DocumentDB). Mirrors the Go svc:
-# when CLOUD_PROVIDER=AWS and CA_FILE_PATH is set, the client connects over TLS with it.
-CLOUD_PROVIDER = os.environ.get("CLOUD_PROVIDER", "")
-CA_FILE_PATH = os.environ.get("CA_FILE_PATH")
 # Cache a token→verified lookup this many seconds so a client's frequent polls don't
 # hit Mongo on every call.
 TENANT_CACHE_TTL = int(os.environ.get("LIKEMINDS_MCP_TENANT_CACHE_TTL", "300"))

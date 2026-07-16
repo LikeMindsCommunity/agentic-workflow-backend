@@ -62,11 +62,7 @@ def _connect():
         )
     from pymongo import MongoClient  # lazy import: only when Mongo is in use
 
-    kwargs: dict = {"serverSelectionTimeoutMS": 8000}
-    if (config.CLOUD_PROVIDER or "").upper() == "AWS" and config.CA_FILE_PATH:
-        kwargs["tls"] = True
-        kwargs["tlsCAFile"] = config.CA_FILE_PATH
-    _client = MongoClient(config.MONGODB_URI, **kwargs)
+    _client = MongoClient(config.MONGODB_URI, serverSelectionTimeoutMS=8000)
     _db = _client[config.MONGODB_DB_NAME]
     return _db
 

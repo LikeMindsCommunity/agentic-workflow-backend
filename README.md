@@ -653,7 +653,6 @@ single env var, so you can cut over when ready.
 | `MONGODB_URI`                        | Mongo connection string for the user/tenant registry; enables verified login                 | unset (login off; opaque tokens) |
 | `MONGODB_DB_NAME`                    | Mongo database name                                                                          | unset                            |
 | `MONGODB_USERS_COLLECTION`           | Collection holding user rows                                                                  | `users`                          |
-| `CLOUD_PROVIDER` + `CA_FILE_PATH`    | Set `CLOUD_PROVIDER=AWS` and a CA bundle path to connect to a TLS-only Mongo (e.g. DocumentDB)| unset                            |
 | `EMAIL_GHUPSHAP_KEY`                 | Gupshup TwoFactorAuth key used to email + verify OTPs                                         | unset (login off)                |
 | `PUBLIC_BASE_URL`                    | Public origin shown in the `/login` copy-paste config (set behind a proxy)                   | derived from the request         |
 | `LIKEMINDS_MCP_TENANT_CACHE_TTL`     | Seconds to cache a token→verified lookup so polls don't hit Mongo each call                   | `300`                            |
