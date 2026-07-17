@@ -1,23 +1,33 @@
 ---
 name: document-generator
-description: Compile a customer-specific document-generation skill from an organisation's knowledge base and one sample document. Reads the KB for product knowledge and the sample document (a SOW, BRD, HLD, proposal, or any structured client deliverable) as a pixel-level visual format reference, then writes a self-contained skill that turns a new MOM/brief into a complete document matching the sample's exact format. Use when an operator wants to build a reusable document generator for a specific customer or org from a KB plus one sample document. Triggers: "build a document generator for {customer}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
+description: Compile a delivery team's reusable document-generation skill from their knowledge base plus at least one finished sample document. REQUIRES a sample and halts without one — the sample IS the format spec this compiler extracts, so a transcript/MOM is not a substitute and a format is never borrowed from another team's KB or an existing generate-* skill. Reads the KB for product knowledge and the sample (a SOW, BRD, HLD, proposal, or any structured deliverable) as a pixel-level visual format reference, then writes a self-contained generate-<client>-<product-line>-<doctype> skill that turns a new MOM/brief into a complete document matching the sample's exact format. Here "client" means the FIRM operating the skill, never the company the document is addressed to — that recipient arrives in the MOM per document and never appears in the skill name. Use when an operator has a KB plus a sample and wants the reusable generator compiled. Inputs: kb=<dir> and sample=<finished reference document> (both required), client=<firm slug>, product_line=<what the team delivers>. Triggers: "build a document generator for {client}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
 ---
 
 # Document Generator — Skill Compiler (Pixel-Match Format Fidelity)
 
-You are a **Document Skill Compiler**. Your job is to read an organisation's Knowledge Base and one sample document, then produce a **customer-specific document generation skill**: a self-contained `.md` skill that, when run on a new MOM/brief, writes a complete, technically accurate document that is a **pixel-match for the sample's visual format**.
+You are a **Document Skill Compiler**. Your job is to read a delivery team's Knowledge Base and at least one finished sample document, then produce that team's **reusable document generation skill**: a self-contained `.md` skill that, when run on a new MOM/brief, writes a complete, technically accurate document that is a **pixel-match for the sample's visual format**.
 
 The sample can be any structured client deliverable — a Statement of Work (SOW), a Business Requirements Document (BRD), a High-Level Design (HLD), a proposal, an implementation guide, and so on. SOW is one example, not the only target. The compiler detects the document's type and characteristics from the sample (Phase 1.4) and shapes the generated skill accordingly.
 
 **The mental model:** Think of the output skill as a competent solutions engineer who:
 - **Knows the product** (from KB): every feature, module, prerequisite, standard term, and capability.
 - **Knows the org's document format down to the pixel** (from sample): exact colors as hex codes, exact heading sizes in pt, exact strip thicknesses in px, exact shape vocabulary for flowcharts, exact margins in inches.
-- **Gets the client brief** (from MOM): what this specific client wants to configure, their flow, their integrations, their context.
-- **Writes a new document** by synthesizing product knowledge with client requirements, rendered in the org's exact visual format.
+- **Gets the recipient's brief** (from MOM): what the company this document is addressed to wants configured — their flow, their integrations, their context.
+- **Writes a new document** by synthesizing product knowledge with the recipient's requirements, rendered in the org's exact visual format.
 
 The sample document is a **format reference, not a content template**. Its wording, boilerplate text, and section content are examples of past documents only and are NEVER copied into new documents (except for genuinely fixed org legal text). New content is always written fresh from KB product knowledge + MOM client data. **The styling, however, must be replicated to the pixel.**
 
-**Output**: A self-contained skill saved to `.claude/skills/generate-<customer-slug>-<doc-type>/SKILL.md` (e.g., `generate-indiafirst-sow`, `generate-acme-brd`)
+**Output**: A self-contained skill saved to `.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/SKILL.md` (e.g., `generate-acme-ivr-sow`, `generate-acme-brd`)
+
+**Who is who — the name has three components and the recipient is not one of them:**
+
+| Role | Who it is | Where it appears |
+|---|---|---|
+| **client** | The **firm operating this skill**, whose format and product knowledge get compiled in. | First component of the skill name. |
+| **product line** | **What that team delivers** — the offering the documents are about. | Second component. |
+| **recipient** | The company a finished document is **addressed to**. | **Nowhere in the name.** Arrives in the MOM, per document, at generate time. |
+
+The sample is addressed to *some* recipient — that is incidental, since you are measuring its layout, not its addressee. One team issues documents to many recipients from **one** compiled skill, so a name like `generate-contoso-sow` is always a bug: it implies recompiling per deal.
 
 ---
 
@@ -27,11 +37,11 @@ This skill operates at two layers, and you must keep them straight throughout:
 
 **Layer 1: This Compiler skill (the file you are reading right now).** This file is **generic**. It contains NO hardcoded colors, sizes, fonts, or coordinates. It works the same whether the sample is Americana's IVR Flow doc, Prudential's SOW, a NetSuite BRD, or any other organisation's format. Every styling value in this file appears as a `{{FORMAT_SPEC.x.y}}` placeholder. The compiler's job is to read the sample, extract these values, and produce Layer 2.
 
-**Layer 2: The generated customer-specific skill (the file this compiler writes out).** This file is **sample-specific**. It has every styling value baked in as a real hex code, a real pt size, a real pixel count, derived from the sample. The generated skill does NOT re-extract styling at runtime; it embeds the extracted FORMAT_SPEC and the CSS/SVG built from it.
+**Layer 2: The generated team-specific skill (the file this compiler writes out).** This file is **sample-specific**. It has every styling value baked in as a real hex code, a real pt size, a real pixel count, derived from the sample. The generated skill does NOT re-extract styling at runtime; it embeds the extracted FORMAT_SPEC and the CSS/SVG built from it.
 
 **Why this matters for CSS:** every CSS snippet shown in this Compiler is a **template** with `{{...}}` placeholders. When the compiler emits the generated skill, it substitutes the placeholders with concrete values from FORMAT_SPEC. The generated skill therefore contains the real CSS for that organisation's format. If you see a concrete hex code or pt size anywhere in this Compiler outside an explicit "Worked Example" block, it is a bug.
 
-**User-provided context:** the arguments supplied when this skill is invoked (for example `kb=<path> sample=<path> customer=<slug> output=<dir>`).
+**User-provided context:** the arguments supplied when this skill is invoked (for example `kb=<path> sample=<path> client=<slug> product_line=<slug> output=<dir>`).
 
 ---
 
@@ -39,18 +49,37 @@ This skill operates at two layers, and you must keep them straight throughout:
 
 | Parameter | Description | Default |
 |---|---|---|
-| `kb` | Path to the KB directory (built by the `kb-builder` skill) | Required |
-| `sample` | Path to the sample document (PDF or DOCX) — SOW, BRD, HLD, proposal, etc. | Required |
-| `customer` | Short slug for the customer (used in skill filename) | Inferred from KB or sample filename |
+| `kb` | Path to the KB directory (built by the `kb-builder` skill) | **Required** |
+| `sample` | Path to at least one **finished deliverable of the target type** (PDF or DOCX) — a real past SOW, BRD, HLD, proposal that this team has issued. This is the format spec; there is no compile without it. | **Required — blocking** |
+| `client` | Short slug for the **firm operating this skill** — first component of the skill filename. Accepts `customer` as a legacy alias. | Ask if not inferable |
+| `product_line` | Short slug for **what the team delivers** (`ivr`, `netsuite`) — second component of the skill filename. | Ask if not inferable |
 | `output` | Where to save the generated skill | `.claude/skills/` |
 
 ---
 
 ## PHASE 1 — Load All Inputs
 
-### 1.1 — Parse arguments
+### 1.1 — Parse arguments and gate
 
-Extract `kb`, `sample`, `customer`, and `output` from the skill's invocation arguments. Apply defaults for any not provided.
+Extract `kb`, `sample`, `client` (or its legacy alias `customer`), `product_line`, and `output` from the skill's invocation arguments. Apply defaults only where the Inputs table gives one — the rest are gates, below.
+
+**Gate — no sample, no compile.** The sample is not one input among several: it **is** the format specification this compiler exists to extract. Every phase from 1.3 through 3.6 is measurement of the sample. With no sample there is nothing to measure, and the run **halts here**.
+
+- **A transcript, MOM, email thread, brief, scoping note, or slide deck is not a sample.** Those are KB material — they say what to write, not how it should look. If that is all you were handed, you have **zero** samples regardless of file count, and "there was only one file, so it must be the sample" is the trap. Halt and ask for a finished deliverable.
+- **Never substitute a format reference you were not given.** Not from another client's KB or output; not from an existing `generate-*` skill in `.claude/skills/`; not from the playbook library (archetype advice, no team's format); not from any "gold standard" elsewhere in the repo; not from your own idea of what a SOW/BRD looks like. **Reaching outside the operator's own `sample` for a format is itself the halt condition — stop and ask.** A generator compiled against another firm's format is a confident, plausible, wrong result: it silently hands this team a competitor's document identity, every later phase measures the wrong document faithfully, and nothing downstream catches it.
+
+**Gate — names.** `client` is the **firm operating this skill**, never the company the sample is *addressed to*. If the slug you resolved is the sample's addressee, you have picked up the recipient — halt and ask which firm this generator belongs to. Do the same for `product_line` if you cannot confidently infer what the team delivers. Never infer either name from the sample's recipient; per the Who-is-who table, the recipient names nothing here and arrives per-document in the MOM.
+
+**Resolve four naming tokens here.** Later phases substitute them, so fix them now — each is a lowercase slug paired with the human-readable form used in prose:
+
+| Token | What it is | Example |
+|---|---|---|
+| `client_slug` | The firm, lowercased and hyphenated. Skill-name component 1; also the `assets/{client_slug}/` directory. | `acme` |
+| `Org Name` | That firm as it is written in the documents themselves — take it verbatim from the KB or the sample's own letterhead, never invent a styling. | `Acme` |
+| `product_line_slug` | What the team delivers. Skill-name component 2. | `ivr` |
+| `product_line_name` | That product line as the team writes it in prose, from the KB. Falls back to the slug's natural expansion only if the KB never spells it out. | `Inbound IVR` |
+
+(`doc_type_slug` and `document_type_name` — skill-name component 3 — are detected later, in Phase 1.4.)
 
 ### 1.2 — Read the Knowledge Base
 
@@ -492,20 +521,20 @@ section_images:
   # REUSABLE_STANDARD: embedded in the generated skill; used in every output document
   - section: "Procure to Pay"
     filename: "image3.png"
-    path: "assets/{customer_slug}/image3.png"
+    path: "assets/{client_slug}/image3.png"
     reusability: REUSABLE_STANDARD
     embed_in_skill: yes
 
   - section: "Order to Cash"
     filename: "image5.png"
-    path: "assets/{customer_slug}/image5.png"
+    path: "assets/{client_slug}/image5.png"
     reusability: REUSABLE_STANDARD
     embed_in_skill: yes
 
   # CLIENT_SPECIFIC: the generated skill outputs a placeholder; client or consultant inserts the real image
   - section: "Customization"
     filename: "image9.png"
-    path: "assets/{customer_slug}/image9.png"
+    path: "assets/{client_slug}/image9.png"
     reusability: CLIENT_SPECIFIC
     embed_in_skill: no
     placeholder_instruction: "Insert client-specific process diagram here"
@@ -521,8 +550,8 @@ section_images:
 import os, zipfile, re
 from pathlib import Path
 
-customer_slug = "<customer>"   # from Phase 1.1
-assets_dir = Path(f"assets/{customer_slug}")
+client_slug = "<client>"   # from Phase 1.1 — the firm, not the sample's recipient
+assets_dir = Path(f"assets/{client_slug}")
 assets_dir.mkdir(parents=True, exist_ok=True)
 print(f"Asset directory: {assets_dir.resolve()}")
 ```
@@ -607,17 +636,17 @@ Verify role assignments visually against the rendered page images (Step A). If t
 
 ```yaml
 assets:
-  base_dir: "assets/{customer_slug}"     # relative to project root, substitute actual slug
+  base_dir: "assets/{client_slug}"     # relative to project root, substitute actual slug
   images:
     header_logo_left:
       filename: "<imageNN.png>"           # substitute actual filename from role_map
-      path: "assets/{customer_slug}/<imageNN.png>"
+      path: "assets/{client_slug}/<imageNN.png>"
     header_logo_right:
       filename: "<imageNN.png>"
-      path: "assets/{customer_slug}/<imageNN.png>"
+      path: "assets/{client_slug}/<imageNN.png>"
     cover_image:
       filename: "<imageN.jpeg>"
-      path: "assets/{customer_slug}/<imageN.jpeg>"
+      path: "assets/{client_slug}/<imageN.jpeg>"
     # Add any other recurring images found (watermarks, section graphics, signature blocks)
 ```
 
@@ -631,9 +660,9 @@ def asset_path(relative_path):
     return "file://" + os.path.abspath(relative_path)
 
 # Usage in HTML generation:
-header_left_src  = asset_path("assets/{customer_slug}/<imageNN.png>")
-header_right_src = asset_path("assets/{customer_slug}/<imageNN.png>")
-cover_image_src  = asset_path("assets/{customer_slug}/<imageN.jpeg>")
+header_left_src  = asset_path("assets/{client_slug}/<imageNN.png>")
+header_right_src = asset_path("assets/{client_slug}/<imageNN.png>")
+cover_image_src  = asset_path("assets/{client_slug}/<imageN.jpeg>")
 ```
 
 Use these variables in the HTML template:
@@ -680,7 +709,7 @@ Visual format extracted:
   Flowchart shapes:     N shape types with semantics
   Conditional labels:   N color-to-condition mappings
   Special elements:     N (boxes, callouts, etc.)
-  Images extracted:     N files → assets/{customer_slug}/ (list filenames and semantic roles)
+  Images extracted:     N files → assets/{client_slug}/ (list filenames and semantic roles)
 
 Note: Sample content is used for format reference only and is NOT copied into the output skill.
 ```
@@ -691,7 +720,7 @@ Before content classification, determine (a) the document's **type** and a short
 
 **Step 1.4-A: Derive the document type slug and name**
 
-Pick a short lowercase `doc_type_slug` naming the document class (`sow`, `brd`, `hld`, `proposal`, `runbook`, …) and a human-readable `document_type_name` (e.g., "Statement of Work"). Source them, in priority order, from: an explicit type in the KB; the sample filename or cover title ("Scope of Work" → `sow`, "Business Requirements Document" → `brd`, "High-Level Design" → `hld`); or the dominant section vocabulary. The generated skill is named `generate-<customer-slug>-<doc-type>` (using `doc_type_slug`); its prose uses `document_type_name`.
+Pick a short lowercase `doc_type_slug` naming the document class (`sow`, `brd`, `hld`, `proposal`, `runbook`, …) and a human-readable `document_type_name` (e.g., "Statement of Work"). Source them, in priority order, from: an explicit type in the KB; the sample filename or cover title ("Scope of Work" → `sow`, "Business Requirements Document" → `brd`, "High-Level Design" → `hld`); or the dominant section vocabulary. The generated skill is named `generate-<client-slug>-<product-line>-<doc-type>` (using `doc_type_slug`); its prose uses `document_type_name`. Those three components are the firm, what it delivers, and the document class — e.g. `generate-acme-ivr-sow`. The company a document is addressed to is never one of them.
 
 **Step 1.4-B: Detect capability signals — scan the sample for these patterns:**
 
@@ -740,7 +769,7 @@ Worked bundles (the two named modes are just common combinations):
 
 Record in FORMAT_SPEC:
 ```yaml
-doc_type_slug: sow                    # names the generated skill: generate-<customer>-<slug>
+doc_type_slug: sow                    # 3rd component of: generate-<client>-<product-line>-<slug>
 document_type: GENERIC_SOW            # classification label: BRD | IVR_SOW | GENERIC_SOW | <custom>
 document_type_name: "Statement of Work"
 capabilities: [flowchart_vocabulary]  # the activated bundle for this sample
@@ -1051,9 +1080,9 @@ FORMAT_SPEC:
 
   footer:
     layout: <single_zone | three_zone>
-    left_zone: <text content like "© 2025 eXotel | All Rights Reserved">
+    left_zone: <text content like "© 2025 Acme | All Rights Reserved">
     center_zone: <text content, often "{{page_number}}">
-    right_zone: <text content, often "eXotel-SOW-v{{version}}-">
+    right_zone: <text content, often "Acme-SOW-v{{version}}-">
     font_size: <pt>
     font_weight: <400/700>
     font_family: <Lato | Georgia italic | etc>
@@ -1268,17 +1297,17 @@ FORMAT_SPEC:
 
   assets:
     # Populated by Phase 1.3 Step L. Every entry is a real extracted file — no placeholders.
-    base_dir: "assets/<customer_slug>"
+    base_dir: "assets/<client_slug>"
     images:
       header_logo_left:
         filename: "<imageNN.ext>"                   # substitute actual filename
-        path: "assets/<customer_slug>/<imageNN.ext>"
+        path: "assets/<client_slug>/<imageNN.ext>"
       header_logo_right:
         filename: "<imageNN.ext>"
-        path: "assets/<customer_slug>/<imageNN.ext>"
+        path: "assets/<client_slug>/<imageNN.ext>"
       cover_image:
         filename: "<imageN.ext>"
-        path: "assets/<customer_slug>/<imageN.ext>"
+        path: "assets/<client_slug>/<imageN.ext>"
       # Add additional named entries for any other recurring images
 
   exact_heading_strings:
@@ -1360,7 +1389,7 @@ STRUCTURED_REFERENCE_DATA:
     - id: section_image
       source: section_images[<section_heading>]
       filename: <imageN.png>
-      asset_path: "assets/{customer_slug}/<imageN.png>"
+      asset_path: "assets/{client_slug}/<imageN.png>"
       reusability: <REUSABLE_STANDARD | CLIENT_SPECIFIC>
       instruction: >
         REUSABLE_STANDARD: Insert <img> tag at this position pointing to asset_path.
@@ -1460,23 +1489,24 @@ Write the complete skill `.md` file. It must be fully self-contained.
 
 ### 3.1 — Skill file header
 
-The generated file is itself a **skill**, so it opens with YAML frontmatter (`name` and `description`) before any prose. The `name` must equal the generated skill's directory name (`generate-{{customer_slug}}-{{doc_type_slug}}`). The compiler emits (substituting `doc_type_slug` and `document_type_name` from the type detected in Phase 1.4):
+The generated file is itself a **skill**, so it opens with YAML frontmatter (`name` and `description`) before any prose. The `name` must equal the generated skill's directory name (`generate-{{client_slug}}-{{product_line_slug}}-{{doc_type_slug}}`). The compiler emits (substituting `doc_type_slug` and `document_type_name` from the type detected in Phase 1.4):
 
 ```markdown
 ---
-name: generate-{{customer_slug}}-{{doc_type_slug}}
-description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a client MOM/brief, using {{Org Name}}'s embedded product knowledge and the exact document format captured from the sample. Use when an operator has a brief for a {{Org Name}} client and wants the {{document_type_name}} written or drafted. Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {client}", "write the {{doc_type_slug}} from this MOM", "draft the {{customer_slug}} {{doc_type_slug}}".
+name: generate-{{client_slug}}-{{product_line_slug}}-{{doc_type_slug}}
+description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a MOM/brief, using {{Org Name}}'s embedded {{product_line_name}} product knowledge and the exact document format captured at compile time. Reusable for every {{document_type_name}} this team issues — the company each document is addressed to comes from the MOM, not from this skill's name, so there is no need to compile a new skill per deal. Use when an operator has a brief and wants the {{document_type_name}} written or drafted. Inputs: mom=<path to the brief> (required). Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {recipient}", "write the {{doc_type_slug}} from this MOM", "draft the {{product_line_slug}} {{doc_type_slug}}".
 ---
 
-# Generate {{Customer/Org Name}} {{document_type_name}}
+# Generate {{Org Name}} {{product_line_name}} {{document_type_name}}
 
 > **Generated by the `document-generator` skill on {{date}}**
 > KB source: {{kb_path}}
-> Sample format reference: {{sample_filename}}
-> Customer: {{customer_slug}}
+> Sample format reference: {{sample_filename}}  (layout only — this skill is not tied to that sample's recipient)
+> Client (the firm this belongs to): {{client_slug}}
+> Product line: {{product_line_slug}}
 > Document type: {{document_type}}
 
-You are a **{{Org Name}} {{document_type_name}} Generation Agent**. You write {{document_type_name}} documents for {{org name}}'s clients with pixel-match visual fidelity to {{org name}}'s standard {{document_type_name}} format.
+You are a **{{Org Name}} {{document_type_name}} Generation Agent**. You write {{document_type_name}} documents for the companies {{org name}} sells {{product_line_name}} to, with pixel-match visual fidelity to {{org name}}'s standard {{document_type_name}} format. Each document's recipient comes from that document's MOM.
 
 **How you work:**
 - You know {{org name}}'s products and services thoroughly (embedded in this skill from the KB).
@@ -1543,7 +1573,7 @@ CLIENT_SPECIFIC images generate a placeholder div.]
 
 Format:
   SECTION: <section name>
-  IMAGE_FILE: "assets/{customer_slug}/imageN.png"
+  IMAGE_FILE: "assets/{client_slug}/imageN.png"
   REUSABILITY: REUSABLE_STANDARD | CLIENT_SPECIFIC
 
 ### 1E: Standard Terms and Escalation Contacts
@@ -2065,7 +2095,7 @@ The final HTML the generated skill produces must follow these rules:
       return "file://" + os.path.abspath(relative_path)
 
   # In the HTML template:
-  # <img src="{asset_src('assets/{customer_slug}/image12.png')}" class="header-logo-right" />
+  # <img src="{asset_src('assets/{client_slug}/image12.png')}" class="header-logo-right" />
   ```
 
   `file://` absolute URLs work in both Chrome headless and WeasyPrint. They are resolved from the local filesystem, not relative to the HTML file's location, so the HTML file can be saved anywhere.
@@ -2136,21 +2166,26 @@ Before outputting, verify:
 
 ### 4.1 — Output location
 
-`.claude/skills/generate-<customer-slug>-<doc-type>/SKILL.md`
+`.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/SKILL.md`
 
 ### 4.2 — Save the skill file
 
-Create the skill directory `.claude/skills/generate-<customer-slug>-<doc-type>/` and write the complete skill to `SKILL.md` inside it. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
+Create the skill directory `.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/` and write the complete skill to `SKILL.md` inside it. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
 
 ### 4.3 — Print summary
 
 ```
 Document Generation Skill Compiled
-  Customer/Org:           {{name}}
+  Client (firm):          {{Org Name}} ({{client_slug}})
+  Product line:           {{product_line_name}} ({{product_line_slug}})
   Document type:          {{document_type_name}} ({{doc_type_slug}})
-  Skill file:             .claude/skills/generate-<customer-slug>-<doc-type>/SKILL.md
+  Skill file:             .claude/skills/generate-<client-slug>-<product-line>-<doc-type>/SKILL.md
   KB source:              {{kb_path}} ({{N}} files read)
-  Format reference:       {{sample_filename}} (content NOT embedded, format only)
+  Format reference:       {{sample_filename}} (layout only — content NOT embedded, and the
+                          generator is not tied to that sample's recipient)
+
+Reusable for every {{document_type_name}} this team issues. The company each document is
+addressed to comes from the MOM, per document.
 
 Format Spec captured:
   Color tokens:           {{N}} (palette listed in skill)
@@ -2177,18 +2212,23 @@ Render pipeline:
   PDF renderers tried:    Chrome headless, WeasyPrint, pdfkit, pandoc
 
 Next step:
-  Run the generate-<customer-slug>-<doc-type> skill with mom=<path-to-mom-file>
+  Run the generate-<client-slug>-<product-line>-<doc-type> skill with mom=<path-to-mom-file>
 ```
 
 ---
 
 ## Critical Rules
 
+**Rule 0 — two ways to fail before you start.** Both are Phase 1.1 gates, and both produce a confident, plausible, wrong artifact rather than an error, which is why they come first:
+
+- **No sample, no compile.** The sample is the format spec, not one input among several. A transcript or MOM is not a sample; a lone transcript is zero samples, not one. Never borrow a format from another client's KB, an existing `generate-*` skill, the playbook library, or your own idea of what the document looks like — reaching outside the operator's own `sample` *is* the halt condition. Compiling against another firm's format hands this team a competitor's document identity, and every later phase then measures the wrong document perfectly.
+- **Never name the skill after the recipient.** `generate-<client>-<product-line>-<doc-type>` is the firm, what it delivers, and the document class — `generate-acme-ivr-sow`. The company a document is addressed to is a *generate-time* value that arrives in the MOM (see rule 3); it names nothing at compile time. `generate-contoso-sow` implies recompiling per deal, which defeats the point of a reusable generator.
+
 1. **Sample serves two roles, not one.** The sample provides (a) the visual format — colors, layout, heading typography, table styles, section order, heading strings — which is extracted and embedded as FORMAT_SPEC; AND (b) the boilerplate template strings and field reference data — which are extracted via Phase 1.5 and 1.6 and embedded in the generated skill's 1B/1C catalogs. What is NEVER extracted from the sample: client-specific variable content (the client's name, their specific requirements, their approval matrices, their configuration decisions). Past client data is irrelevant to future clients; standard structural text and standard field tables are reusable.
 
 2. **KB serves two roles, not one.** The KB provides (a) product knowledge — what each module does, how it works, what belongs in each section — which the generation agent draws on to write accurate VARIABLE content; AND (b) boilerplate markers — text explicitly marked as `BOILERPLATE (verbatim)` in the KB — which are extracted by Phase 1.5 and embedded as template strings in the 1B catalog. KB boilerplate text is NOT converted to writing instructions. It is embedded as the actual output string, with only client-name placeholders substituted.
 
-3. **MOM is the client brief.** Every client-specific fact (name, requirements, flow, configuration, decisions, dates) comes from the MOM. No client detail is assumed from the sample or KB. The MOM populates the VARIABLE tier only.
+3. **MOM is the recipient's brief.** Every fact specific to the company the document is addressed to (their name, requirements, flow, configuration, decisions, dates) comes from the MOM. No such detail is assumed from the sample or KB — the sample's recipient is a past deal and irrelevant to this one. The MOM populates the VARIABLE tier only. This is why the recipient never appears in the compiled skill's name: it is a per-document input, and one compiled skill serves every recipient this team writes to.
 
 4. **Four content tiers, not two.** The generated skill must apply the 4-tier content model to every section: FIXED_LEGAL (verbatim legal text), BOILERPLATE_TEMPLATE (verbatim structural text with placeholder substitution), STRUCTURED_REFERENCE_DATA (standard tables and reusable images inserted directly), and VARIABLE (client-specific content written fresh from MOM + KB). "Write fresh every time" applies ONLY to the VARIABLE tier. Writing fresh for BOILERPLATE_TEMPLATE or STRUCTURED_REFERENCE_DATA tiers is a fidelity error that produces wrong documents every time.
 
@@ -2222,9 +2262,9 @@ Next step:
 
 19. **The TOC visual structure must be explicitly classified before any code is written.** Answer: is it a bordered data table with a header band, or is it a styled list/indented hierarchy? These require completely different HTML/CSS. A TOC rendered as a `<table>` when the sample uses a plain list (or vice versa) is immediately visible on the most-read page of the document.
 
-20. **Header and footer text strings are extracted verbatim, never inferred.** Copyright lines, brand names, separator characters, and version slug formats must be copied character-by-character from the rendered image. If the sample's footer says "Ameyo", the skill embeds "Ameyo". If it says "Exotel", it embeds "Exotel". Context about what organisation is involved does not override what the pixels say. Inferred text will be wrong on every page of every future document.
+20. **Header and footer text strings are extracted verbatim, never inferred.** Copyright lines, brand names, separator characters, and version slug formats must be copied character-by-character from the rendered image. Whatever brand string the footer actually shows is the string the skill embeds, character for character — even if the KB, the operator, or your own expectation says the organisation is named something else. Context about what organisation is involved does not override what the pixels say. Inferred text will be wrong on every page of every future document.
 
-21. **Every section must be checked for embedded images or non-CSS graphical blocks.** Approval procedure pages, signature blocks, letterhead graphics, and watermarks are commonly missed because they are hard to reproduce. Missing a graphical block produces an obviously incomplete page. The generated skill must extract every such image to `assets/{customer_slug}/` during compilation (Phase 1.3 Step L), record its path in `FORMAT_SPEC.assets`, and reference it via `file://` absolute path in the HTML template. Placeholders and gray div blocks are not acceptable — the asset directory is the solution to the size-limitation problem that makes base64 impractical for large images.
+21. **Every section must be checked for embedded images or non-CSS graphical blocks.** Approval procedure pages, signature blocks, letterhead graphics, and watermarks are commonly missed because they are hard to reproduce. Missing a graphical block produces an obviously incomplete page. The generated skill must extract every such image to `assets/{client_slug}/` during compilation (Phase 1.3 Step L), record its path in `FORMAT_SPEC.assets`, and reference it via `file://` absolute path in the HTML template. Placeholders and gray div blocks are not acceptable — the asset directory is the solution to the size-limitation problem that makes base64 impractical for large images.
 
 22. **Document type detection gates which capabilities the compiler activates.** Run Phase 1.4 detection before any content classification. The capabilities are independent switches driven by signals (Phase 1.4-C), not a fixed mode: documents with Role:/Report:/DM: footer patterns + field detail tables (e.g., BRDs) activate Phases 1.5, 1.6, Step L2, and the 4-tier content model; documents with drawable flow/decision diagrams (e.g., IVR SOWs) activate Step I flowchart vocabulary and the SVG shape library. Never apply the drawable-flowchart machinery to a document that has none — the resulting skill wastes context on shapes that don't exist and misses the boilerplate/structured-data extraction that the document does need.
 
@@ -2232,6 +2272,6 @@ Next step:
 
 24. **Boilerplate template strings are embedded as output strings, not as instructions.** When the compiler embeds a Role: footer in the generated skill's 1B catalog, it embeds the actual string `"Role: The Management & Finance role users will be able to create, edit and view customer master records in NetSuite..."` — not the instruction `"Write a Role line describing who can access customer master records."` The generation agent must be able to pass this string directly to the HTML template with only [CLIENT_SHORT] substitution. Any instruction that asks the agent to compose or paraphrase boilerplate text will produce wrong text.
 
-25. **REUSABLE_STANDARD section images are embedded assets, not placeholders.** When Step L2 classifies a section-body image as REUSABLE_STANDARD (standard process flow diagram that appears identically across all BRDs for this org), the compiler extracts it to `assets/{customer_slug}/`, records it in FORMAT_SPEC.section_images, and the generated skill renders it as `<img src="file://...">` at the correct section position. These images appear in every generated document without client input. CLIENT_SPECIFIC images use a placeholder div — the user is explicitly notified that the diagram must be inserted manually.
+25. **REUSABLE_STANDARD section images are embedded assets, not placeholders.** When Step L2 classifies a section-body image as REUSABLE_STANDARD (standard process flow diagram that appears identically across all BRDs for this org), the compiler extracts it to `assets/{client_slug}/`, records it in FORMAT_SPEC.section_images, and the generated skill renders it as `<img src="file://...">` at the correct section position. These images appear in every generated document without client input. CLIENT_SPECIFIC images use a placeholder div — the user is explicitly notified that the diagram must be inserted manually.
 
 26. **DOCX-output skills must load the sample as a base document — never `Document()`.** This is the single most impactful styling rule for any generated skill that emits DOCX (typically documents built from a `.docx` sample, such as BRDs). The correct initialisation is `doc = Document(sample_path)` followed by stripping all body content while preserving the `sectPr` element. This one line guarantees that styles, the Office theme, header images, footer text, page margins, and `contextualSpacing` are all inherited exactly from the sample. Creating a blank `Document()` and then manually recreating styles via `_ensure_style()` will always produce deviations — no matter how carefully the FORMAT_SPEC values are specified — because Word's style inheritance chain, the Office theme XML, and the `docDefaults` element cannot be faithfully reproduced by hand. Any generated DOCX skill that contains `doc = Document()` without immediately stripping it of a loaded sample is non-compliant with this rule and must be regenerated.
