@@ -10,22 +10,24 @@ Analysis advice and lessons learned for clients whose setup is **formal business
 
 ## When this playbook applies (recognition signals)
 
-The artifact set has **two distinct groups**:
+The artifact set has **two distinct groups — and only one of them is KB material**:
 
-- **Raw source artifacts** — meeting minutes (MOMs), call transcripts, email threads, scoping notes, briefs, slide decks from discovery calls. Unstructured, conversational, often incomplete and contradictory across files. These hold the substantive content for one instance.
-- **Reference deliverables** — one or more finished documents in PDF or DOCX (SOW, BRD, PRD, proposal, contract). Polished, branded, formatted: cover page with client logo, defined sections with consistent numbering, header / footer with logo and page numbers, styled tables, named paragraph styles, embedded diagrams or screenshots. They show the exact end-state the downstream agent must reproduce.
+- **Reference deliverables** — one or more finished documents in PDF or DOCX (SOW, BRD, PRD, proposal, contract). Polished, branded, formatted: cover page with client logo, defined sections with consistent numbering, header / footer with logo and page numbers, styled tables, named paragraph styles, embedded diagrams or screenshots. They show the exact end-state the downstream agent must reproduce. **This is what the KB is built from** — its substance and its format both.
+- **Raw source artifacts** — meeting minutes (MOMs), call transcripts, email threads, scoping notes, briefs, slide decks from discovery calls. Unstructured, conversational, often incomplete and contradictory across files. They hold the substantive content **for one instance** — one deal, one recipient. **They are the downstream agent's generate-time input, not KB material.** Their presence is a strong recognition signal for this archetype; their *content* belongs in a generated document and never in the KB.
 
-Both groups must be present for the archetype to fully apply. If only references are present, see the "single-reference" question below. If only sources are present, the archetype does not yet apply — the operator needs to share a reference template before the agent can match its visual identity.
+**Why the split matters.** A MOM describes one deal. Fold it into the KB and that recipient's requirements start reading as the client's *standard* scope, so every later document quietly inherits them — a contamination nothing downstream checks for. The KB learns substance from the reference deliverables, and learns how to *read* a MOM from the "type your sources" section below. It needs no particular MOM's content, and must not keep any.
+
+**A reference deliverable is required; raw sources are not.** With no finished document there is nothing to match and the archetype does not apply — ask the operator for one before going further. References with no raw sources is the **normal, intended** shape for building a KB, not a gap (a *single* reference is a separate concern — see the single-reference gap question below).
 
 Other structural signals:
 
 - Inputs include at least one PDF or DOCX that visibly resembles a polished, branded business document (cover page, ToC, header / footer with logo, formatted tables, multi-page, version string in filename).
 - Reference file sizes are often **1 MB or larger** — the bulk is embedded images (logos, screenshots, architecture diagrams, process flowcharts), not text. This is a tell.
-- Inputs also include unstructured prose (transcripts, MOMs, emails, briefs) that does not itself look like the target deliverable but contains the content that should populate one.
+- Inputs also include unstructured prose (transcripts, MOMs, emails, briefs) that does not itself look like the target deliverable but contains the content that should populate one. This is a recognition *signal*, not a KB source — see the split above.
 - Target deliverable is a **document**, not a component graph, JSON artifact, automation, API integration, or code.
 - Filenames typically encode document type and version: `SOW_*`, `BRD_*`, `Scope of Work_*`, `*_v1.2.0`, `*_FinalV1.4`, internal doc reference IDs, dates.
 
-If only one group is present (only references, or only sources, no examples), surface to the operator before committing.
+Only raw sources and no reference deliverable: the archetype does not apply yet — ask the operator for a finished document rather than building from the sources. Only reference deliverables and no raw sources: proceed normally, that is the intended shape.
 
 ## What to look for when analyzing
 
@@ -88,9 +90,9 @@ For every distinct table observed (deliverables, pricing, timeline, milestone, R
 
 Heading numbering (`1`, `1.1`, `1.1.1`) is often managed by DOCX's numbering.xml linked to a multilevel list definition, not typed manually. The agent must use the same numbering definition. Bulleted lists likewise carry style identity (square vs round vs custom glyph, indentation per level). Capture these as references to the style ID, not as raw "use a square bullet" prose.
 
-### Source material is messy — type your sources
+### Source material is messy — teach the agent to type its sources
 
-The raw source artifacts have very different qualities. The KB should capture what each shape is good for:
+These are the shapes the **generated** agent gets handed at generate time, one deal at a time — it never sees them while the KB is being built, so the KB must carry the reading rules for them. Capture what each shape is good for. The rules below are durable and firm-agnostic, which is exactly why they belong in a KB; no particular MOM's *content* ever does:
 
 - **MOMs** — typically structured: attendees, agenda, decisions, action items, next steps. The *decisions* and *agreed scope* sections are gold. The *action items* are typically follow-ups for internal tracking, NOT scope items the SOW should commit to; don't confuse them.
 - **Call transcripts** — verbatim speech with timestamps and speaker labels. High signal-to-noise but lots of filler ("uh, so I think we should, um"), tangents, and someone walking it back ten minutes later. The agent must read the whole transcript to find the *final* decision, not lift the first plausible-sounding sentence.

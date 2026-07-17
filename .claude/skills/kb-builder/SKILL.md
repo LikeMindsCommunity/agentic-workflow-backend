@@ -1,6 +1,6 @@
 ---
 name: kb-builder
-description: Generate and maintain a per-client knowledge base (KB) directly from a client's raw artifacts, drawing on a hand-curated playbook library of archetype advice. One skill owns the KB's whole lifecycle — first run drafts it from scratch; later runs extend it as new artifacts arrive — and runs the operator gap-question Q&A interactively in the main conversation. Use when an operator provides client inputs (docs, transcripts, sample artifacts) and wants the KB built or updated. Triggers: "build the KB for {client}", "update {client}'s KB", "generate a KB from these artifacts", "extend the {client} KB with this new material".
+description: Generate and maintain a per-client knowledge base (KB) directly from a client's raw artifacts, drawing on a hand-curated playbook library of archetype advice. Here "client" means the FIRM whose knowledge the KB encodes and whose team will use it — never a company that firm's documents happen to be addressed to; a KB is named after the team that owns it, not after a deal. One skill owns the KB's whole lifecycle — first run drafts it from scratch; later runs extend it as new artifacts arrive — and runs the operator gap-question Q&A interactively in the main conversation. Use when an operator provides client inputs (docs, transcripts, sample artifacts) and wants the KB built or updated. Triggers: "build the KB for {client}", "update {client}'s KB", "generate a KB from these artifacts", "extend the {client} KB with this new material".
 ---
 
 # kb-builder
@@ -29,8 +29,15 @@ One trade-off to accept consciously: kb-builder consults the playbooks on every 
 ## Inputs
 
 - `inputs=<dir>` — the artifacts folder (docs, transcripts, samples, code, reference deliverables). **Required.**
+- `client=<slug>` — the **firm this KB belongs to**. Names the KB path. Accepts `customer` as a legacy alias. If not given, infer it (see below).
 - `prompt` — optional free-text describing the use case or any important context.
-- `output=<dir>` — where the KB is written. Defaults to `outputs/{client}/kb/`, where `{client}` is inferred from the inputs folder name (or the prompt).
+- `output=<dir>` — where the KB is written. Defaults to `outputs/{client}/kb/`.
+
+### Who `{client}` is
+
+**`{client}` is the firm whose knowledge this KB encodes — the team that will use it — not any company its documents get addressed to.** The distinction matters because the artifacts are usually *about* the second kind of company: a transcript of Acme scoping an IVR for Contoso is Contoso-heavy on every page, but the KB it feeds belongs to **Acme**. `outputs/contoso/kb/` would be wrong — a KB per deal is a KB that never gets reused.
+
+So when inferring the slug from `client`, else the inputs folder name, else the prompt: the firm is the one whose **product, format, and delivery practice** the artifacts reveal, not the one being sold to. If those two readings disagree, or the folder is named after the buyer, **ask** — do not guess. A KB filed under the wrong name is invisible to the next run, which then builds a second KB for the same team.
 
 ## Pipeline
 
@@ -55,7 +62,8 @@ Current playbooks: `nodeflow`, `document-from-template`, `api-integration`, `fal
 5. **If new artifacts reveal a shape the existing KB can't account for, surface it** to the operator (it may be a genuinely new structure) rather than forcing it into the old shape.
 6. **Leak no internal meta into the KB.** No archetype/playbook names, KB filenames, section codes, or constraint IDs in recorded content. The KB's content alone conveys the archetype and structure, both to downstream deliverables and to a future update run.
 7. **Decide the archetype yourself — never ask the operator which to use.** Pick the applicable playbook(s) from the artifacts; if nothing specific fits, use the fallback automatically.
-8. **The KB must be self-contained — bundle every file it references.** If any KB file points to a supporting artifact (a node-template / palette export, a schema file, a query/template library, a reference example the generator must read), **copy that artifact into `outputs/{client}/kb/` and reference it by its bundled relative path.** Never reference an external, working-directory, or absolute path that can move or be missing when the KB is consumed — a downstream consumer (e.g. `config-agent`, `code-agent`, or `api-agent`) is handed only the KB directory, so a referenced-but-absent file is a dangling dependency that breaks generation. At save time, scan the KB for references to anything outside the directory; bundle each one. If a referenced artifact can't be located or copied, treat it as a BLOCKING gap and surface it — never save a KB with a dangling reference.
+8. **Never name another firm, and don't recite your internals.** Every operator sees only their own work: no other client's name, KB, artifacts, or generated skills may appear in anything you say or write — not as an example, not as a comparison, not "the way another client does it". Ask gap-questions in the operator's own vocabulary; the machinery here (archetypes, playbooks, pipeline phases, severity tiers) is for you, not for them.
+9. **The KB must be self-contained — bundle every file it references.** If any KB file points to a supporting artifact (a node-template / palette export, a schema file, a query/template library, a reference example the generator must read), **copy that artifact into `outputs/{client}/kb/` and reference it by its bundled relative path.** Never reference an external, working-directory, or absolute path that can move or be missing when the KB is consumed — a downstream consumer (e.g. `config-agent`, `code-agent`, or `api-agent`) is handed only the KB directory, so a referenced-but-absent file is a dangling dependency that breaks generation. At save time, scan the KB for references to anything outside the directory; bundle each one. If a referenced artifact can't be located or copied, treat it as a BLOCKING gap and surface it — never save a KB with a dangling reference.
 
 ## Folder layout
 

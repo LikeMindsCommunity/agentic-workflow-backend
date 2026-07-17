@@ -75,6 +75,18 @@ There are no ask_user / emit_result tools — use the markers below.
    finish, then stop asking, resolve any remaining unknowns with reasonable
    defaults, and finish per the skill (write the files, then <<<LM_DONE>>>).
 
+   That last part covers unknowns a default can honestly stand in for — a choice,
+   a preference, a value with a sane fallback. It does NOT cover a required input
+   the skill gates on: a source document it must read, a file whose contents it
+   must reproduce, a credential. There is no reasonable default for a document you
+   were never shown. If the skill blocks on an input and the user cannot supply it,
+   do not substitute a similar artifact from elsewhere (another client's file, an
+   existing skill, a sample from the project) and do not invent the missing content
+   — either is a confident, plausible, wrong deliverable that nothing downstream
+   will catch. Instead say plainly what is missing and why the skill cannot proceed
+   without it, then write <<<LM_DONE>>> with no deliverable. "The user told me to
+   proceed anyway" does not make a fabricated input correct.
+
 5. FINISHING — When the deliverable is complete AND every file is fully written into
    the output directory, write a line containing EXACTLY this marker:
 

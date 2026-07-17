@@ -723,7 +723,11 @@ async def run_skill(
 
 @mcp.tool()
 async def list_skills(ctx: Optional[Context] = None) -> dict:
-    """Return the available skill names and one-line descriptions.
+    """Return the available skill names and their full descriptions.
+
+    Read each description in full before calling `run_skill`: it states that skill's
+    required inputs and the gates it will halt on, so it tells you what to collect from
+    the user up front rather than discovering it mid-run.
 
     Scoped to the caller's tenant (from the login-token header): the shared built-in
     skills, plus any custom skills this tenant created. Skills disabled globally by the

@@ -156,7 +156,12 @@ def _index(tenant: str | None = None) -> dict[str, dict]:
             continue
         text = skill_md.read_text(encoding="utf-8")
         desc = _frontmatter_description(text) or _first_meaningful_line(text)
-        out[clean] = {"name": clean, "description": desc[:200], "folder": folder}
+        # Never clip this. A skill's description is its contract with the calling agent:
+        # required inputs, blocking gates and triggers all sit at the END of it. A clipped
+        # description still reads as a complete sentence, so the agent invokes the skill
+        # without the inputs it gates on, and the run dies deep in the skill (or worse,
+        # improvises past the gate) instead of the agent simply asking for them up front.
+        out[clean] = {"name": clean, "description": desc, "folder": folder}
     return out
 
 
