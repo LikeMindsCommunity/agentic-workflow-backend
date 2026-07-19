@@ -427,7 +427,7 @@ To have jobs bill to **your own** Anthropic key instead of the server's creds, a
 | Method | Best for | How |
 | --- | --- | --- |
 | `get_upload_url` + HTTP PUT → `r2_keys` | Claude Code CLI (can run `curl`) | Call `get_upload_url(filename)`, PUT file bytes to `upload_url`, pass `r2_key` in `run_skill(r2_keys=[…])` |
-| `upload_file(name, content)` → `r2_keys` | Claude Desktop, claude.ai chat (no HTTP client) | Call `upload_file(name, content, encoding="utf-8"\|"base64")`, pass returned `r2_key` in `run_skill(r2_keys=[…])` |
+| `upload_file(name, content)` → `r2_keys` | Claude Desktop, claude.ai chat (no HTTP client), **text only** | Call `upload_file(name, content)`, pass returned `r2_key` in `run_skill(r2_keys=[…])` |
 | `input_paths` | Claude Code on the **same machine** as the server | Pass absolute local paths; server copies them into the session |
 | `artifacts` / `files` | Any client, small text content only | Inline `[{name, content}]` — no R2 needed |
 
@@ -704,10 +704,9 @@ To run the server on a remote machine so any client can reach it:
 2. curl -X PUT upload_url --data-binary @file.pdf
 3. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
 
-# Claude Desktop / claude.ai chat (no HTTP client)
-1. upload_file("file.txt", "<content>", encoding="utf-8") → {r2_key, …}
-   # or for binary:
-   upload_file("file.bin", "<base64>", encoding="base64") → {r2_key, …}
+# Claude Desktop / claude.ai chat (no HTTP client) — text only
+1. upload_file("file.txt", "<content>") → {r2_key, …}
+   # binary (PDF, DOCX, images) must go through get_upload_url + PUT
 2. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
 ```
 
@@ -720,7 +719,21 @@ run_skill(session_id) →
    download_urls:{
      "kb.md":      "https://<account>.r2.cloudflarestorage.com/outputs/…?X-Amz-Expires=3600&…",
      "playbook.md":"https://…"
-   }}
+   },
+   download_expires_in_seconds: 3600,
+   next_step: "…deliver it, don't just mention it…"}
 ```
+
+`next_step` tells the calling client how to hand the files over: render each `download_urls`
+entry as a **clickable markdown link** labelled with the filename, so the user can download it
+straight from the chat — and, on clients with a filesystem (Claude Code / CLI), fetch and save
+each file locally as well and report the path. This is what makes a generated `SOW.pdf` arrive
+as a link in Claude chat / Cowork rather than a path the user cannot reach.
+
+The links are presigned and expire after `download_expires_in_seconds` (`R2_URL_EXPIRY`,
+default 1 hour); re-poll the same `session_id` to mint fresh ones. When R2 is not configured —
+or its upload fails — no links are produced and `next_step` instead points at the server-side
+copy under `outputs/mcp/<result_id>/`. Runs that only register a generated skill return no
+deliverable and no links, by design.
 
 

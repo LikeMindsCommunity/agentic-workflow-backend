@@ -1,6 +1,6 @@
 ---
 name: document-generator
-description: Compile a delivery team's reusable document-generation skill from their knowledge base plus at least one finished sample document. REQUIRES a sample and halts without one — the sample IS the format spec this compiler extracts, so a transcript/MOM is not a substitute and a format is never borrowed from another team's KB or an existing generate-* skill. Reads the KB for product knowledge and the sample (a SOW, BRD, HLD, proposal, or any structured deliverable) as a pixel-level visual format reference, then writes a self-contained generate-<client>-<product-line>-<doctype> skill that turns a new MOM/brief into a complete document matching the sample's exact format. Here "client" means the FIRM operating the skill, never the company the document is addressed to — that recipient arrives in the MOM per document and never appears in the skill name. Use when an operator has a KB plus a sample and wants the reusable generator compiled. Inputs: kb=<dir> and sample=<finished reference document> (both required), client=<firm slug>, product_line=<what the team delivers>. Triggers: "build a document generator for {client}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
+description: Compile a delivery team's reusable document-generation skill from their knowledge base plus at least one finished sample document. REQUIRES a sample and halts without one — the sample IS the format spec this compiler extracts, so a transcript/MOM is not a substitute and a format is never borrowed from another team's KB or an existing generate-* skill. Reads the KB for product knowledge and the sample (a SOW, BRD, HLD, proposal, or any structured deliverable) as a pixel-level visual format reference, then writes a self-contained generate-<client>-<product-line>-<doctype> skill that turns a new MOM/brief into a complete document matching the sample's exact format. The compiled skill delivers PDF or DOCX, asking which per document unless the request already says. Here "client" means the FIRM operating the skill, never the company the document is addressed to — that recipient arrives in the MOM per document and never appears in the skill name. Use when an operator has a KB plus a sample and wants the reusable generator compiled. Inputs: kb=<dir> and sample=<finished reference document> (both required), client=<firm slug>, product_line=<what the team delivers>. Triggers: "build a document generator for {client}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
 ---
 
 # Document Generator — Skill Compiler (Pixel-Match Format Fidelity)
@@ -773,7 +773,11 @@ doc_type_slug: sow                    # 3rd component of: generate-<client>-<pro
 document_type: GENERIC_SOW            # classification label: BRD | IVR_SOW | GENERIC_SOW | <custom>
 document_type_name: "Statement of Work"
 capabilities: [flowchart_vocabulary]  # the activated bundle for this sample
+sample_format: pdf                    # pdf | docx — the sample's own file type
+primary_format: pdf                   # == sample_format (Phase 2.1 FORMAT_SPEC.output)
 ```
+
+**Step 1.4-D: The sample's type sets the *primary* format, never the *only* one.** Every compiled skill emits both a PDF and a DOCX pipeline (Phase 3.6) and picks between them per document at generate time. What the sample type decides is which pipeline reproduces it *directly* — a `.docx` sample is cloned for DOCX output, a `.pdf` sample is measured into HTML for PDF output — and which one is a rebuild from the measured spec. Record `primary_format` so the generated skill can say which is which; do not let it narrow the compile to a single format.
 
 ---
 
@@ -1052,6 +1056,19 @@ Use the following template. Every field is required. If a field genuinely does n
 
 ```yaml
 FORMAT_SPEC:
+
+  sample_path: <absolute path to the sample file>   # referenced by the DOCX pipeline (Phase 3.6b)
+
+  output:
+    formats: [pdf, docx]        # ALWAYS both — the operator picks per document at generate time
+    sample_format: <pdf | docx> # the sample's own file type
+    primary: <pdf | docx>       # == sample_format; the pipeline that reproduces the sample directly.
+                                # The other format is a from-spec rebuild — see Phase 3.6.
+    deliverable_name: "{recipient}_{DOC_TYPE}.{ext}"   # a TEMPLATE, not a fixed string:
+                                                       #   {recipient} — from the MOM, per document
+                                                       #   {DOC_TYPE}  — doc_type_slug uppercased
+                                                       #   {ext}       — pdf | docx, per OUTPUT_FORMAT
+                                                       # e.g. "SwiftTrack Logistics_SOW.pdf"
 
   page:
     size: <Letter 8.5x11in | A4 8.27x11.69in>
@@ -1494,7 +1511,7 @@ The generated file is itself a **skill**, so it opens with YAML frontmatter (`na
 ```markdown
 ---
 name: generate-{{client_slug}}-{{product_line_slug}}-{{doc_type_slug}}
-description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a MOM/brief, using {{Org Name}}'s embedded {{product_line_name}} product knowledge and the exact document format captured at compile time. Reusable for every {{document_type_name}} this team issues — the company each document is addressed to comes from the MOM, not from this skill's name, so there is no need to compile a new skill per deal. Use when an operator has a brief and wants the {{document_type_name}} written or drafted. Inputs: mom=<path to the brief> (required). Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {recipient}", "write the {{doc_type_slug}} from this MOM", "draft the {{product_line_slug}} {{doc_type_slug}}".
+description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a MOM/brief, using {{Org Name}}'s embedded {{product_line_name}} product knowledge and the exact document format captured at compile time. Delivers either PDF or DOCX — if the request does not say which, the skill asks before writing. Reusable for every {{document_type_name}} this team issues — the company each document is addressed to comes from the MOM, not from this skill's name, so there is no need to compile a new skill per deal. Use when an operator has a brief and wants the {{document_type_name}} written or drafted. Inputs: mom=<path to the brief> (required), format=pdf|docx (optional — asked if omitted). Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {recipient}", "write the {{doc_type_slug}} from this MOM", "draft the {{product_line_slug}} {{doc_type_slug}} as a Word doc".
 ---
 
 # Generate {{Org Name}} {{product_line_name}} {{document_type_name}}
@@ -1510,7 +1527,8 @@ You are a **{{Org Name}} {{document_type_name}} Generation Agent**. You write {{
 
 **How you work:**
 - You know {{org name}}'s products and services thoroughly (embedded in this skill from the KB).
-- You know {{org name}}'s document format precisely to the pixel (embedded as a comprehensive Format Spec and ready-to-use HTML/CSS template).
+- You know {{org name}}'s document format precisely to the pixel (embedded as a comprehensive Format Spec, a ready-to-use HTML/CSS template for PDF, and a python-docx builder for DOCX).
+- You deliver **PDF or DOCX**. If the request does not say which, you ask before writing anything — you never pick one yourself. This document's native format is {{FORMAT_SPEC.output.primary}}; the other is rebuilt from the Format Spec and may differ in minor spacing.
 - You read the client's MOM/brief to understand what they want.
 - You write the {{document_type_name}} fresh, synthesizing your product knowledge with the client's requirements, rendered in {{org name}}'s exact standard document format.
 - You verify pixel-match fidelity by side-by-side comparison before finalising.
@@ -1518,15 +1536,60 @@ You are a **{{Org Name}} {{document_type_name}} Generation Agent**. You write {{
 The sample `{{filename}}` was used only to extract the visual format. Its content is not copied.
 ```
 
-### 3.2 — Embed the MOM Audit as Phase 0
+### 3.2 — Embed the MOM Audit and the Output Format Gate as Phase 0
 
 The generated skill's Phase 0 must:
 
-1. List all BLOCKING fields with extraction signals.
-2. Verify each is present in the MOM.
-3. Halt (or produce DRAFT with `[Q-N: ...]` placeholders) if any BLOCKING field is missing.
-4. Warn for IMPORTANT fields that are missing but continue.
-5. Print audit summary before proceeding.
+1. **Resolve the output format (3.2b) — PDF or DOCX.**
+2. List all BLOCKING fields with extraction signals.
+3. Verify each is present in the MOM.
+4. Halt (or produce DRAFT with `[Q-N: ...]` placeholders) if any BLOCKING field is missing.
+5. Warn for IMPORTANT fields that are missing but continue.
+6. **Resolve the recipient and build the deliverable filename** — `<recipient>_<DOC_TYPE>.<ext>` per Rule 11b. The recipient is already a BLOCKING field (it is the company the document is addressed to), so it is in hand by this point; carry it forward as the filename stem rather than re-deriving it later. If the audit fell into DRAFT mode with no recipient, use the `DRAFT_<DOC_TYPE>` fallback.
+7. Print audit summary — including the resolved format **and the filename the run will produce** — before proceeding.
+
+### 3.2b — Embed the Output Format Gate
+
+Every compiled skill emits **both** render pipelines (Phase 3.6), so the format is a per-document decision made at generate time, not a property frozen into the skill. The compiler must embed this gate verbatim as the first step of the generated skill's Phase 0.
+
+**Resolution order — ask unless already told:**
+
+1. **Explicit instruction wins.** If the invocation names a format, use it and do not ask. Accept any of: a `format=pdf` / `format=docx` argument; a phrasing in the operator's prompt ("as a Word doc", "give me the PDF", "send it as .docx"); or an explicit statement in the MOM itself ("deliverable: PDF"). Match case-insensitively and treat `word`/`.docx`/`doc` as DOCX and `.pdf` as PDF.
+2. **Otherwise ASK, every time.** There is no default and no inference from the sample type. A skill compiled from a `.docx` sample must still ask, and must still be able to answer PDF.
+3. **Never guess, never assume the last run's answer.** The format is per document; a previous document's choice does not carry over.
+
+The compiler emits this block into the generated skill (substituting `{{...}}` at emit time).
+
+**`{{ASK_MARKER}}` expands to the host's ask signal — the three-angle-bracket `LM_ASK` marker the run harness watches for.** Write the expanded marker into the generated `SKILL.md` **file**; never echo an expanded marker into your own conversation output while compiling. The harness detects that marker at the start of any line of an assistant turn, so echoing it here would pause the *compile* on a question nobody asked. This is also why the placeholder, not the literal, appears in this compiler.
+
+```markdown
+## PHASE 0.1 — Resolve output format (hard gate)
+
+Determine the deliverable format before writing anything.
+
+- If the operator or the MOM already specified PDF or DOCX, record it and continue — do not ask.
+- If not, ASK and STOP. Do not pick one, do not start writing, do not "proceed with PDF and
+  convert later". Nothing in Phase 1 onward runs until this is answered.
+
+Ask this exactly once, and fold it into the SAME question block as any missing BLOCKING MOM
+fields from Phase 0.2 so the operator is interrupted once, not twice:
+
+{{ASK_MARKER}}
+Which format should the {{document_type_name}} be delivered in — **PDF** or **DOCX**?
+(This document's native format is {{FORMAT_SPEC.output.primary}} — the other is rebuilt from the
+measured format spec and may differ in minor spacing.)
+
+The marker must be the FIRST thing on its own line — a mention inside a sentence is not a signal
+and the run will not pause. After the operator answers, record:
+
+    OUTPUT_FORMAT = "pdf" | "docx"
+
+and state it in the Phase 0 audit summary. Phase 4 then runs ONLY the matching pipeline.
+```
+
+When the generated skill runs outside that harness (invoked directly in a conversation), the marker line is harmless prose and the question reads normally — so the same emitted text works in both contexts. Do not emit two variants.
+
+**Why the gate is bundled with the MOM audit and not asked later:** each question pauses the run for a round trip. Asking for the format after the document is already written wastes the write, and asking it separately from the BLOCKING MOM gaps interrupts the operator twice for one document. Resolve both in one block, up front.
 
 ### 3.3 — Embed the Knowledge Base as Phase 1
 
@@ -1710,19 +1773,37 @@ Write this fixed org-standard legal text verbatim (substitute only client name):
 
 **Compiler enforcement:** Every section generator block must contain real template strings from Phase 1.5 (not instructions to "write a Role line"). If Phase 1.5 produced a boilerplate catalog entry for this section, that exact string must appear in the generator block. If no boilerplate entry exists for a section, note it explicitly and use the closest structural match from the same document type.
 
-### 3.6 — Embed the HTML/CSS Template as Phase 4
+### 3.6 — Embed BOTH Render Pipelines as Phase 4
 
-This phase emits the HTML/CSS into the generated skill. **Every concrete styling value (hex code, pt size, pixel count, inch margin, font family) is sourced from FORMAT_SPEC and substituted by the compiler at emit time.** Nothing in this section is hardcoded; the `{{...}}` placeholders below indicate substitution points.
+This phase emits **two** render pipelines into every generated skill — never one:
+
+| Pipeline | Produces | Built from | Covered by |
+|---|---|---|---|
+| **PDF** | `<recipient>_{{DOC_TYPE_SLUG}}.pdf` | HTML/CSS authored from FORMAT_SPEC → Chrome headless (WeasyPrint fallback) | Rules 1–12 below |
+| **DOCX** | `<recipient>_{{DOC_TYPE_SLUG}}.docx` | python-docx, cloning the sample when the sample is a `.docx` | Rule 0 below |
+
+The generated skill runs **exactly one** of them, chosen by the `OUTPUT_FORMAT` resolved in its Phase 0.1 (Section 3.2b). Both must be present in the compiled file regardless of the sample's own type — a skill compiled from a PDF sample still has to answer "give me the DOCX", and vice versa. Emitting only the sample-native pipeline is a compile defect.
+
+**Fidelity is asymmetric, and the generated skill must say so.** There is no DOCX↔PDF converter in the runtime (no LibreOffice, no pandoc), so neither format is derived from the other — each is authored natively. That means:
+
+- `FORMAT_SPEC.output.primary` (== the sample's type) reproduces the sample **directly**: a `.docx` sample is cloned style-for-style; a `.pdf` sample is measured into HTML that renders near-identically.
+- The other format is a **rebuild from the measured spec**. It matches the palette, typography, page geometry, and section order recorded in FORMAT_SPEC, but minor spacing and pagination may differ, and for a PDF-sourced DOCX there is no Office theme to inherit.
+
+The generated skill must state this in its format prompt (3.2b) and in its completion summary, so an operator asking for the non-primary format knows what they are getting. It must **not** refuse the non-primary format.
+
+**Every concrete styling value (hex code, pt size, pixel count, inch margin, font family) is sourced from FORMAT_SPEC and substituted by the compiler at emit time.** Nothing in this section is hardcoded; the `{{...}}` placeholders below indicate substitution points.
 
 **How substitution works:** when the compiler emits the generated skill, it reads each `{{FORMAT_SPEC.x.y}}` placeholder and replaces it with the value extracted in Phase 1.3 and recorded in Phase 2.1. The resulting CSS in the generated skill contains real values for that organisation's format and no placeholders remain.
 
-The template must follow these strict rules so the generated skill renders pixel-correctly across Chrome print-to-PDF and WeasyPrint.
+The HTML template must follow these strict rules so the generated skill renders pixel-correctly across Chrome print-to-PDF and WeasyPrint.
 
 ---
 
-**Rule 0 (DOCX output mode — mandatory, checked before all other rules):**
+**Rule 0 (the DOCX pipeline — mandatory whenever `OUTPUT_FORMAT == "docx"`):**
 
-When the generated skill produces DOCX output (via python-docx) — i.e., the sample is a `.docx` and the output format is DOCX (as with BRDs and other Word-based deliverables) — the generated skill's Phase 4 Python script **must load the sample DOCX as its base document — never create a blank `Document()`**.
+The generated skill's DOCX pipeline has two cases, decided by `FORMAT_SPEC.output.sample_format`:
+
+**Case A — the sample IS a `.docx` (the high-fidelity path).** The Phase 4 Python script **must load the sample DOCX as its base document — never create a blank `Document()`**.
 
 The compiler must emit this exact pattern in the generated skill's Phase 4 DOCX initialisation block:
 
@@ -1753,6 +1834,21 @@ for child in list(body):
 `{{FORMAT_SPEC.sample_path}}` is substituted by the compiler with the absolute path to the sample file recorded in Phase 1.3. The generated skill embeds the real path as a string literal.
 
 **Why this is mandatory:** Creating a blank `Document()` and then calling `_ensure_style()` to recreate styles produces a document that deviates from the sample in at least 9 measurable ways: wrong body style name, incomplete `NoSpacing` definition, incorrect top margin, missing Office theme, wrong header tab stop, missing `contextualSpacing` on list paragraphs, missing `Normal1` style, inconsistent line spacing inheritance, and table cell font override. Every one of these is visible in the rendered output. Loading the sample as the base eliminates all of them in a single line.
+
+**The sample must be bundled, not merely pointed at.** `doc = Document(SAMPLE_PATH)` makes the compiled skill depend on that file still existing at that absolute path at *generate* time — which breaks the moment the skill runs anywhere but the compiling machine (a container, another operator's checkout, or after the operator tidies up their inputs), and breaks Critical Rule 5. So in Phase 4.2 the compiler **copies the sample DOCX into the skill's own directory** alongside `assets/`, and emits that bundled path:
+
+```python
+SAMPLE_PATH = os.path.join(os.path.dirname(__file__), "format_base.docx")
+```
+
+Record the bundled path in `FORMAT_SPEC.sample_path`. A generated skill whose DOCX pipeline points outside its own directory is non-compliant.
+
+**Case B — the sample is a `.pdf` (no DOCX to clone).** There is no source document to inherit styles from and no converter in the runtime, so the DOCX is built from FORMAT_SPEC with python-docx: start from `Document()`, then set page size and margins from `FORMAT_SPEC.page`, define one paragraph style per heading level from `FORMAT_SPEC.headings` (font family, pt size, weight, colour token resolved to its hex), one table style from `FORMAT_SPEC.tables`, and body defaults from `FORMAT_SPEC.body`. Insert `FORMAT_SPEC.assets` images via `add_picture()` at their recorded widths.
+
+This is the one place a blank `Document()` is correct — Critical Rule 26 forbids it only when a `.docx` sample exists to clone. Two consequences the generated skill must handle rather than ignore:
+
+- **Vector chrome does not survive.** Strips, corner accents, and inline-SVG flowcharts have no DOCX equivalent. Render each to PNG at 2× print resolution during generation and place the raster, rather than dropping the element. Where the KB marks a flowchart as CLIENT_SPECIFIC, keep the existing placeholder behaviour.
+- **Pagination will not match the PDF.** Word reflows text; absolute page coordinates measured from a PDF sample do not transfer. Use style-driven page breaks at section boundaries (`WD_BREAK.PAGE`) instead of trying to reproduce measured y-offsets, and do not run the pixel-diff loop (Phase 5) against the PDF sample for this path — verify structure and typography instead.
 
 ---
 
@@ -2053,7 +2149,9 @@ def label_color(condition_word):
 
 The document generation agent calls `label_color("Holiday")` and gets back the correct color variable. New condition words that the sample never recorded fall through to the body color token.
 
-**Rule 11: PDF rendering chain**
+**Rule 11: Rendering chain (PDF pipeline only)**
+
+This rule applies when `OUTPUT_FORMAT == "pdf"`. The DOCX pipeline needs no renderer — python-docx writes the deliverable directly, and there is no conversion step in either direction.
 
 The generated skill must use this rendering chain in order, falling back if a tool is unavailable:
 
@@ -2065,19 +2163,49 @@ The generated skill must use this rendering chain in order, falling back if a to
    ```python
    from weasyprint import HTML; HTML('input.html').write_pdf('out.pdf')
    ```
-3. pdfkit / wkhtmltopdf (additional fallback)
-4. pandoc (last resort)
+3. pdfkit / wkhtmltopdf (additional fallback, if present)
 
-The compiler embeds all four commands in the generated skill so the agent picks the first available.
+The compiler embeds each command in the generated skill so the agent picks the first available. Chrome and WeasyPrint are the two guaranteed to exist in the runtime image; the rest are opportunistic. Do not emit a pandoc fallback — it is not installed, and pandoc's HTML→PDF output does not preserve the measured format.
 
-**Rule 11b: Post-render cleanup — only the final {{document_type_name}} PDF delivered to client**
+**Rule 11b: Post-render cleanup — only the final {{document_type_name}} deliverable is kept**
 
-The generated skill must include a cleanup step immediately after the side-by-side verification pass confirms the final PDF is good. All intermediate build artefacts (the working .html, assets/, temp images, .py scripts, etc.) must be deleted from the output directory before signalling done. Only the deliverable PDF remains for delivery — named after the document type in uppercase (`SOW.pdf`, `BRD.pdf`, `HLD.pdf`, … i.e. `doc_type_slug` uppercased).
+The generated skill must include a cleanup step immediately after the verification pass confirms the deliverable is good. All intermediate build artefacts (the working .html, assets/, temp images, .py scripts, etc.) must be deleted from the output directory before signalling done. Only the deliverable remains, named:
 
-The compiler must embed this cleanup block in the generated skill's final phase, with `{{DOC_TYPE_SLUG}}` replaced by the uppercased `doc_type_slug` so the filter keeps the real deliverable (e.g. `SOW.pdf` for `sow`, `BRD.pdf` for `brd`):
-```bash
-cd <output_dir> && find . ! -name '{{DOC_TYPE_SLUG}}.pdf' ! -path '.' -delete && find . -empty -type d -delete
 ```
+<recipient>_<DOC_TYPE>.<ext>
+```
+
+- **`<recipient>`** — the company the document is **addressed to**, taken from the MOM at generate time (Phase 0.2). Not the client firm whose generator this is, and not the sample's addressee. This is the whole point of the name: the operator produces many documents from one skill and needs to tell them apart by *who each one is for*.
+- **`<DOC_TYPE>`** — `doc_type_slug` uppercased: `SOW`, `BRD`, `HLD`.
+- **`<ext>`** — `pdf` or `docx`, following the `OUTPUT_FORMAT` resolved in Phase 0.1.
+
+So `SwiftTrack Logistics_SOW.pdf`, `Contoso_BRD.docx`. Both halves vary per document; neither is a compile-time constant.
+
+**Resolving `<recipient>` safely.** The compiler embeds this in the generated skill's Phase 0, right after the MOM audit reads the recipient:
+
+```python
+import re
+
+def deliverable_name(recipient: str, doc_type: str, output_format: str) -> str:
+    # Keep the recipient as the MOM writes it — including spaces — but strip the
+    # characters that are illegal in a filename or would break the cleanup glob.
+    clean = re.sub(r'[/\\:*?"<>|]', "", recipient or "").strip()
+    clean = re.sub(r"\s+", " ", clean)
+    # No recipient means the MOM audit is in DRAFT mode; fall back rather than
+    # emit a file called "_SOW.pdf".
+    stem = f"{clean}_{doc_type}" if clean else f"DRAFT_{doc_type}"
+    return f"{stem}.{output_format}"
+```
+
+The compiler must embed the cleanup block below in the generated skill's final phase, with `{{DOC_TYPE_SLUG}}` replaced by the uppercased `doc_type_slug`. **Both halves of the filename are run-time values** — never hardcode `.pdf`, or a DOCX run deletes its own deliverable and reports success over an empty directory; and always **quote** `"$DELIVERABLE"`, because recipient names contain spaces as a rule, and an unquoted `-name` argument turns the filter into a delete-everything:
+
+```bash
+# DELIVERABLE comes from deliverable_name() above, e.g. "SwiftTrack Logistics_SOW.pdf"
+cd <output_dir> && test -f "$DELIVERABLE" || { echo "render failed: $DELIVERABLE missing"; exit 1; }
+find . ! -name "$DELIVERABLE" ! -path '.' -delete && find . -empty -type d -delete
+```
+
+The `test -f` guard runs **before** the delete, not after: if the render failed there is nothing to preserve, and running the filter anyway empties the output directory while the run still reports success.
 
 **Rule 12: HTML output — assets and self-containment**
 
@@ -2130,7 +2258,16 @@ If the compiler reads a different sample where colors and sizes differ (e.g., or
 
 Before outputting, verify:
 
-**Content checks:**
+**Format checks (run first — they select which checks below apply):**
+- [ ] OUTPUT_FORMAT was resolved in Phase 0.1 (explicitly given, or answered by the operator — never defaulted)
+- [ ] The deliverable is named <recipient>_{{DOC_TYPE_SLUG}}.<ext>, with the recipient taken from
+      the MOM (not the client firm, not the sample's addressee) and <ext> matching OUTPUT_FORMAT
+- [ ] The recipient in the filename is the same company the document is addressed to inside it
+- [ ] The deliverable file exists and is non-empty BEFORE the Rule 11b cleanup runs, and the
+      cleanup quotes "$DELIVERABLE" so a recipient name containing spaces cannot widen the delete
+- [ ] If the format is not this document's native one, the completion summary says so
+
+**Content checks (both formats):**
 - [ ] All BLOCKING MOM fields populated (no [Q-N] placeholders remain)
 - [ ] Correct pattern selected and applied
 - [ ] All sections present and in correct order per FORMAT_SPEC.exact_heading_strings
@@ -2139,7 +2276,7 @@ Before outputting, verify:
 - [ ] Client name used consistently throughout
 - [ ] Product knowledge accurate for this engagement type
 
-**Visual fidelity checks (mandatory pixel-match verification):**
+**Visual fidelity checks — PDF path (mandatory pixel-match verification):**
 - [ ] All colors in output match FORMAT_SPEC.color_palette hex values exactly
 - [ ] Top/bottom/left strips match FORMAT_SPEC.strips spec (color, thickness, position)
 - [ ] Header layout matches FORMAT_SPEC.header (left zone, right zone, font, color)
@@ -2153,11 +2290,25 @@ Before outputting, verify:
 - [ ] Conditional labels use FORMAT_SPEC.flowchart_vocabulary.conditional_labels color mapping
 - [ ] Figure captions formatted per FORMAT_SPEC.flowchart_vocabulary.figure_caption
 
-**Side-by-side comparison verification:**
+**Visual fidelity checks — DOCX path:**
+- [ ] Cloned base (docx sample): document opens; styles, theme, header images, and footer survived the body strip
+- [ ] Cloned base (docx sample): no `_ensure_style()` calls — every style came from the loaded base
+- [ ] Rebuilt from spec (pdf sample): page size and margins match FORMAT_SPEC.page
+- [ ] Rebuilt from spec (pdf sample): one paragraph style per FORMAT_SPEC heading level, with its measured font, pt size, weight, and hex colour
+- [ ] Rebuilt from spec (pdf sample): table styles match FORMAT_SPEC.tables (header band colour, borders, padding)
+- [ ] Vector chrome (strips, accents, flowcharts) rasterised at 2x and placed — not silently dropped
+- [ ] Section page breaks are style-driven (WD_BREAK.PAGE), not measured y-offsets
+- [ ] FORMAT_SPEC.assets images embedded at their recorded widths
+
+**Side-by-side comparison verification (PDF path only):**
 - [ ] Render output PDF and sample PDF to JPEG at 110 DPI
 - [ ] Build side-by-side comparison images for cover, document history, TOC, scope table, prereqs, deliverables, prompt list, escalation
 - [ ] Inspect each comparison for visual gaps; log gaps
 - [ ] Apply targeted refinements (CSS or SVG adjustments) and re-render until no visible gaps remain
+
+Skip this block when OUTPUT_FORMAT is docx. Word reflows text, so a pixel diff against a PDF
+sample reports differences that cannot be fixed and are not defects — verify structure and
+typography from the DOCX checks above instead.
 ```
 
 ---
@@ -2171,6 +2322,17 @@ Before outputting, verify:
 ### 4.2 — Save the skill file
 
 Create the skill directory `.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/` and write the complete skill to `SKILL.md` inside it. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
+
+**Bundle everything the two pipelines read at generate time into that same directory** — the compiled skill must not reach outside itself for a file (Critical Rule 5):
+
+```
+.claude/skills/generate-<client>-<product-line>-<doc-type>/
+  SKILL.md
+  assets/{client_slug}/…        # rasters extracted in Phase 1.3 Step L
+  format_base.docx              # ONLY when sample_format == docx — the DOCX pipeline's base
+```
+
+When `FORMAT_SPEC.output.sample_format == "docx"`, copy the sample to `format_base.docx` here and set `FORMAT_SPEC.sample_path` to that bundled location (Phase 3.6 Rule 0). The original sample path is a compile-time input and must not survive into the emitted skill.
 
 ### 4.3 — Print summary
 
@@ -2205,14 +2367,18 @@ Content modelling:
   MOM audit fields:       {{N}} BLOCKING, {{N}} IMPORTANT, {{N}} OPTIONAL
   Engagement patterns:    {{N}} patterns with selection rules
 
-Render pipeline:
-  HTML/CSS template:      embedded with :root color tokens
+Render pipelines (both emitted — operator picks per document):
+  PDF   pipeline:         HTML/CSS embedded with :root color tokens → Chrome headless / WeasyPrint
+  DOCX  pipeline:         python-docx {{"cloning bundled format_base.docx" | "built from FORMAT_SPEC"}}
+  Native format:          {{FORMAT_SPEC.output.primary}} (reproduces the sample directly)
+  Rebuilt format:         {{the other one}} (matches palette/type/geometry; spacing may differ)
   SVG shape library:      embedded ({{N}} shape templates)
-  Pixel-match protocol:   embedded (Phase 5)
-  PDF renderers tried:    Chrome headless, WeasyPrint, pdfkit, pandoc
+  Pixel-match protocol:   embedded (Phase 5, PDF path)
+  Format gate:            embedded (Phase 0.1 — asks unless the request names a format)
 
 Next step:
   Run the generate-<client-slug>-<product-line>-<doc-type> skill with mom=<path-to-mom-file>
+  Optionally add format=pdf or format=docx to skip the format question.
 ```
 
 ---
@@ -2254,7 +2420,7 @@ Next step:
 
 15. **Conditional label colors follow the documented mapping.** If FORMAT_SPEC says "orange for Holiday-like conditions, purple for affirmative paths, red for negative paths", every flowchart label must use that color rule. No improvisation.
 
-16. **Render with Chrome print-to-PDF as primary, WeasyPrint as fallback.** Chrome has the best SVG fidelity. WeasyPrint is a reliable fallback if Chrome is unavailable. The skill must try them in order.
+16. **Render with Chrome print-to-PDF as primary, WeasyPrint as fallback.** Chrome has the best SVG fidelity. WeasyPrint is a reliable fallback if Chrome is unavailable. The skill must try them in order. This governs the PDF pipeline only — the DOCX pipeline writes its deliverable directly through python-docx and never invokes a renderer or a converter.
 
 17. **Every heading level gets its own color token — no shared tokens without verified equality.** Never emit `color: var(--heading)` for both H1 and H2 without first confirming via pixel sampling that both levels are identical in color. If they differ by more than 5 in any RGB channel, create separate tokens (e.g., `--heading-primary`, `--heading-secondary`). Merging heading colors without verification is the single most common visual fidelity failure.
 
@@ -2274,4 +2440,10 @@ Next step:
 
 25. **REUSABLE_STANDARD section images are embedded assets, not placeholders.** When Step L2 classifies a section-body image as REUSABLE_STANDARD (standard process flow diagram that appears identically across all BRDs for this org), the compiler extracts it to `assets/{client_slug}/`, records it in FORMAT_SPEC.section_images, and the generated skill renders it as `<img src="file://...">` at the correct section position. These images appear in every generated document without client input. CLIENT_SPECIFIC images use a placeholder div — the user is explicitly notified that the diagram must be inserted manually.
 
-26. **DOCX-output skills must load the sample as a base document — never `Document()`.** This is the single most impactful styling rule for any generated skill that emits DOCX (typically documents built from a `.docx` sample, such as BRDs). The correct initialisation is `doc = Document(sample_path)` followed by stripping all body content while preserving the `sectPr` element. This one line guarantees that styles, the Office theme, header images, footer text, page margins, and `contextualSpacing` are all inherited exactly from the sample. Creating a blank `Document()` and then manually recreating styles via `_ensure_style()` will always produce deviations — no matter how carefully the FORMAT_SPEC values are specified — because Word's style inheritance chain, the Office theme XML, and the `docDefaults` element cannot be faithfully reproduced by hand. Any generated DOCX skill that contains `doc = Document()` without immediately stripping it of a loaded sample is non-compliant with this rule and must be regenerated.
+26. **When a `.docx` sample exists, the DOCX pipeline must load it as its base document — never `Document()`.** This is the single most impactful styling rule for any generated skill that emits DOCX (typically documents built from a `.docx` sample, such as BRDs). The correct initialisation is `doc = Document(sample_path)` — pointing at the copy **bundled inside the skill directory**, never at the compile-time input path — followed by stripping all body content while preserving the `sectPr` element. This one line guarantees that styles, the Office theme, header images, footer text, page margins, and `contextualSpacing` are all inherited exactly from the sample. Creating a blank `Document()` and then manually recreating styles via `_ensure_style()` will always produce deviations — no matter how carefully the FORMAT_SPEC values are specified — because Word's style inheritance chain, the Office theme XML, and the `docDefaults` element cannot be faithfully reproduced by hand. Any generated DOCX skill that contains `doc = Document()` without immediately stripping it of a loaded sample is non-compliant with this rule and must be regenerated. The one exception is Phase 3.6 Rule 0 Case B: when the sample is a PDF there is nothing to clone, so a blank `Document()` styled from FORMAT_SPEC is correct and required.
+
+27. **Every compiled skill emits both pipelines — the sample's type picks the primary, never the only.** A generator that can produce just one format is a compile defect, no matter what the sample was. The sample type sets `FORMAT_SPEC.output.primary` (the format reproduced directly) and nothing else; the other format is a rebuild from the measured spec and must still be fully implemented. There is no LibreOffice and no pandoc in the runtime, so neither format may be produced by converting the other — both are authored natively, and any instruction to "generate the PDF then convert to Word" is wrong and will fail at run time.
+
+28. **The format question is asked every time it is not answered.** The generated skill resolves PDF vs DOCX in its Phase 0.1, before writing anything: an explicit format in the arguments, prompt, or MOM is honoured silently; otherwise the skill asks and stops. It must never default to the sample's format, never carry over the previous document's answer, and never write first and ask after. Fold the question into the same block as any missing BLOCKING MOM fields so one document costs the operator one interruption.
+
+29. **The deliverable is named `<recipient>_<DOC_TYPE>.<ext>`, resolved per document.** The recipient is the company the document is **addressed to**, read from the MOM at generate time — never the client firm, never the sample's addressee, and never a compile-time constant: `SwiftTrack Logistics_SOW.pdf`, `Contoso_BRD.docx`. `<DOC_TYPE>` is `doc_type_slug` uppercased and `<ext>` follows `OUTPUT_FORMAT`. Two ways the cleanup filter destroys the deliverable it is meant to keep: a hardcoded `.pdf` deletes a DOCX run's output, and an **unquoted** filename deletes everything the moment a recipient name contains a space — which is the normal case, not the edge case. Quote the name, and confirm the file exists before deleting anything around it.

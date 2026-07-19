@@ -159,6 +159,7 @@ comes from the brief, per document.
 
 Next step — call once per document:
   run  generate-acme-ivr-sow  with  mom=<path-to-brief>
+  Delivers PDF or DOCX — add format=pdf / format=docx, or it will ask.
 ```
 
 The generated skill auto-registers on the next `list_skills` / `run_skill` call — no extra install step.
@@ -178,7 +179,7 @@ Generate that SOW from it?
   run  generate-acme-ivr-sow  with  mom=contoso-call.md
 ```
 
-- **On a yes:** carry out the generated skill in this session with `mom=<set-aside brief>`, surface its own blocking-field questions to the operator, and hand back the document.
+- **On a yes:** carry out the generated skill in this session with `mom=<set-aside brief>`, surface its own blocking-field questions to the operator — **including its PDF-or-DOCX format question**, which it asks whenever the operator hasn't already named a format — and hand back the document. Don't answer the format question on the operator's behalf.
 - **On a no:** stop. The brief stays where it is; the operator runs the generator whenever they want.
 - **Either way, the brief never enters the KB.** A "yes" is permission to *generate from* it, not to absorb it.
 

@@ -116,14 +116,27 @@ def upload_outputs(result_id: str, harvested: list[tuple[str, bytes]]) -> dict[s
     Each URL is valid for config.R2_URL_EXPIRY seconds (default 1 hour).
     """
     client = _client()
-    urls: dict[str, str] = {}
     for name, content in harvested:
-        key = f"outputs/{result_id}/{name}"
-        client.put_object(Bucket=config.R2_BUCKET, Key=key, Body=content)
-        url = client.generate_presigned_url(
+        client.put_object(
+            Bucket=config.R2_BUCKET, Key=f"outputs/{result_id}/{name}", Body=content
+        )
+    return output_urls(result_id, [name for name, _ in harvested], client=client)
+
+
+def output_urls(result_id: str, names: list[str], client=None) -> dict[str, str]:
+    """Mint presigned GET URLs for an already-uploaded deliverable.
+
+    Signing happens locally — no request reaches R2 — so this is cheap enough to call
+    on every done-status snapshot. That is the point: the URLs minted when the job
+    finished go stale after config.R2_URL_EXPIRY, so a client polling or revisiting a
+    finished session would otherwise hand the user a dead download link.
+    """
+    client = client or _client()
+    return {
+        name: client.generate_presigned_url(
             "get_object",
-            Params={"Bucket": config.R2_BUCKET, "Key": key},
+            Params={"Bucket": config.R2_BUCKET, "Key": f"outputs/{result_id}/{name}"},
             ExpiresIn=config.R2_URL_EXPIRY,
         )
-        urls[name] = url
-    return urls
+        for name in names
+    }

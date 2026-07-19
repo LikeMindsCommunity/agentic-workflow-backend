@@ -20,7 +20,6 @@ is not assumed to re-apply them — so continuation turns behave identically.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import re
@@ -50,8 +49,9 @@ _STDOUT_LIMIT = 16 * 1024 * 1024
 
 
 def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
-    """Persist inline {name, content[, encoding]} artifacts into the inputs dir.
-    Returns the names of the files written."""
+    """Persist inline {name, content} text artifacts into the inputs dir.
+    Returns the names of the files written. Binary content does not travel inline —
+    it is uploaded to R2 and reaches the run via r2_keys."""
     written: list[str] = []
     for art in artifacts or []:
         if not isinstance(art, dict):
@@ -59,13 +59,14 @@ def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
         name, content = art.get("name"), art.get("content")
         if not name or content is None:
             continue
+        # A declared binary encoding would land as its own literal encoded text;
+        # skip it rather than write a corrupt file.
+        if art.get("encoding") not in (None, "", "utf-8", "text"):
+            continue
         dest = inputs_dir / Path(name).name  # flatten; no path traversal
         try:
-            if art.get("encoding") == "base64":
-                dest.write_bytes(base64.b64decode(content))
-            else:
-                dest.write_text(str(content), encoding="utf-8")
-        except Exception:  # noqa: BLE001 — skip an undecodable artifact
+            dest.write_text(str(content), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — skip an unwritable artifact
             continue
         written.append(dest.name)
     return written
