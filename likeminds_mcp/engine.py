@@ -20,7 +20,6 @@ is not assumed to re-apply them — so continuation turns behave identically.
 from __future__ import annotations
 
 import asyncio
-import base64
 import json
 import os
 import re
@@ -50,8 +49,9 @@ _STDOUT_LIMIT = 16 * 1024 * 1024
 
 
 def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
-    """Persist inline {name, content[, encoding]} artifacts into the inputs dir.
-    Returns the names of the files written."""
+    """Persist inline {name, content} text artifacts into the inputs dir.
+    Returns the names of the files written. Binary content does not travel inline —
+    it is uploaded to R2 and reaches the run via r2_keys."""
     written: list[str] = []
     for art in artifacts or []:
         if not isinstance(art, dict):
@@ -59,13 +59,14 @@ def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
         name, content = art.get("name"), art.get("content")
         if not name or content is None:
             continue
+        # A declared binary encoding would land as its own literal encoded text;
+        # skip it rather than write a corrupt file.
+        if art.get("encoding") not in (None, "", "utf-8", "text"):
+            continue
         dest = inputs_dir / Path(name).name  # flatten; no path traversal
         try:
-            if art.get("encoding") == "base64":
-                dest.write_bytes(base64.b64decode(content))
-            else:
-                dest.write_text(str(content), encoding="utf-8")
-        except Exception:  # noqa: BLE001 — skip an undecodable artifact
+            dest.write_text(str(content), encoding="utf-8")
+        except Exception:  # noqa: BLE001 — skip an unwritable artifact
             continue
         written.append(dest.name)
     return written
@@ -83,9 +84,14 @@ def build_first_message(
     (`.claude/skills/<name>/SKILL.md`) and passes inputs=/output= so the harness can
     bind the I/O edges, plus any URLs and free-form context describing WHAT to do.
 
-    When `continued` is set, this run is resuming an earlier session whose deliverable
-    has already been copied into the output directory; we tell the skill to read and
-    extend it in place rather than start from scratch."""
+    The run mode is declared EXPLICITLY in both directions, because the spawned CLI runs
+    with the project root as its cwd and can therefore see every past run's artifacts
+    under `outputs/`, while several skills branch on exactly that ("a KB already exists →
+    extend it", "a re-run into an existing output is an update"). Left to infer, the model
+    silently resumes someone else's work. So: `continued` means the engine already copied
+    that session's deliverable into the output directory — read and extend it in place.
+    Otherwise this is a fresh run, and the skill's own resume branches are overridden;
+    prior output found lying around is not adopted, it is asked about (see HARNESS)."""
     lines = [f"Use the {skill} skill."]
     lines.append(f"inputs={sess.inputs_dir}")
     lines.append(f"output={sess.output_dir}")
@@ -100,6 +106,17 @@ def build_first_message(
             "first, then continue the work by modifying and extending them in place per "
             "the instructions below. Do not start from scratch or discard existing files "
             "unless explicitly told to."
+        )
+    else:
+        msg += (
+            "\n\nFRESH RUN: this is a new session, NOT a continuation. The caller did not "
+            "point at an earlier session, so nothing here is resumed work. Build from this "
+            "run's inputs and the caller's instructions alone, and take the skill's "
+            "from-scratch path — any branch in it that treats an existing directory as a "
+            "reason to resume or extend does not apply. Earlier output you come across "
+            "elsewhere in the project belongs to a different run: do not adopt or extend "
+            "it, and if it looks like an earlier run of THIS same job, ask the caller "
+            "whether to continue from it before using any of it."
         )
     if context:
         msg += f"\n\nContext / instructions from the caller:\n{context}"

@@ -28,6 +28,27 @@ There are no ask_user / emit_result tools — use the markers below.
    them from there. Do not expect a different `inputs/` path and do not ask the
    caller to upload files elsewhere. If you need more material, ask for it (rule 3).
 
+   PRIOR RUNS — The message that starts your run declares either FRESH RUN or
+   CONTINUATION. That declaration is authoritative and overrides any branch in the skill
+   below that decides for ITSELF to resume — e.g. "if a KB already exists at
+   `outputs/{client}/kb/`, extend it as a delta", or "on a re-run into an existing
+   output, treat it as an update". On a FRESH RUN those update branches DO NOT apply;
+   take the from-scratch path.
+
+   On a FRESH RUN you may build from this run's inputs directory and from any path the
+   CALLER named (a `kb=` / `lld=` / `sample=` argument, or a path written in their
+   instructions) — naming it IS the instruction to read it. What you merely FIND while
+   looking around the project is different: an earlier deliverable under `outputs/`,
+   another client's KB, a previous session's bucket. Do not adopt one as a baseline,
+   extend it, or quietly stand it in for a missing input (rule 4 says why that is worse
+   than stopping).
+
+   If what you find looks like an earlier run of THIS same job and looks genuinely
+   relevant, neither continue from it nor discard it on your own: ASK (rule 3) — say what
+   you found and where, and ask whether to continue from it or start fresh — then wait.
+   Only a CONTINUATION declaration, an explicit caller instruction, or a yes to that
+   question lets you build on earlier output.
+
 2. OUTPUT — Write every file that is part of the FINAL deliverable into the output
    directory passed to you (`output=<dir>`). This output path is AUTHORITATIVE: even
    if the skill's own text names a different default save location (e.g.

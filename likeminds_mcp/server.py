@@ -28,7 +28,6 @@ parked alive while a human is answering.
 from __future__ import annotations
 
 import asyncio
-import base64
 import os
 import shutil
 import uuid
@@ -141,6 +140,21 @@ POLL_TEXT = (
     "call run_skill again with ONLY this session_id (no other arguments) to keep "
     "polling. This is normal long-running progress, not an error. Repeat until "
     "status is 'need_input' or 'done'."
+)
+# The deliverable is the point of the run, so the done snapshot has to hand it over
+# rather than describe it. Clients differ in what they can do with a URL, so this
+# asks for the one thing every client can render (a link) and, where the client has
+# a filesystem, the download too.
+DELIVERY_TEXT = (
+    "The document is ready — deliver it, don't just mention it. For every entry in "
+    "`download_urls`, put a clickable markdown link in your reply labelled with the "
+    "filename, e.g. [SOW.pdf](https://…), so the user can download it straight from "
+    "the chat. If you can write files locally (Claude Code / CLI clients), also fetch "
+    "each URL, save it into the user's working directory, and tell them the path. "
+    "Never paste a bare presigned URL as plain text, never replace the document with a "
+    "summary of it, and never tell the user to go find it on the server. Say that the "
+    "link expires in `download_expires_in_seconds` and that they should re-run to get "
+    "a fresh one after that."
 )
 
 
@@ -388,20 +402,44 @@ def _snapshot(sess: sessions.Session) -> dict:
     if sess.status == "done":
         result = sess.result or {}
         registered = result.get("registered_skills")
+        urls = result.get("download_urls") or {}
+        # "_error" is the R2-upload-failed sentinel set by the driver — a key, not a link.
+        has_links = bool(urls) and "_error" not in urls
+        # Those URLs were signed when the job finished and expire after R2_URL_EXPIRY, so a
+        # client polling later — or revisiting a finished session — would be handed a dead
+        # link. Re-sign on every done snapshot; it is a local operation, not an R2 round trip.
+        if has_links and config.USE_R2:
+            try:
+                result = {**result,
+                          "download_urls": storage.output_urls(sess.result_id, list(urls))}
+            except Exception:  # noqa: BLE001 — keep the original URLs if re-signing fails
+                pass
         save_note = (
             f"Tell the user their session_id is {sess.id} and that they can save it and "
             "pass it back later (with a skill + context) on a run_skill call to continue "
             "building on these output artifacts."
         )
         if registered:
+            # A compile run registers skills instead of producing a deliverable, so there
+            # is nothing to download — don't promise a link that was never generated.
             next_step = (
                 "Done. Registered new skill(s) into this server's .claude/skills so they "
                 "resolve on the next list_skills/run_skill call: "
                 + ", ".join(registered) + ". " + save_note
             )
+        elif has_links:
+            next_step = "Done. " + DELIVERY_TEXT + " " + save_note
         else:
-            next_step = "Done. " + save_note
-        return {"status": "done", "session_id": sess.id, **result, "next_step": next_step}
+            reason = f" ({urls['_error']})" if "_error" in urls else ""
+            next_step = (
+                f"Done, but no download link was produced{reason}. The deliverable is on "
+                f"the server at outputs/mcp/{result.get('result_id', '<result_id>')}/. Tell "
+                "the user which files were produced and where they are, so they can be "
+                "retrieved from the host. " + save_note
+            )
+        extra = {"download_expires_in_seconds": config.R2_URL_EXPIRY} if has_links else {}
+        return {"status": "done", "session_id": sess.id, **result, **extra,
+                "next_step": next_step}
     if sess.status == "error":
         return {"status": "error", "session_id": sess.id,
                 "message": sess.error or "unknown error"}
@@ -584,12 +622,17 @@ async def get_upload_url(filename: str) -> dict:
 
 @mcp.tool()
 async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
-    """Upload a file to R2 storage by passing its content directly (for Claude Desktop
-    and claude.ai chat clients that cannot make HTTP PUT requests).
+    """Upload a text file to R2 storage by passing its content directly (for Claude
+    Desktop and claude.ai chat clients that cannot make HTTP PUT requests).
 
-    Pass the file content as a string:
-      - encoding="utf-8"   — plain text content (default)
-      - encoding="base64"  — binary content base64-encoded
+    Content is written as UTF-8 text. Binary files (PDF, DOCX, images) are not
+    accepted here — call get_upload_url and PUT the raw bytes to the returned URL.
+
+    `encoding` is kept solely to reject the retired base64 path out loud. Dropping the
+    parameter is not enough: MCP clients cache tool schemas, so one that still advertises
+    encoding="base64" goes on sending it, and an unknown argument is silently discarded
+    rather than refused — which would store the base64 *text* as the file. That lands a
+    plausibly-named, corrupt document in R2 and the skill then runs against it.
 
     Returns {r2_key, name, bytes}. Pass r2_key to run_skill via the `r2_keys`
     parameter on the same or a subsequent call.
@@ -599,11 +642,15 @@ async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
     """
     if not config.USE_R2:
         return {"error": "R2 is not configured on this server. Cannot upload file."}
-    clean = Path(name).name or "upload.bin"
-    try:
-        data = base64.b64decode(content) if encoding == "base64" else content.encode("utf-8")
-    except Exception as e:
-        return {"error": f"could not decode content: {e}"}
+    if encoding.strip().lower() not in ("utf-8", "utf8", "text", "plain", ""):
+        return {"error": (
+            f"encoding={encoding!r} is no longer supported — upload_file takes UTF-8 text "
+            "only. For a binary file (PDF, DOCX, image) call get_upload_url and HTTP PUT "
+            "the raw bytes to the returned upload_url, then pass the r2_key to run_skill. "
+            "Do not send a text extract of a binary file instead."
+        )}
+    clean = Path(name).name or "upload.txt"
+    data = content.encode("utf-8")
     r2_key = storage.upload_bytes(clean, data)
     return {"r2_key": r2_key, "name": clean, "bytes": len(data)}
 
@@ -638,9 +685,14 @@ async def run_skill(
     while status is `running`. When status is `need_input`, show the `questions` to
     the user verbatim, wait for their reply, then call again with `session_id` +
     `response` (do NOT answer them yourself) and resume polling. Stop when status is
-    `done` (download_urls has presigned URLs to fetch each result file when R2 is
-    configured; the deliverable is also saved server-side under outputs/mcp/<result_id>/)
-    or `error`.
+    `done` or `error`.
+
+    On `done`, hand the deliverable over — `download_urls` maps each result filename to
+    a presigned URL (valid for `download_expires_in_seconds`). Render each as a clickable
+    markdown link labelled with the filename so the user can download it from the chat,
+    and if you can write files locally, fetch and save them too and report the path. The
+    deliverable is also kept server-side under outputs/mcp/<result_id>/; that path is a
+    fallback for the operator, not a substitute for giving the user the link.
 
     CONTINUE a past session: pass a previously returned `session_id` TOGETHER WITH a
     `skill` (and `context`). The server seeds that session's saved output artifacts
@@ -700,8 +752,20 @@ async def run_skill(
         await _wait_for_change(sess)
         return _snapshot(sess)
 
+    # Nothing to act on. Every parameter is optional (a bare poll carries only a
+    # session_id), so an argument-less call is schema-valid and lands here — where
+    # "Unknown skill 'None'" would blame a skill the caller never named and hide the
+    # real problem: a poll whose session_id went missing. Say what is actually wrong.
+    if not skill:
+        return {"status": "error", "message": (
+            "run_skill needs either `skill` (to start a run) or `session_id` (to poll "
+            "one); neither was provided. To poll, pass the session_id returned by the "
+            "first call — resend it on EVERY poll, it is not remembered between calls. "
+            "To start a run, pass a skill name from list_skills."
+        )}
+
     # First call — validate in the caller's tenant scope, seed inputs, start the driver.
-    entry = registry.resolve_skill(skill or "", tenant)
+    entry = registry.resolve_skill(skill, tenant)
     if entry is None:
         available = ", ".join(s["name"] for s in registry.list_skills(tenant))
         return {"status": "error", "message": f"Unknown skill '{skill}'. Available: {available}"}

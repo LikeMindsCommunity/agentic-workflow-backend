@@ -3,7 +3,8 @@
 # The image bundles the three things the server needs at runtime:
 #   1. Python + the server's deps (mcp, python-dotenv, boto3)
 #   2. the `claude` CLI — the server spawns `claude -p …` as a subprocess every turn
-#   3. a headless-render toolchain (Chromium, poppler, fonts) for the document skills
+#   3. a headless-render toolchain (Chromium, poppler, fonts, python-docx) for the
+#      document skills — they emit PDF or DOCX, chosen per document at generate time
 #
 # It runs as a NON-root user on purpose: the engine invokes
 # `claude --permission-mode bypassPermissions`, which refuses to run as root.
@@ -45,10 +46,14 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && rm -rf /var/lib/apt/lists/*
 
 # ── Python deps ────────────────────────────────────────────────────────────────
-# requirements.txt = the server's deps; weasyprint = the skills' fallback renderer.
+# requirements.txt = the server's deps. The rest are the document skills' deps:
+#   weasyprint   fallback PDF renderer (Chrome headless is primary)
+#   python-docx  the DOCX render pipeline — reads the bundled sample as a style base
+#                and writes the .docx deliverable. Document skills offer PDF *or*
+#                DOCX per document, so this is required, not optional.
 WORKDIR /app
 COPY requirements.txt .
-RUN pip install -r requirements.txt weasyprint
+RUN pip install -r requirements.txt weasyprint python-docx
 
 # ── App + non-root user ────────────────────────────────────────────────────────
 COPY . .
