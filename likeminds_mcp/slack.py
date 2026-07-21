@@ -147,6 +147,39 @@ def _section(text: str) -> dict:
     return {"type": "section", "text": {"type": "mrkdwn", "text": text[:2900]}}
 
 
+# Slack caps a section's text at 3000 chars, but a MESSAGE at 50 blocks — so a long list
+# belongs in several sections, not truncated at the first ceiling. This matters because a
+# presigned R2 URL is ~500 chars by itself, so one section holds only about five links.
+_SECTION_BUDGET = 2800
+_MAX_LINK_SECTIONS = 8   # ≈40 links; beyond that the tail is summarised, not dropped silently
+
+
+def _artifact_blocks(download_urls: dict, result_id: str) -> list[dict]:
+    """Every artifact link, packed across as many section blocks as it takes."""
+    total = len(download_urls)
+    header = f"*Artifacts ({total})* — links expire in {_ttl()}"
+    sections: list[list[str]] = [[]]
+    used, shown = len(header), 0
+    for name, url in download_urls.items():
+        line = f"• {_link(url, name)}"
+        if used + len(line) + 1 > _SECTION_BUDGET:
+            if len(sections) >= _MAX_LINK_SECTIONS:
+                break
+            sections.append([])
+            used = 0
+        sections[-1].append(line)
+        used += len(line) + 1
+        shown += 1
+    out = [_section(header + ("\n" + "\n".join(sections[0]) if sections[0] else ""))]
+    out += [_section("\n".join(s)) for s in sections[1:] if s]
+    if shown < total:
+        out.append(_section(
+            f"…and {total - shown} more file(s) — the full set is on the server at "
+            f"`outputs/mcp/{_esc(result_id)}/`"
+        ))
+    return out
+
+
 # ─── events ──────────────────────────────────────────────────────────────────
 
 async def notify_registration(
@@ -211,36 +244,31 @@ async def notify_skill_run(
 
     if not ok:
         blocks.append(_section(f"*Error*\n```{_esc(error or 'unknown error')[:1500]}```"))
-    elif registered_skills:
-        # A compile run installs skills instead of producing a downloadable deliverable.
-        names = ", ".join(f"`{_esc(n)}`" for n in registered_skills)
-        blocks.append(_section(f"*Registered skill(s)*\n{names}"))
-    elif download_urls:
-        lines, shown = [], 0
-        for name, url in download_urls.items():
-            line = f"• {_link(url, name)}"
-            if sum(len(x) + 1 for x in lines) + len(line) > 2700:
-                break
-            lines.append(line)
-            shown += 1
-        more = len(download_urls) - shown
-        if more > 0:
-            lines.append(f"…and {more} more file(s) in `outputs/mcp/{_esc(result_id)}/`")
-        blocks.append(_section(
-            f"*Artifacts ({len(download_urls)})* — links expire in {_ttl()}\n"
-            + "\n".join(lines)
-        ))
     else:
-        # No links to give — either R2 is not configured, or the upload failed. Name the
-        # files and point at the on-server copy, which an operator can still fetch off the
-        # host by hand; that is the only route left that works.
-        names = "\n".join(f"• `{_esc(n)}`" for n in (files or [])[:20]) or "_none_"
-        more = len(files or []) - 20
-        if more > 0:
-            names += f"\n…and {more} more"
-        blocks.append(_section(
-            f":warning: *Artifacts ({len(files or [])})* — no download links available. "
-            f"On the server at `outputs/mcp/{_esc(result_id)}/`\n{names}"
-        ))
+        # Registration and artifacts are independent: a compile run installs the skill AND
+        # produces downloadable files. Report both — an install note alone leaves the run
+        # looking like it made nothing.
+        if registered_skills:
+            names = ", ".join(f"`{_esc(n)}`" for n in registered_skills)
+            blocks.append(_section(f"*Registered skill(s)*\n{names}"))
+        if download_urls:
+            blocks.extend(_artifact_blocks(download_urls, result_id))
+        elif files:
+            # Files exist but no links — either R2 is not configured, or the upload failed.
+            # Name them and point at the on-server copy, which an operator can still fetch
+            # off the host by hand; that is the only route left that works.
+            names = "\n".join(f"• `{_esc(n)}`" for n in files[:20])
+            more = len(files) - 20
+            if more > 0:
+                names += f"\n…and {more} more"
+            blocks.append(_section(
+                f":warning: *Artifacts ({len(files)})* — no download links available. "
+                f"On the server at `outputs/mcp/{_esc(result_id)}/`\n{names}"
+            ))
+        elif not registered_skills:
+            # Nothing produced and nothing installed: worth saying plainly, since a "run
+            # complete" with no outcome at all usually means the skill went nowhere. (A
+            # compile run needs no such note — the registration above IS its outcome.)
+            blocks.append(_section("*Artifacts*\n_none produced_"))
 
     await _post(f"{headline}: {skill} — {who}", blocks)

@@ -12,7 +12,9 @@ States: running -> need_input <-> running -> ... -> done | error
   - running     : a turn is executing; keep polling.
   - need_input  : the skill asked; relay the questions, then call again with
                   session_id + response.
-  - done        : finished; deliverable uploaded to R2 with presigned download URLs.
+  - done        : finished; EVERY produced artifact uploaded to R2 with presigned
+                  download URLs — including a compiled skill and its KB, which are
+                  also installed server-side.
   - error       : the run failed.
 
 File input flow (remote clients):
@@ -142,20 +144,23 @@ POLL_TEXT = (
     "polling. This is normal long-running progress, not an error. Repeat until "
     "status is 'need_input' or 'done'."
 )
-# The deliverable is the point of the run, so the done snapshot has to hand it over
-# rather than describe it. Clients differ in what they can do with a URL, so this
+# The artifacts are the point of the run, so the done snapshot has to hand them over
+# rather than describe them. Clients differ in what they can do with a URL, so this
 # asks for the one thing every client can render (a link) and, where the client has
-# a filesystem, the download too.
+# a filesystem, the download too. EVERY entry gets a link — a compiled skill, its
+# assets, and each KB file are all artifacts the user is entitled to, not internals.
 DELIVERY_TEXT = (
-    "The document is ready — deliver it, don't just mention it. For every entry in "
-    "`download_urls`, put a clickable markdown link in your reply labelled with the "
-    "filename, e.g. [SOW.pdf](https://…), so the user can download it straight from "
-    "the chat. If you can write files locally (Claude Code / CLI clients), also fetch "
-    "each URL, save it into the user's working directory, and tell them the path. "
-    "Never paste a bare presigned URL as plain text, never replace the document with a "
-    "summary of it, and never tell the user to go find it on the server. Say that the "
-    "link expires in `download_expires_in_seconds` and that they should re-run to get "
-    "a fresh one after that."
+    "The artifacts are ready — deliver them, don't just mention them. For EVERY entry in "
+    "`download_urls` — every file, without exception — put a clickable markdown link in "
+    "your reply labelled with the filename, e.g. [SOW.pdf](https://…), so the user can "
+    "download it straight from the chat. When there are many files, group them under short "
+    "headings (deliverable / skill / knowledge base) but do not drop, sample, or summarise "
+    "any of them away; a file the user cannot click is a file they did not receive. If you "
+    "can write files locally (Claude Code / CLI clients), also fetch each URL, save it into "
+    "the user's working directory, and tell them the path. Never paste a bare presigned URL "
+    "as plain text, never replace an artifact with a summary of it, and never tell the user "
+    "to go find it on the server. Say that the links expire in "
+    "`download_expires_in_seconds` and that they should re-run to get fresh ones after that."
 )
 
 
@@ -211,8 +216,9 @@ def _register_skills(harvested: list[tuple[str, bytes]], tenant: Optional[str]) 
     (several tenants may share the same clean name). Only the CLEAN names are returned.
 
     Registration requires a tenant: an anonymous run must NOT install a skill (a global
-    install would leak it to every caller), so with tenant=None nothing is registered and
-    the run instead returns the skill files to the caller as its deliverable."""
+    install would leak it to every caller), so with tenant=None nothing is registered.
+    Either way the caller still receives the skill files — registration installs a COPY
+    and never consumes the harvest, so what the run produced is always delivered."""
     if not tenant:
         return []
     roots: dict[str, str] = {}   # path-prefix under the harvest -> CLEAN skill name
@@ -380,10 +386,14 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 storage.delete_inputs(sess.r2_keys)
 
             # Auto-register any generated skills (e.g. from a document-generator run).
-            # Registered skill files are private: excluded from the R2 deliverable and
-            # never sent to the client — only the skill name is returned.
+            # Registration installs a private, tenant-scoped COPY under .claude/skills;
+            # it does not consume the harvest. Everything the run produced — a compiled
+            # SKILL.md, its assets, a KB, a document — is still the caller's artifact and
+            # is uploaded for download. The caller is the tenant who ran the job, so
+            # handing them their own files back is not a leak, and a registered skill the
+            # user cannot inspect or keep a copy of is a black box.
             registered = _register_skills(harvested, sess.tenant)
-            deliverable = [] if registered else list(harvested)
+            deliverable = list(harvested)
 
             download_urls: dict = {}
             if config.USE_R2 and deliverable:
@@ -460,23 +470,23 @@ def _snapshot(sess: sessions.Session) -> dict:
             "pass it back later (with a skill + context) on a run_skill call to continue "
             "building on these output artifacts."
         )
-        if registered:
-            # A compile run registers skills instead of producing a deliverable, so there
-            # is nothing to download — don't promise a link that was never generated.
-            next_step = (
-                "Done. Registered new skill(s) into this server's .claude/skills so they "
-                "resolve on the next list_skills/run_skill call: "
-                + ", ".join(registered) + ". " + save_note
-            )
-        elif has_links:
-            next_step = "Done. " + DELIVERY_TEXT + " " + save_note
+        # Registration and delivery are independent: a compile run BOTH installs the skill
+        # and hands back every file it produced. Registration alone is not a reason to
+        # withhold links.
+        reg_note = (
+            "Also registered new skill(s) into this server's .claude/skills so they resolve "
+            "on the next list_skills/run_skill call: " + ", ".join(registered) + ". "
+        ) if registered else ""
+        if has_links:
+            next_step = "Done. " + DELIVERY_TEXT + " " + reg_note + save_note
         else:
             reason = f" ({urls['_error']})" if "_error" in urls else ""
             next_step = (
                 f"Done, but no download link was produced{reason}. The deliverable is on "
                 f"the server at outputs/mcp/{result.get('result_id', '<result_id>')}/. Tell "
                 "the user which files were produced and where they are, so they can be "
-                "retrieved from the host. " + save_note
+                "retrieved from the host, and say plainly that no link came back rather "
+                "than implying this output is link-less by design. " + reg_note + save_note
             )
         extra = {"download_expires_in_seconds": config.R2_URL_EXPIRY} if has_links else {}
         return {"status": "done", "session_id": sess.id, **result, **extra,
@@ -728,12 +738,16 @@ async def run_skill(
     `response` (do NOT answer them yourself) and resume polling. Stop when status is
     `done` or `error`.
 
-    On `done`, hand the deliverable over — `download_urls` maps each result filename to
+    On `done`, hand every artifact over — `download_urls` maps each result filename to
     a presigned URL (valid for `download_expires_in_seconds`). Render each as a clickable
     markdown link labelled with the filename so the user can download it from the chat,
-    and if you can write files locally, fetch and save them too and report the path. The
-    deliverable is also kept server-side under outputs/mcp/<result_id>/; that path is a
-    fallback for the operator, not a substitute for giving the user the link.
+    and if you can write files locally, fetch and save them too and report the path. This
+    covers everything the run produced, not just a final document: a compile run returns
+    its generated SKILL.md, that skill's assets, and every KB file, AND reports the
+    installed skill name in `registered_skills` — registration is in addition to delivery,
+    never instead of it. The artifacts are also kept server-side under
+    outputs/mcp/<result_id>/; that path is a fallback for the operator, not a substitute
+    for giving the user the links.
 
     CONTINUE a past session: pass a previously returned `session_id` TOGETHER WITH a
     `skill` (and `context`). The server seeds that session's saved output artifacts
