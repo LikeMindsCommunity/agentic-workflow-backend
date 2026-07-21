@@ -1,6 +1,6 @@
 ---
 name: document-generator
-description: Compile a delivery team's reusable document-generation skill from their knowledge base plus at least one finished sample document. REQUIRES a sample and halts without one — the sample IS the format spec this compiler extracts, so a transcript/MOM is not a substitute and a format is never borrowed from another team's KB or an existing generate-* skill. Reads the KB for product knowledge and the sample (a SOW, BRD, HLD, proposal, or any structured deliverable) as a pixel-level visual format reference, then writes a self-contained generate-<client>-<product-line>-<doctype> skill that turns a new MOM/brief into a complete document matching the sample's exact format. The compiled skill delivers PDF or DOCX, asking which per document unless the request already says. Here "client" means the FIRM operating the skill, never the company the document is addressed to — that recipient arrives in the MOM per document and never appears in the skill name. Use when an operator has a KB plus a sample and wants the reusable generator compiled. Inputs: kb=<dir> and sample=<finished reference document> (both required), client=<firm slug>, product_line=<what the team delivers>. Triggers: "build a document generator for {client}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
+description: Compile a delivery team's reusable document-generation skill from their knowledge base plus at least one finished sample document. REQUIRES a sample and halts without one — the sample IS the format spec this compiler extracts, so a transcript/MOM is not a substitute and a format is never borrowed from another team's KB or an existing generate-* skill. Reads the KB for product knowledge and the sample (a SOW, BRD, HLD, proposal, or any structured deliverable) as a pixel-level visual format reference, then writes a self-contained generate-<client>-<product-line>-<doctype> skill that turns a new MOM/brief into a complete document matching the sample's exact format. Proposes the generated skill's name and confirms it with the operator before compiling — never names it silently. The compiled skill delivers PDF or DOCX and either draws the document's flow diagrams or leaves marked placeholders, asking about each per document unless the request already says. Here "client" means the FIRM operating the skill, never the company the document is addressed to — that recipient arrives in the MOM per document and never appears in the skill name. Use when an operator has a KB plus a sample and wants the reusable generator compiled. Inputs: kb=<dir> and sample=<finished reference document> (both required), client=<firm slug>, product_line=<what the team delivers>, skill_name=<exact name, optional — asked if omitted>, diagrams=draw|placeholder|ask, format=pdf|docx|ask. Triggers: "build a document generator for {client}", "compile a document skill from this KB and sample", "create a custom document generator", "generate a SOW/BRD/HLD generator for {org}".
 ---
 
 # Document Generator — Skill Compiler (Pixel-Match Format Fidelity)
@@ -17,7 +17,7 @@ The sample can be any structured client deliverable — a Statement of Work (SOW
 
 The sample document is a **format reference, not a content template**. Its wording, boilerplate text, and section content are examples of past documents only and are NEVER copied into new documents (except for genuinely fixed org legal text). New content is always written fresh from KB product knowledge + MOM client data. **The styling, however, must be replicated to the pixel.**
 
-**Output**: A self-contained skill saved to `.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/SKILL.md` (e.g., `generate-acme-ivr-sow`, `generate-acme-brd`)
+**Output**: A self-contained skill saved to `.claude/skills/<skill-name>/SKILL.md`, where `<skill-name>` is the name the operator confirmed in Phase 1.4-A2 — proposed as `generate-<client-slug>-<product-line>-<doc-type>` (e.g., `generate-acme-ivr-sow`, `generate-acme-brd`), but theirs to change.
 
 **Who is who — the name has three components and the recipient is not one of them:**
 
@@ -53,6 +53,9 @@ This skill operates at two layers, and you must keep them straight throughout:
 | `sample` | Path to at least one **finished deliverable of the target type** (PDF or DOCX) — a real past SOW, BRD, HLD, proposal that this team has issued. This is the format spec; there is no compile without it. | **Required — blocking** |
 | `client` | Short slug for the **firm operating this skill** — first component of the skill filename. Accepts `customer` as a legacy alias. | Ask if not inferable |
 | `product_line` | Short slug for **what the team delivers** (`ivr`, `netsuite`) — second component of the skill filename. | Ask if not inferable |
+| `skill_name` | The exact name to compile under. When given (e.g. by `create-document-generator`, which confirms it with the operator first) it is authoritative and overrides the assembled name. When omitted, Phase 1.4-A2 **proposes a name and asks** — it is never chosen silently. | Proposed, then confirmed in Phase 1.4-A2 |
+| `diagrams` | What the compiled skill does with flow/process diagrams: `draw` / `placeholder` / `ask`. Bakes the answer into the generated skill's Phase 0.1b gate. | `ask` — the generated skill asks per document |
+| `format` | The compiled skill's output-format policy: `pdf` / `docx` / `ask`. Bakes the answer into the generated skill's Phase 0.1 gate. | `ask` — the generated skill asks per document |
 | `output` | Where to save the generated skill | `.claude/skills/` |
 
 ---
@@ -61,7 +64,7 @@ This skill operates at two layers, and you must keep them straight throughout:
 
 ### 1.1 — Parse arguments and gate
 
-Extract `kb`, `sample`, `client` (or its legacy alias `customer`), `product_line`, and `output` from the skill's invocation arguments. Apply defaults only where the Inputs table gives one — the rest are gates, below.
+Extract `kb`, `sample`, `client` (or its legacy alias `customer`), `product_line`, `skill_name`, `diagrams`, `format`, and `output` from the skill's invocation arguments. Apply defaults only where the Inputs table gives one — the rest are gates, below.
 
 **Gate — no sample, no compile.** The sample is not one input among several: it **is** the format specification this compiler exists to extract. Every phase from 1.3 through 3.6 is measurement of the sample. With no sample there is nothing to measure, and the run **halts here**.
 
@@ -69,6 +72,8 @@ Extract `kb`, `sample`, `client` (or its legacy alias `customer`), `product_line
 - **Never substitute a format reference you were not given.** Not from another client's KB or output; not from an existing `generate-*` skill in `.claude/skills/`; not from the playbook library (archetype advice, no team's format); not from any "gold standard" elsewhere in the repo; not from your own idea of what a SOW/BRD looks like. **Reaching outside the operator's own `sample` for a format is itself the halt condition — stop and ask.** A generator compiled against another firm's format is a confident, plausible, wrong result: it silently hands this team a competitor's document identity, every later phase measures the wrong document faithfully, and nothing downstream catches it.
 
 **Gate — names.** `client` is the **firm operating this skill**, never the company the sample is *addressed to*. If the slug you resolved is the sample's addressee, you have picked up the recipient — halt and ask which firm this generator belongs to. Do the same for `product_line` if you cannot confidently infer what the team delivers. Never infer either name from the sample's recipient; per the Who-is-who table, the recipient names nothing here and arrives per-document in the MOM.
+
+**Gate — the compiled skill's name is confirmed, never assumed.** The operator lives with this name on every future run, so it is shown to them before anything is written. If `skill_name` was passed, it is already confirmed and is authoritative — record it and move on. If it was not, the full name cannot be assembled until the doctype is detected, so the question waits for **Phase 1.4-A2**, where it is asked and the run stops for the answer. Do not quietly assemble a name and compile under it.
 
 **Resolve four naming tokens here.** Later phases substitute them, so fix them now — each is a lowercase slug paired with the human-readable form used in prose:
 
@@ -722,6 +727,25 @@ Before content classification, determine (a) the document's **type** and a short
 
 Pick a short lowercase `doc_type_slug` naming the document class (`sow`, `brd`, `hld`, `proposal`, `runbook`, …) and a human-readable `document_type_name` (e.g., "Statement of Work"). Source them, in priority order, from: an explicit type in the KB; the sample filename or cover title ("Scope of Work" → `sow`, "Business Requirements Document" → `brd`, "High-Level Design" → `hld`); or the dominant section vocabulary. The generated skill is named `generate-<client-slug>-<product-line>-<doc-type>` (using `doc_type_slug`); its prose uses `document_type_name`. Those three components are the firm, what it delivers, and the document class — e.g. `generate-acme-ivr-sow`. The company a document is addressed to is never one of them.
 
+**Step 1.4-A2: Confirm the name with the operator (blocking) — this is a *proposal*, not a decision**
+
+The three components are now in hand, so assemble the name and put it in front of the operator before Phase 2 begins. They will call this skill by this name for as long as the team uses it, and renaming it later means recompiling — which is why it is never chosen silently.
+
+- **If `skill_name` was passed, it is already confirmed** (the caller asked). Adopt it verbatim, record it as `SKILL_NAME`, and do not ask. If the doctype you just detected disagrees with the one inside that name, the passed name still wins: note the difference in one line at Phase 4.3 and compile under the passed name.
+- **Otherwise ASK, and stop.** Show the proposal and what each component means, so a wrong slug is obvious at a glance:
+
+```
+I'll compile the generator as:  generate-acme-ivr-sow
+
+  acme = your firm    ivr = what you deliver    sow = the document type
+  (detected from the sample: "Statement of Work")
+
+Use that name, or give me a different one?
+```
+
+- Whatever comes back is `SKILL_NAME`, and it is what Phase 3.1's frontmatter `name` and Phase 4.1's directory both use. Validate it: lowercase, hyphen-separated, no spaces. If the operator's name is the **recipient** the sample is addressed to, say so plainly and ask again — that name implies recompiling per deal, which is the one thing this compiler exists to avoid.
+- Never substitute a name of your own after the operator has answered, and never rename to match a later detection.
+
 **Step 1.4-B: Detect capability signals — scan the sample for these patterns:**
 
 ```python
@@ -769,12 +793,16 @@ Worked bundles (the two named modes are just common combinations):
 
 Record in FORMAT_SPEC:
 ```yaml
+skill_name: generate-acme-ivr-sow     # confirmed in 1.4-A2 — the name actually compiled
 doc_type_slug: sow                    # 3rd component of: generate-<client>-<product-line>-<slug>
 document_type: GENERIC_SOW            # classification label: BRD | IVR_SOW | GENERIC_SOW | <custom>
 document_type_name: "Statement of Work"
 capabilities: [flowchart_vocabulary]  # the activated bundle for this sample
 sample_format: pdf                    # pdf | docx — the sample's own file type
 primary_format: pdf                   # == sample_format (Phase 2.1 FORMAT_SPEC.output)
+format_policy: ask                    # ask | pdf | docx — from `format`; drives Phase 0.1 of the generated skill
+diagram_policy: ask                   # ask | draw | placeholder — from `diagrams`; drives Phase 0.1b
+diagram_count: 4                      # drawable flow/process diagrams counted in the sample (0 is a real answer)
 ```
 
 **Step 1.4-D: The sample's type sets the *primary* format, never the *only* one.** Every compiled skill emits both a PDF and a DOCX pipeline (Phase 3.6) and picks between them per document at generate time. What the sample type decides is which pipeline reproduces it *directly* — a `.docx` sample is cloned for DOCX output, a `.pdf` sample is measured into HTML for PDF output — and which one is a rebuild from the measured spec. Record `primary_format` so the generated skill can say which is which; do not let it narrow the compile to a single format.
@@ -1506,12 +1534,12 @@ Write the complete skill `.md` file. It must be fully self-contained.
 
 ### 3.1 — Skill file header
 
-The generated file is itself a **skill**, so it opens with YAML frontmatter (`name` and `description`) before any prose. The `name` must equal the generated skill's directory name (`generate-{{client_slug}}-{{product_line_slug}}-{{doc_type_slug}}`). The compiler emits (substituting `doc_type_slug` and `document_type_name` from the type detected in Phase 1.4):
+The generated file is itself a **skill**, so it opens with YAML frontmatter (`name` and `description`) before any prose. The `name` must equal `{{SKILL_NAME}}` — the name confirmed with the operator in Phase 1.4-A2 — and the generated skill's directory name must match it exactly. Never re-derive the name here from the slugs; 1.4-A2 already settled it, and re-deriving is how a confirmed name silently gets overwritten. The compiler emits (substituting `document_type_name` from the type detected in Phase 1.4):
 
 ```markdown
 ---
-name: generate-{{client_slug}}-{{product_line_slug}}-{{doc_type_slug}}
-description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a MOM/brief, using {{Org Name}}'s embedded {{product_line_name}} product knowledge and the exact document format captured at compile time. Delivers either PDF or DOCX — if the request does not say which, the skill asks before writing. Reusable for every {{document_type_name}} this team issues — the company each document is addressed to comes from the MOM, not from this skill's name, so there is no need to compile a new skill per deal. Use when an operator has a brief and wants the {{document_type_name}} written or drafted. Inputs: mom=<path to the brief> (required), format=pdf|docx (optional — asked if omitted). Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {recipient}", "write the {{doc_type_slug}} from this MOM", "draft the {{product_line_slug}} {{doc_type_slug}} as a Word doc".
+name: {{SKILL_NAME}}
+description: Generate a pixel-match {{Org Name}} {{document_type_name}} from a MOM/brief, using {{Org Name}}'s embedded {{product_line_name}} product knowledge and the exact document format captured at compile time. Delivers either PDF or DOCX — if the request does not say which, the skill asks before writing. Draws the document's flow diagrams or leaves marked placeholders for the operator to insert — it asks which, rather than choosing. Reusable for every {{document_type_name}} this team issues — the company each document is addressed to comes from the MOM, not from this skill's name, so there is no need to compile a new skill per deal. Use when an operator has a brief and wants the {{document_type_name}} written or drafted. Inputs: mom=<path to the brief> (required), format=pdf|docx (optional — asked if omitted), diagrams=draw|placeholder (optional — asked if omitted). Triggers: "generate the {{Org Name}} {{doc_type_slug}} for {recipient}", "write the {{doc_type_slug}} from this MOM", "draft the {{product_line_slug}} {{doc_type_slug}} as a Word doc".
 ---
 
 # Generate {{Org Name}} {{product_line_name}} {{document_type_name}}
@@ -1529,6 +1557,7 @@ You are a **{{Org Name}} {{document_type_name}} Generation Agent**. You write {{
 - You know {{org name}}'s products and services thoroughly (embedded in this skill from the KB).
 - You know {{org name}}'s document format precisely to the pixel (embedded as a comprehensive Format Spec, a ready-to-use HTML/CSS template for PDF, and a python-docx builder for DOCX).
 - You deliver **PDF or DOCX**. If the request does not say which, you ask before writing anything — you never pick one yourself. This document's native format is {{FORMAT_SPEC.output.primary}}; the other is rebuilt from the Format Spec and may differ in minor spacing.
+- You either **draw the flow diagrams** in this team's shape vocabulary or leave **marked placeholders** for the operator to insert their own. If the request does not say which, you ask — you never decide this one either.
 - You read the client's MOM/brief to understand what they want.
 - You write the {{document_type_name}} fresh, synthesizing your product knowledge with the client's requirements, rendered in {{org name}}'s exact standard document format.
 - You verify pixel-match fidelity by side-by-side comparison before finalising.
@@ -1541,6 +1570,7 @@ The sample `{{filename}}` was used only to extract the visual format. Its conten
 The generated skill's Phase 0 must:
 
 1. **Resolve the output format (3.2b) — PDF or DOCX.**
+1b. **Resolve diagram provenance (3.2c) — the skill draws them, or the operator supplies them.**
 2. List all BLOCKING fields with extraction signals.
 3. Verify each is present in the MOM.
 4. Halt (or produce DRAFT with `[Q-N: ...]` placeholders) if any BLOCKING field is missing.
@@ -1554,9 +1584,12 @@ Every compiled skill emits **both** render pipelines (Phase 3.6), so the format 
 
 **Resolution order — ask unless already told:**
 
+0. **A compiled-in house format wins first.** If `FORMAT_SPEC.output.format_policy` is `pdf` or `docx`, the team already decided at compile time: use it, state it in the audit summary, and do not ask. When the policy is `ask` — the default, and what `create-document-generator` passes unless the operator chose otherwise — continue down this list.
 1. **Explicit instruction wins.** If the invocation names a format, use it and do not ask. Accept any of: a `format=pdf` / `format=docx` argument; a phrasing in the operator's prompt ("as a Word doc", "give me the PDF", "send it as .docx"); or an explicit statement in the MOM itself ("deliverable: PDF"). Match case-insensitively and treat `word`/`.docx`/`doc` as DOCX and `.pdf` as PDF.
 2. **Otherwise ASK, every time.** There is no default and no inference from the sample type. A skill compiled from a `.docx` sample must still ask, and must still be able to answer PDF.
 3. **Never guess, never assume the last run's answer.** The format is per document; a previous document's choice does not carry over.
+
+Note what does **not** count as being told: the sample's own file type, the format of a document this skill produced earlier, the extension in an output path, "whatever's easiest", or an operator who is clearly in a hurry. Only rule 0 or rule 1 closes this question.
 
 The compiler emits this block into the generated skill (substituting `{{...}}` at emit time).
 
@@ -1571,8 +1604,9 @@ Determine the deliverable format before writing anything.
 - If not, ASK and STOP. Do not pick one, do not start writing, do not "proceed with PDF and
   convert later". Nothing in Phase 1 onward runs until this is answered.
 
-Ask this exactly once, and fold it into the SAME question block as any missing BLOCKING MOM
-fields from Phase 0.2 so the operator is interrupted once, not twice:
+Ask this exactly once, and fold it into the SAME question block as the Phase 0.1b diagram
+question and any missing BLOCKING MOM fields from Phase 0.2, so the operator is interrupted
+once rather than three times:
 
 {{ASK_MARKER}}
 Which format should the {{document_type_name}} be delivered in — **PDF** or **DOCX**?
@@ -1590,6 +1624,51 @@ and state it in the Phase 0 audit summary. Phase 4 then runs ONLY the matching p
 When the generated skill runs outside that harness (invoked directly in a conversation), the marker line is harmless prose and the question reads normally — so the same emitted text works in both contexts. Do not emit two variants.
 
 **Why the gate is bundled with the MOM audit and not asked later:** each question pauses the run for a round trip. Asking for the format after the document is already written wastes the write, and asking it separately from the BLOCKING MOM gaps interrupts the operator twice for one document. Resolve both in one block, up front.
+
+### 3.2c — Embed the Diagram Provenance Gate
+
+Whether the skill **draws** a document's flow/process diagrams or leaves a **placeholder** for the operator to drop their own in is a per-document decision, not a property of the compiler. Both are legitimate and routine: an operator who has already drawn the call flow in their own tool wants a placeholder; an operator working from a bare brief wants the skill to draw it. Guessing wrong is expensive in both directions — a drawn diagram that contradicts the operator's real flow is worse than a blank box, and a blank box in a document that was supposed to be complete is a broken deliverable that ships.
+
+Emit this gate into the generated skill as Phase 0.1b, immediately after the format gate, **whenever the document can carry a diagram at all** — that is, whenever `flowchart_vocabulary` is active, section-body images were catalogued in Step L2, or the sample contained any process/flow figure. Omit it only for documents that genuinely have no diagram surface anywhere.
+
+```markdown
+## PHASE 0.1b — Resolve diagram provenance (hard gate)
+
+This {{document_type_name}} carries {{FORMAT_SPEC.diagram_count}} flow/process diagram(s).
+Decide where they come from before writing anything.
+
+- If `FORMAT_SPEC.diagram_policy` is `draw` or `placeholder`, that is the team's standing
+  decision — record it and continue, do not ask.
+- If the operator already said ("draw the call flow", "I'll add the diagrams", a
+  `diagrams=draw` / `diagrams=placeholder` argument), record it and continue.
+- Otherwise ASK and STOP. Do not draw "a first pass they can replace", and do not leave a
+  placeholder because drawing looks hard.
+
+Fold this into the SAME question block as the Phase 0.1 format question and any missing
+BLOCKING MOM fields:
+
+{{ASK_MARKER}}
+The {{document_type_name}} has {{FORMAT_SPEC.diagram_count}} flow diagram(s). Should I **draw**
+them from the brief, or leave a **placeholder** for you to insert your own?
+(Drawn diagrams use this team's standard shape vocabulary; placeholders appear as a marked
+box at the right position and are listed at the end so none is missed.)
+
+After the operator answers, record:
+
+    DIAGRAM_MODE = "draw" | "placeholder"
+
+and state it in the Phase 0 audit summary.
+
+- **draw** — build every diagram from FORMAT_SPEC.flowchart_vocabulary, honouring the shape
+  and conditional-label contracts. Any flow the brief does not describe well enough to draw
+  is a `[Q-N: ...]` gap, not an invented flow.
+- **placeholder** — render the styled placeholder block at each diagram's position, and list
+  every one of them in the closing summary with its section and caption, so the operator knows
+  exactly what to insert and where.
+
+Images already classified REUSABLE_STANDARD are unaffected by this gate: they are the team's own
+fixed assets and are always embedded.
+```
 
 ### 3.3 — Embed the Knowledge Base as Phase 1
 
@@ -2317,11 +2396,11 @@ typography from the DOCX checks above instead.
 
 ### 4.1 — Output location
 
-`.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/SKILL.md`
+`.claude/skills/{{SKILL_NAME}}/SKILL.md` — using the name confirmed in Phase 1.4-A2, not a name reassembled from the slugs.
 
 ### 4.2 — Save the skill file
 
-Create the skill directory `.claude/skills/generate-<client-slug>-<product-line>-<doc-type>/` and write the complete skill to `SKILL.md` inside it. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
+Create the skill directory `.claude/skills/{{SKILL_NAME}}/` and write the complete skill to `SKILL.md` inside it. The directory name, the frontmatter `name`, and the name the operator confirmed must be the same string — if they disagree, the skill will not resolve when the operator calls it by the name they were shown. The file must begin with the `name` + `description` frontmatter from Phase 3.1 so it is discoverable as a skill.
 
 **Bundle everything the two pipelines read at generate time into that same directory** — the compiled skill must not reach outside itself for a file (Critical Rule 5):
 
@@ -2338,10 +2417,11 @@ When `FORMAT_SPEC.output.sample_format == "docx"`, copy the sample to `format_ba
 
 ```
 Document Generation Skill Compiled
+  Skill name:             {{SKILL_NAME}}   (confirmed with you before compiling)
   Client (firm):          {{Org Name}} ({{client_slug}})
   Product line:           {{product_line_name}} ({{product_line_slug}})
   Document type:          {{document_type_name}} ({{doc_type_slug}})
-  Skill file:             .claude/skills/generate-<client-slug>-<product-line>-<doc-type>/SKILL.md
+  Skill file:             .claude/skills/{{SKILL_NAME}}/SKILL.md
   KB source:              {{kb_path}} ({{N}} files read)
   Format reference:       {{sample_filename}} (layout only — content NOT embedded, and the
                           generator is not tied to that sample's recipient)
@@ -2374,11 +2454,13 @@ Render pipelines (both emitted — operator picks per document):
   Rebuilt format:         {{the other one}} (matches palette/type/geometry; spacing may differ)
   SVG shape library:      embedded ({{N}} shape templates)
   Pixel-match protocol:   embedded (Phase 5, PDF path)
-  Format gate:            embedded (Phase 0.1 — asks unless the request names a format)
+  Format gate:            embedded (Phase 0.1 — {{"asks unless the request names a format" | "fixed to " + format_policy}})
+  Diagram gate:           embedded (Phase 0.1b — {{"asks draw-or-placeholder per document" | "fixed to " + diagram_policy}})
 
 Next step:
-  Run the generate-<client-slug>-<product-line>-<doc-type> skill with mom=<path-to-mom-file>
+  Run the {{SKILL_NAME}} skill with mom=<path-to-mom-file>
   Optionally add format=pdf or format=docx to skip the format question.
+  Optionally add diagrams=draw or diagrams=placeholder to skip the diagram question.
 ```
 
 ---
@@ -2388,7 +2470,7 @@ Next step:
 **Rule 0 — two ways to fail before you start.** Both are Phase 1.1 gates, and both produce a confident, plausible, wrong artifact rather than an error, which is why they come first:
 
 - **No sample, no compile.** The sample is the format spec, not one input among several. A transcript or MOM is not a sample; a lone transcript is zero samples, not one. Never borrow a format from another client's KB, an existing `generate-*` skill, the playbook library, or your own idea of what the document looks like — reaching outside the operator's own `sample` *is* the halt condition. Compiling against another firm's format hands this team a competitor's document identity, and every later phase then measures the wrong document perfectly.
-- **Never name the skill after the recipient.** `generate-<client>-<product-line>-<doc-type>` is the firm, what it delivers, and the document class — `generate-acme-ivr-sow`. The company a document is addressed to is a *generate-time* value that arrives in the MOM (see rule 3); it names nothing at compile time. `generate-contoso-sow` implies recompiling per deal, which defeats the point of a reusable generator.
+- **Never name the skill after the recipient, and never name it without asking.** `generate-<client>-<product-line>-<doc-type>` is the firm, what it delivers, and the document class — `generate-acme-ivr-sow`. The company a document is addressed to is a *generate-time* value that arrives in the MOM (see rule 3); it names nothing at compile time. `generate-contoso-sow` implies recompiling per deal, which defeats the point of a reusable generator. The assembled name is a **proposal**: Phase 1.4-A2 shows it to the operator and stops for an answer unless `skill_name` already carried one. The confirmed string is then the frontmatter `name`, the directory name, and what every report calls it — the operator has to be able to invoke what they were shown.
 
 1. **Sample serves two roles, not one.** The sample provides (a) the visual format — colors, layout, heading typography, table styles, section order, heading strings — which is extracted and embedded as FORMAT_SPEC; AND (b) the boilerplate template strings and field reference data — which are extracted via Phase 1.5 and 1.6 and embedded in the generated skill's 1B/1C catalogs. What is NEVER extracted from the sample: client-specific variable content (the client's name, their specific requirements, their approval matrices, their configuration decisions). Past client data is irrelevant to future clients; standard structural text and standard field tables are reusable.
 
@@ -2447,3 +2529,7 @@ Next step:
 28. **The format question is asked every time it is not answered.** The generated skill resolves PDF vs DOCX in its Phase 0.1, before writing anything: an explicit format in the arguments, prompt, or MOM is honoured silently; otherwise the skill asks and stops. It must never default to the sample's format, never carry over the previous document's answer, and never write first and ask after. Fold the question into the same block as any missing BLOCKING MOM fields so one document costs the operator one interruption.
 
 29. **The deliverable is named `<recipient>_<DOC_TYPE>.<ext>`, resolved per document.** The recipient is the company the document is **addressed to**, read from the MOM at generate time — never the client firm, never the sample's addressee, and never a compile-time constant: `SwiftTrack Logistics_SOW.pdf`, `Contoso_BRD.docx`. `<DOC_TYPE>` is `doc_type_slug` uppercased and `<ext>` follows `OUTPUT_FORMAT`. Two ways the cleanup filter destroys the deliverable it is meant to keep: a hardcoded `.pdf` deletes a DOCX run's output, and an **unquoted** filename deletes everything the moment a recipient name contains a space — which is the normal case, not the edge case. Quote the name, and confirm the file exists before deleting anything around it.
+
+30. **The diagram question is asked every time it is not answered.** The generated skill resolves draw-vs-placeholder in its Phase 0.1b, before writing anything: a compiled-in `diagram_policy`, or an explicit instruction in the arguments/prompt/MOM, is honoured silently; otherwise it asks and stops. Never infer it from the sample (the sample having drawn diagrams says what a past document contained, not what this operator has in hand), never carry over the previous document's answer, and never split the difference by drawing "a first pass they can replace" — a plausible wrong flow costs more to spot and correct than a blank box. In placeholder mode, every placeholder is listed in the closing summary with its section and caption; an unlisted placeholder ships unnoticed.
+
+31. **Ask rather than assume, and ask once.** Three decisions belong to the operator and none of them may be inferred: the compiled skill's **name** (1.4-A2), the **output format** (0.1), and **diagram provenance** (0.1b). Each is closed only by an explicit answer — an argument, a plain statement in the request, a compiled-in policy the operator themselves chose, or an answer they just gave. Convenience, momentum, the sample's own properties, and what the last run did are not answers. Where several of these are open at the same moment, they go out in **one** question block together with any missing BLOCKING MOM fields: asking more questions is correct, interrupting more often is not.
