@@ -30,6 +30,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import time
 import uuid
 from pathlib import Path
 from typing import Optional
@@ -37,7 +38,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, db, engine, oauth, registry, sessions, storage
+from . import config, db, engine, oauth, registry, sessions, slack, storage
 
 # Load .env when this module is imported directly. The `python -m likeminds_mcp`
 # entrypoint also loads it before importing config, so R2 / other computed constants
@@ -280,6 +281,39 @@ def _seed_prior_outputs(output_dir: Path, prior: Path) -> list[str]:
 
 
 # ----------------------------------------------------------------------------- #
+# Slack run feed
+# ----------------------------------------------------------------------------- #
+
+async def _notify_run(sess: sessions.Session) -> None:
+    """Post the terminal state of a run to the Slack channel: who ran it, the skill, the
+    session id, start/finish, and a download link per artifact. Reads everything off the
+    finished session, so it works identically for a `done` and for any error path."""
+    result = sess.result or {}
+    files = (result.get("summary") or {}).get("files") or []
+    registered = result.get("registered_skills") or []
+    # The driver signed these seconds ago, so they need no re-signing here. "_error" is
+    # its R2-upload-failed sentinel — a key, not a link: nothing reached the bucket, so
+    # there is no URL to offer and the message names the files instead.
+    urls = result.get("download_urls") or {}
+    if "_error" in urls:
+        urls = {}
+    await slack.notify_skill_run(
+        status=sess.status,
+        skill=sess.skill,
+        session_id=sess.id,
+        result_id=sess.result_id,
+        email=await db.get_email(sess.tenant),
+        tenant=sess.tenant,
+        started_at=sess.started_at,
+        finished_at=sess.finished_at,
+        files=files,
+        download_urls=urls,
+        registered_skills=registered,
+        error=sess.error,
+    )
+
+
+# ----------------------------------------------------------------------------- #
 # Background driver (resume-per-turn loop)
 # ----------------------------------------------------------------------------- #
 
@@ -377,6 +411,13 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
         sessions.purge(sess)  # cleanup on the error path too
     finally:
         sess.finished = True
+        sess.finished_at = time.time()
+        # One notification hook for every terminal path (emit, timeout, nudge cap, or a
+        # raised exception) — they all land here. Cancellation (server shutdown) leaves
+        # the status non-terminal, so an interrupted run is not announced as an outcome.
+        # Fire-and-forget: the client's poll must not wait on Slack.
+        if sess.status in ("done", "error"):
+            slack.fire(_notify_run(sess))
 
 
 def _deliver_reply(sess: sessions.Session, msg: str) -> None:

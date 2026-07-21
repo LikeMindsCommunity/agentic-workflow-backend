@@ -33,6 +33,9 @@ _db = None
 # token(tenant-key) -> (is_verified, expires_at). Fronts the per-request Mongo lookup.
 _verify_cache: dict[str, tuple[bool, float]] = {}
 
+# user id -> (email, expires_at). Fronts the Slack feed's id→email lookup.
+_email_cache: dict[str, tuple[Optional[str], float]] = {}
+
 _HEX24 = re.compile(r"^[0-9a-f]{24}$")
 
 
@@ -92,9 +95,14 @@ def _get_or_create_sync(email: str) -> str:
     return str(res.inserted_id)
 
 
-def _mark_verified_sync(email: str) -> Optional[str]:
+def _mark_verified_sync(email: str) -> tuple[Optional[str], bool]:
     users = _users()
     now = datetime.datetime.utcnow()
+    # Read the prior state BEFORE the upsert: it's the only moment that can tell a
+    # first-ever registration from a returning sign-in (afterwards both look verified),
+    # and the Slack feed reports them differently.
+    prior = users.find_one({"email": email}, {"is_verified": 1})
+    is_new = not (prior and prior.get("is_verified"))
     users.update_one(
         {"email": email},
         {"$set": {"is_verified": True, "updated_at": now, "last_login_at": now},
@@ -103,10 +111,10 @@ def _mark_verified_sync(email: str) -> Optional[str]:
     )
     doc = users.find_one({"email": email})
     if not doc:
-        return None
+        return None, is_new
     token = str(doc["_id"])
     _verify_cache.pop(_tenant_key(token) or "", None)  # fresh grant takes effect now
-    return token
+    return token, is_new
 
 
 def _is_verified_sync(token: str) -> bool:
@@ -121,6 +129,18 @@ def _is_verified_sync(token: str) -> bool:
     return bool(doc and doc.get("is_verified") and not doc.get("is_deleted"))
 
 
+def _email_sync(user_id: str) -> Optional[str]:
+    from bson import ObjectId
+    from bson.errors import InvalidId
+
+    try:
+        oid = ObjectId(user_id)
+    except (InvalidId, TypeError, ValueError):
+        return None
+    doc = _users().find_one({"_id": oid}, {"email": 1})
+    return (doc or {}).get("email")
+
+
 # ─── async wrappers used by the server ───────────────────────────────────────
 
 async def get_or_create_user(email: str) -> str:
@@ -128,9 +148,29 @@ async def get_or_create_user(email: str) -> str:
     return await asyncio.to_thread(_get_or_create_sync, email)
 
 
-async def mark_verified(email: str) -> Optional[str]:
-    """Flip the user verified (upserting if needed); return the stable token (id)."""
+async def mark_verified(email: str) -> tuple[Optional[str], bool]:
+    """Flip the user verified (upserting if needed). Returns (stable token, is_new),
+    where is_new is True only the first time this email is ever verified."""
     return await asyncio.to_thread(_mark_verified_sync, email)
+
+
+async def get_email(user_id: Optional[str]) -> Optional[str]:
+    """The email behind a user/tenant id, for the Slack run feed. Cached for the same
+    TTL as the verify lookup — an id's email never changes in this model, so a stale
+    read is not a risk; this only keeps a busy channel from re-querying Mongo. Returns
+    None when Mongo is off (dev tokens are opaque and map to no user row)."""
+    if not user_id or not config.USE_MONGO:
+        return None
+    now = time.time()
+    hit = _email_cache.get(user_id)
+    if hit is not None and hit[1] > now:
+        return hit[0]
+    try:
+        email = await asyncio.to_thread(_email_sync, user_id)
+    except Exception:  # noqa: BLE001 — a DB blip must not break a notification
+        return None
+    _email_cache[user_id] = (email, now + config.TENANT_CACHE_TTL)
+    return email
 
 
 async def resolve_tenant(token: Optional[str]) -> Optional[str]:

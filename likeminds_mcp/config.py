@@ -114,6 +114,22 @@ OAUTH_TOKENS_COLLECTION = os.environ.get("MCP_OAUTH_TOKENS_COLLECTION", "oauth_t
 OAUTH_CODES_COLLECTION = os.environ.get("MCP_OAUTH_CODES_COLLECTION", "oauth_codes")
 OAUTH_REQUESTS_COLLECTION = os.environ.get("MCP_OAUTH_REQUESTS_COLLECTION", "oauth_requests")
 
+# ─── Slack notifications (registration + skill-run feed) ─────────────────────
+# One Slack Incoming Webhook URL turns the feed on; unset leaves it off. The server then
+# posts two kinds of event: a user finishing the browser login (the email that
+# registered), and a skill run reaching a terminal state (who ran what, when, and the
+# artifact links).
+#
+# The webhook URL IS the credential — there is no token or auth header, so treat it like
+# a password: it belongs in .env (gitignored), never in code or .env.example. Its target
+# channel is fixed when the webhook is created, which is why no channel setting exists
+# here; to post somewhere else, create a webhook for that channel.
+SLACK_WEBHOOK_URL = (os.environ.get("SLACK_WEBHOOK_URL") or "").strip()
+USE_SLACK = bool(SLACK_WEBHOOK_URL)
+# Deliberately the whole surface. What posts is fixed: a user's FIRST verified login (a
+# registration — routine re-logins are noise), and every run that ends, succeeded or
+# failed. Artifact links are the run's own presigned URLs, so they inherit R2_URL_EXPIRY.
+
 # Safety bounds (override the timeouts via env). These stop a hung or abandoned
 # session from leaking a subprocess / task / sandbox indefinitely.
 TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800000"))    # s; abort one hung turn

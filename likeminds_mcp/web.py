@@ -20,7 +20,7 @@ import re
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
-from . import config, db, oauth, otp
+from . import config, db, oauth, otp, slack
 
 _EMAIL_RE = re.compile(r"^[^@\s]+@[^@\s]+\.[^@\s]+$")
 
@@ -75,7 +75,7 @@ async def _verify_otp(request: Request) -> JSONResponse:
     if not ok:
         return JSONResponse({"ok": False, "error": "That code isn't valid. Please try again."}, status_code=400)
     try:
-        token = await db.mark_verified(email)
+        token, is_new = await db.mark_verified(email)
     except Exception:  # noqa: BLE001
         return JSONResponse({"ok": False, "error": "Could not issue your token. Please try again."}, status_code=500)
     if not token:
@@ -92,9 +92,13 @@ async def _verify_otp(request: Request) -> JSONResponse:
                 {"ok": False, "error": "This sign-in link expired. Restart the connection from your MCP client."},
                 status_code=400,
             )
+        # Announce only once the handshake actually completed — an expired `lg` above is
+        # a failed connection, not a registration, and must not post to the channel.
+        slack.fire(slack.notify_registration(email, token, is_new, via="oauth"))
         return JSONResponse({"ok": True, "redirect": redirect})
 
     # Standalone login (manual header / fallback): hand back the stable token + config.
+    slack.fire(slack.notify_registration(email, token, is_new, via="token"))
     return JSONResponse({
         "ok": True,
         "token": token,
