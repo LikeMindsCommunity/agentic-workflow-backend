@@ -142,7 +142,7 @@ For each analyzed comparison item, append a new row to the outputs/{client}/appr
 | Root Cause | What is wrong in the source and why — note if code, prompt/template, config, data, or both |
 | Affected Files | Source file(s) with line ranges. If source not identified: generated file location for reference. Separate multiple files with `<br>` |
 | Fix Description | Plain text description of the change. For binary sources: include "Regenerate output after fix" |
-| Testing Notes | "Re-run the find-bugs-{client} skill with the same generated and expected files to verify this discrepancy is resolved" |
+| Testing Notes | "Re-run find-bugs with the same kb, generated and expected files to verify this discrepancy is resolved" |
 | Status | `PENDING` |
 | Reviewed By | `_pending_` |
 

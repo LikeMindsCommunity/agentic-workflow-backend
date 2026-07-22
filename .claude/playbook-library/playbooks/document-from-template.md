@@ -19,6 +19,12 @@ The artifact set has **two distinct groups — and only one of them is KB materi
 
 **A reference deliverable is required; raw sources are not.** With no finished document there is nothing to match and the archetype does not apply — ask the operator for one before going further. References with no raw sources is the **normal, intended** shape for building a KB, not a gap (a *single* reference is a separate concern — see the single-reference gap question below).
 
+**Never substitute a format reference you were not given.** Not another client's KB or output; not an existing generated skill; not this playbook library (archetype advice carries no team's format); not any "gold standard" elsewhere in the repo; not your own idea of what a SOW or BRD looks like. **Reaching outside the operator's own artifacts for a format is itself the halt condition — stop and ask.** A KB built on another firm's format silently hands this team a competitor's document identity: every measurement that follows is taken faithfully from the wrong document, every generated document inherits it, and nothing downstream ever flags it. "There was only one file, so it must be the reference" is the trap — a lone transcript is zero references, not one.
+
+**A document this pipeline produced earlier is not a reference either — it is the most dangerous impostor of the set.** It is the right document type, it carries the team's branding, it is named like a deliverable, and it sits in the same folders. Measuring it makes the KB circular: whatever the previous run rendered becomes the team's ground truth, including every fidelity error it made, and the next run reproduces those errors with new confidence. Nothing downstream can detect this, because the output will match its reference perfectly.
+
+Check provenance before measuring anything. A PDF whose metadata reads `Title: sow.html`, `Creator: HeadlessChrome`, `Producer: Skia/PDF` came out of an HTML-to-print pipeline — which is how a generated document is produced, and also how some teams legitimately export their own. That ambiguity is the reason to **ask** rather than infer. Corroborate: does its recipient match a brief sitting alongside it (circular), is it dated after the KB or generator existed, does its content read as a past engagement or as this brief rendered? When the answer isn't clearly "a real deliverable this team issued to a real client", treat it as not-a-reference and ask for a genuine one.
+
 Other structural signals:
 
 - Inputs include at least one PDF or DOCX that visibly resembles a polished, branded business document (cover page, ToC, header / footer with logo, formatted tables, multi-page, version string in filename).
@@ -37,14 +43,96 @@ These are the things experience says actually matter when working with this arch
 
 - Open DOCX with the `docx` skill (it's a zip of XML — `document.xml`, `styles.xml`, `numbering.xml`, `theme.xml`, `header*.xml`, `footer*.xml`, `settings.xml`, `media/` folder). Open PDF with the `pdf` skill.
 - Extract **real** style attributes: page setup (paper size, margins top / bottom / left / right / gutter), section breaks and section-specific page setup, fonts per heading level and per named paragraph style (exact face, size in half-points, weight, italic, hex color, underline), theme color palette with role tags, header and footer content per section, list styles with exact bullet glyphs and indentation, table styling (borders per side per cell, shading, cell margins), paragraph spacing before / after, line spacing, indentation.
-- For a **PDF reference** there is no style XML, so measure the tokens programmatically: `pdffonts` for the real font faces (they will not be web-safe — e.g. Proxima Nova; record a close substitute for render time), and `pdfplumber` for per-character size/color, rect fills (table-header shading, accent bars), and the text bounding box (→ real margins). Watch for a **non-black body color** (e.g. gray `#666666` from Google-Docs exports) — eyeballing would default it to black. Render a few pages to PNG (`pdftoppm`) to confirm cover layout, header/footer chrome, and table styling against the measured numbers.
+- For a **PDF reference** there is no style XML, so measure the tokens programmatically: `pdffonts` for the real font faces (they will not be web-safe — e.g. Proxima Nova; record a close substitute for render time), and `pdfplumber` for per-character size/color, rect fills (table-header shading, accent bars), and the text bounding box (→ real margins). Watch for a **non-black body color** (e.g. gray `#666666` from Google-Docs exports) — eyeballing would default it to black. Render **every** page to JPEG at 150 DPI (`pdftoppm -jpeg -r 150`) — not a sample of pages — and view each at full resolution. Pages differ: the cover has chrome the content pages don't, and a table style that appears once on page 14 is still a distinct table style.
 - Eyeballed values produce regenerated docs that *look* wrong without being obviously wrong — slightly off margins, near-but-not-exact heading sizes, a different shade of brand blue. The reviewer can't pin it down but rejects the doc.
+
+### Sample colours programmatically — never from looking
+
+This is the protocol that decides whether the KB is worth anything. A hex code read off a screen is wrong by a few points in every channel, and every downstream document inherits that error.
+
+For each colour slot, find a region in a rendered page where it appears as a solid block, then sample it:
+
+```python
+from PIL import Image
+
+def sample_hex(img, x, y, k=5):
+    """Median of a 5x5 region — the median rejects anti-aliasing artefacts."""
+    region = img.crop((x-k, y-k, x+k, y+k)).getdata()
+    rs, gs, bs = [], [], []
+    for px in region:
+        rs.append(px[0]); gs.append(px[1]); bs.append(px[2])
+    rs.sort(); gs.sort(); bs.sort()
+    mid = len(rs) // 2
+    return "#{:02X}{:02X}{:02X}".format(rs[mid], gs[mid], bs[mid])
+
+img = Image.open("ref_p02.jpg")     # rendered at 150 DPI
+print(sample_hex(img, 500, 5))      # the top strip
+```
+
+Rules that make the sample trustworthy:
+
+- **Sample each slot at least three times**, in different regions or on different pages, and take the most frequent result. A 1–2 point spread in a channel is JPEG noise and can be smoothed; a larger spread means either the colour appears at different opacities or you are looking at two different slots that need two tokens.
+- **For text colours**, sample inside the stroke of a thick character — the centre of a bold 22pt letter — never near an edge where anti-aliasing dominates.
+- **For flowchart strokes**, sample at the middle of a long horizontal or vertical edge.
+- Record each token with a semantic name describing where it is used (`--strip-primary`, `--table-header-bg`), never a generic one (`--color-1`), plus the sampling locations, so the extraction is reproducible.
+
+A complete document usually needs 12 to 20 tokens. Slots that each need their own sample, none of which may be assumed equal to another: strip primary and any gradient variants, heading colour **per level**, table header band, table header text, table cell border, body text, muted/secondary text, footer text, box borders, banner layers (3–4 for chevron covers), logo accent, terminator stroke and text, one per branch-condition family, queue endpoint fill, link colour, arrow colour.
+
+### Record sizes in physical units, never in bare pixels
+
+A pixel is not a unit until you say at what resolution it was measured, and a downstream renderer will not guess the same one you did. A strip measured as "16px" on a page rendered at 150 DPI becomes 25 device pixels when a renderer treats it as 16 CSS pixels — 56% too thick, on every page, in a way that looks deliberate.
+
+So for anything with a physical size — strip and rule thicknesses, margins, padding, offsets, logo and figure widths, corner radii — **record inches or points**, and put the pixel value beside it only as provenance:
+
+```yaml
+strips:
+  top: { thickness: 0.107in, thickness_px_at_150dpi: 16, color_token: "--strip" }
+```
+
+Font sizes stay in points, which are already physical. Line heights and letter spacing stay unitless or in ems. The only values that may be stored as bare pixels are ones that are genuinely resolution-independent because they are relative to something else already recorded.
+
+State the render resolution once at the top of the record as well, so every provenance number in it can be converted back.
+
+### Heading colours are sampled per level, never shared on sight
+
+Heading levels that look alike at a glance are frequently different colours — one a darker brand tint, the other the lighter accent. Resolve this by measurement, never by assumption:
+
+1. Sample the top-level heading colour at three locations across different pages.
+2. Sample the subsection heading colour at three separate locations.
+3. Compare medians. **If they differ by more than 5 in any RGB channel they are different colours** and need different tokens.
+4. Only if all six samples agree within 5 may one shared token be recorded — and the KB must say so explicitly: "H1 and H2 verified identical at #XXXXXX".
+
+Merging heading colours without this check is the single most common visual fidelity failure in this archetype, and it is invisible until a reviewer sees the two documents side by side.
+
+### Low-contrast rules and borders need a second look
+
+A hairline rule sampled at its edge yields a colour indistinguishable from the page, and the regenerated document then draws an invisible line where the reference has a visible one. After sampling any rule, border, or divider:
+
+```python
+def luminance(hex_color):
+    r, g, b = int(hex_color[1:3],16), int(hex_color[3:5],16), int(hex_color[5:7],16)
+    return 0.2126*r + 0.7152*g + 0.0722*b
+
+contrast = abs(luminance("#FFFFFF") - luminance(sampled_hex))   # or the real page bg
+```
+
+If `contrast < 20`, re-sample at two more locations and inspect the page at 2× zoom. If the rule is plainly visible in the reference but your hex would render it invisible, you sampled the wrong pixels — re-sample from the centre of the stroke. Record the final value with a note that it is low-contrast and needs checking in the first rendered output.
+
+### Header and footer strings are transcribed, not recognised
+
+Every string in the header and footer is copied character-for-character from the rendered page: brand names, copyright notices, separator punctuation, version slug formats, fixed labels.
+
+**The pixels outrank everything else** — the product docs, the operator's description, your own sense of what the organisation is called. If the footer reads `© 2024 AcmeCorp | All Rights Reserved`, that entire string goes into the KB including the entity name, the year, and the pipe spacing. Do not substitute a parent company, a product name, or the name the rest of the artifacts use. If the header reads `Scope of Work : ClientName` with spaces around the colon, keep them. If the version slug has a trailing dash, keep it.
+
+An inferred string is wrong on every page of every document the KB ever produces, and it is the kind of error nobody catches because it looks deliberate.
 
 ### Plan to clone the reference, not rebuild it
 
 The fastest path to visual identity is: open the reference DOCX as a working template, replace section bodies with new content, save. Don't try to author a fresh DOCX from a style spec — embedded numbering definitions, list-level inheritance, theme overrides, language tags, compatibility settings, and dozens of other XML attributes are nearly impossible to recreate from scratch and will silently drift.
 
 The KB's drafting guidance should explicitly call this out: *start from a copy of the canonical reference DOCX; preserve cover page chrome, header / footer, styles, theme, numbering, embedded logo / images by default; replace only the variable content within established paragraph styles*. The KB's job is to tell the agent **what to replace and what to leave alone**, not how to author DOCX XML from first principles.
+
+**Bundle the canonical reference into the KB itself, and point at the bundled copy.** The downstream agent needs that file at generate time for two jobs — it is the base document the DOCX path clones, and it is the target the PDF path diffs its output against page by page. A KB that names the operator's original input path has a dangling dependency: it works on the machine the KB was built on and breaks everywhere else, the moment the operator tidies their inputs, or as soon as the KB is handed to a consumer as a directory. Copy the reference in alongside the extracted assets and record its bundled relative path.
 
 For PDF-only references where no DOCX source exists, there are two runtime paths, chosen by the required deliverable:
 
@@ -68,6 +156,36 @@ Identify every capitalized term the reference uses as a term-of-art (Effective D
 
 This is the central distinction. Compare reference samples to spot what varies across instances (client name, project title, dates, prices, scope items, contacts, signing authority, logo on cover, header / footer client mention) vs. what's identical (vendor name, vendor address, confidentiality clauses, generic warranty language). With only one reference sample, this distinction is a guess — flag it as BLOCKING.
 
+Fixed-vs-variable is really a **spectrum, and the KB should record where each block sits on it**. Five positions, and only the last one is prose the downstream agent writes:
+
+| Tier | What it is | What the agent does with it |
+|---|---|---|
+| fixed legal | Legal / compliance text that never varies | copies verbatim |
+| boilerplate template | Fixed structure with marked fill-ins | copies verbatim, substitutes only the marked placeholders |
+| reference data | Standard tables identical across instances | inserts every row as recorded |
+| standard image | The team's own reusable diagrams | embeds the bundled asset |
+| variable | This deal's content | writes fresh from product knowledge + the brief |
+
+**When a block has a recognisable structure that repeats across sections, prefer the boilerplate tier over the variable one.** A fixed template with substitutable placeholders costs almost nothing if the call was too conservative. An agent freely paraphrasing text that was supposed to be fixed produces a document that fails review every time, and the failure is hard to attribute because the prose reads fine on its own.
+
+### Record the render order, not just the ingredients
+
+Knowing a section contains an intro, a table, a label, some bullets, and three footer lines does not say what order they appear in on the page — and the downstream agent has to reproduce the order exactly. For every section, record the **exact sequence of blocks as they appear**, naming each block and its tier:
+
+```
+1. boilerplate.intro          (paragraph)
+2. reference_data.field_table (table)
+3. boilerplate.as_is_label    (paragraph)
+4. variable.as_is_content     (paragraph)
+5. variable.features_bullets  (list)
+6. standard_image             (image or placeholder)
+7. boilerplate.role_footer    (paragraph)
+```
+
+Without this the agent reconstructs the layout from what seems natural, and "seems natural" varies run to run. With it, the layout is a lookup. This is the single highest-value thing the section model carries.
+
+Record every block explicitly, including the ones that don't apply to a given section — an absent block stated as absent is information; an omitted block is ambiguity.
+
 ### Embedded images and diagrams
 
 References at this scale carry embedded assets, often multi-MB worth:
@@ -82,9 +200,67 @@ Enumerate every distinct embedded image type observed and record extraction stra
 
 When the reference is a **PDF** and the deliverable must render its chrome (logo, cover banner, accent bars), extract those raster assets from the PDF (`pdfimages` — composite each colour image with its `smask` to preserve transparency) and **bundle them into the KB** so it stays self-contained. Critical: **open every extracted asset and look at it before wiring it in** — image order in a PDF does not match semantic role, so the "logo" and "banner" files are easily swapped or mislabeled. A mislabeled asset renders as (e.g.) a banner where the logo should be and slips through if you trust filenames instead of eyes. Record real pixel dimensions after verifying, not before.
 
+For a **DOCX reference**, the media lives in the zip (`word/media/`) and the semantic roles come from the relationship XML: images referenced from `word/_rels/headerN.xml.rels` are header chrome, images from `word/_rels/document.xml.rels` are body content, and the largest body image is usually the cover. Extract all of them, then **verify each role against the rendered pages** — if the relationship order disagrees with the visual left/right placement, trust the pixels and swap.
+
+**Extract to files; never plan on base64 or a placeholder.** A placeholder produces a broken page every time the document is generated, on every page the image appears. There is no size limit on a bundled file path, which is exactly why the asset directory is the answer to the size problem that makes base64 impractical. Reserve inline SVG for simple geometric graphics (banners, dividers, icon shapes) that can be faithfully reproduced programmatically.
+
+### Section-body images: which are the team's, which are the deal's
+
+Some document types (BRDs, implementation guides) embed process-flow diagrams inside section bodies rather than drawing them as vector shapes. These need a per-image judgment the downstream agent cannot make for itself, so make it here and record it:
+
+- **Standard to this team** — a generic process flow with no recipient name, logo, or deal-specific data in it, or one that recurs byte-identically across several references. It is the team's own asset: bundle it and let every document embed it.
+- **Specific to one deal** — carries the recipient's name, logo, or project data, or appears in only one reference. The generated document gets a marked placeholder here, not the old deal's picture.
+
+Record which section each image sits under, so the downstream agent knows where it goes. Where a section heading names a standard process the team runs for everyone, the image is a standard-asset candidate — but confirm by looking at it, since a generic-sounding heading can still sit above a screenshot with a previous client's name in the title bar.
+
+### Flowchart shape vocabulary is a language, and it has to be written down
+
+When the reference draws flow or decision diagrams as vector shapes (call flows, process flows, decision trees), the shapes are not decoration — they are a vocabulary where each shape *means* something. The downstream agent has to speak it, so record it as a vocabulary, not as a description.
+
+Per shape observed: the shape itself (ellipse, rounded rectangle, diamond, hexagon, pentagon/banner, plain rectangle), **what it represents** (start/end terminator, prompt or action, decision, retry counter, queue endpoint, note box), stroke hex and thickness, fill hex, text colour, text weight and size, and any decoration attached to it (a speaker icon in a corner, a badge).
+
+Then the connective tissue, which is where fidelity is usually lost:
+
+- **Conditional / branch labels** — the exact colour-to-condition mapping. Reference documents routinely use one colour for affirmative paths, another for negative, another for exception cases. Record which words take which colour, verbatim, as a lookup.
+- **Numeric option labels** for menu choices: colour, size, weight, position relative to the arrow.
+- **Arrows**: colour, thickness, arrowhead style.
+- **The container**: border colour and thickness around the whole diagram, background, inner padding.
+- **The figure caption**: position, alignment, size, weight, underline, and the exact numbering format (`Figure 3.1.A <text>`).
+
+Skip this entirely for document types with no vector diagrams — recording a shape library for a document that has none wastes the downstream agent's attention on shapes it will never draw. Documents that embed diagrams as raster images are the previous section's business, not this one's.
+
 ### Table types matter
 
 For every distinct table observed (deliverables, pricing, timeline, milestone, RACI, sign-off, scope-items, use-cases, user-stories): exact column count, column headers verbatim, column widths or proportions, header-row styling, alternating row shading rules if any, cell-content conventions (currency format, date format, duration format, alignment per column), and how empty cells are rendered (em dash, "N/A", blank).
+
+**Audit every location, not one representative table.** Visit each place a table appears — cover properties block, document history, table of contents, prerequisites, scope, escalation matrix, annexure contacts — and record whether that one uses a coloured header band, cell borders, row striping, or a plain bordered style with no fill. Any table differing in any of those properties is a **distinct type** needing its own style entry. A single global table style applied to a document that has three is visible on every page that carries the odd ones.
+
+**Row striping is opt-in.** The default is `none`. Only record a stripe colour after seeing an unambiguous fill difference between odd and even rows in a rendered page. Not from convention, not from another document, not from "it's common practice". Striping that isn't in the reference changes the visual character of every table in every generated document.
+
+**Classify the Table of Contents before anything is written for it.** Answer from the rendered image:
+
+1. Does it have a coloured header band row?
+2. Does it have visible cell borders forming a grid?
+3. Are section and subsection numbers rendered at different weights?
+
+If 1 and 2 are both "no" it is a **styled list, not a data table**, and the KB must record it as such with its own structure: indentation per level, font weight per level, how page numbers are right-aligned, whether there is a dot leader or a plain gap. Recording a TOC as a table when the reference uses an indented list — or the reverse — is one of the highest-impact fidelity errors, because the TOC is the most-read page in the document.
+
+### Reference tables carry their rows, not just their shape
+
+Some tables are the same in every document this team issues — standard field lists, account-type tables, revision-history scaffolds. For those, capturing columns and styling is not enough: **capture every row verbatim** so the downstream agent inserts them rather than re-deriving them.
+
+Distinguish them from the per-instance tables that share the same styling but not the same content (subsidiary lists, approval matrices, tax tables, department lists) — those get their shape recorded and their rows written from the MOM.
+
+Never record "include representative rows" or "the key fields". A truncated table in the KB is a truncated table in every document, and it is a visible, verifiable defect.
+
+### Confidential and disclaimer boxes: heading or inline?
+
+For every such box, record explicitly whether the keyword (`CONFIDENTIAL`, `DISCLAIMER`, `PRIVATE`) is:
+
+- **a styled heading** — visually distinct, larger or bolder than the body, on its own line above the text like a section title; or
+- **inline emphasis** — the first word(s) of the paragraph itself, bolded at body size on the same visual line as the rest of the sentence.
+
+These render as completely different markup and defaulting to one without checking is a fidelity error.
 
 ### Numbering and lists
 
@@ -134,6 +310,13 @@ When kb-builder composes the KB's Critical Rules, it draws from these (selecting
 - **Match the deliverable format to what exists and what's asked.** DOCX is the canonical editable form when an editable reference exists or a review cycle needs it — emit DOCX, PDF as export. But when the references are PDF-only *and* the operator wants a PDF, don't force a DOCX detour: author HTML/CSS to the measured spec and render to PDF (see the clone section). Confirm the target format during scoping rather than assuming.
 - **Do not trust the filenames of assets extracted from a PDF.** Extraction order ≠ semantic role; the logo and banner are commonly swapped. View each extracted asset before wiring it into the KB, and again in the first rendered page.
 - **Do not preserve the previous client's identifying details when cloning.** Cover page client name, header / footer client mention, in-body references to "Acme Corp", embedded screenshots showing the previous client's UI must all be cleansed before the new client's content is dropped in.
+- **Do not share one colour token across two heading levels without proving they are equal.** Sample each level three times and compare; more than 5 in any channel means two tokens. Levels that look alike at a glance frequently aren't, and the error is invisible until two documents sit side by side.
+- **Do not record a colour you read off a screen.** Sample it programmatically, three times, and take the median of a small region. Every downstream document inherits whatever error a glance introduced.
+- **Do not infer a brand string in the header or footer.** Transcribe it character-for-character from the rendered page, even when the product docs or the operator call the organisation something else. The pixels are the authority, and an inferred string is wrong on every page forever.
+- **Do not record a standard table's shape without its rows.** "Include the key fields" produces a truncated table in every generated document — a visible, verifiable defect. All rows, always, for tables that are the same across instances.
+- **Do not leave the render order implicit.** Listing a section's ingredients without their sequence forces the downstream agent to reconstruct the layout from intuition, which varies run to run.
+- **Do not add row striping, borders, or chrome the reference doesn't have.** Convention is not evidence. Absent unambiguous visual confirmation, the answer is `none`.
+- **Do not record a physical size as a bare pixel count.** Pixels measured off a 150 DPI render are not the pixels a renderer will draw. Store inches or points and keep the pixel value only as provenance, or the whole document comes out subtly mis-scaled in a way that reads as intentional.
 
 ## Useful questions to ask the operator
 
@@ -161,15 +344,19 @@ Use this as a phrasing bank, not a checklist. This archetype's list is long on p
 
 Past clients have settled around these files. Reference only — sized to what *this* client's artifacts demand. Trim aggressively if the corpus is small; extend when a section earns its keep.
 
-- `00-overview.md` — Document genre (SOW / BRD / PRD / proposal / etc.), intended audience, one-paragraph purpose, the canonical reference file path (the one the agent will clone), and a glossary of every defined term the reference uses with the exact definition wording.
+- `00-overview.md` — Document genre (SOW / BRD / PRD / proposal / etc.), intended audience, one-paragraph purpose, the **bundled** reference file path (the one the agent clones and diffs against), and a glossary of every defined term the reference uses with the exact definition wording. Also the document's own type slug (`sow`, `brd`, `hld`) and the handful of standing decisions the downstream agent would otherwise have to ask about every time: whether this team's documents come out PDF or DOCX or the agent should ask per document; whether flow diagrams are drawn or left as placeholders or the agent should ask; and how many diagrams a document of this type typically carries (zero is a real answer, and it tells the agent to skip the question entirely). Record which capabilities this document type actually has — vector flowcharts, embedded process images, standard reference tables, repeating structural footers — so the agent doesn't hunt for machinery this genre doesn't use.
 - `01-document-structure.md` — Ordered list of every section in the reference, with full hierarchy and exact heading text verbatim, including numbering format. For each: mandatory / optional / conditional, typical length, what content it carries, how it cross-references other sections. Includes cover page, revision history, ToC, sign-off block.
-- `02-visual-style.md` — Page setup (paper size, margins per side, gutter), typography per heading level and per named paragraph style (exact face / size / weight / hex color / underline), color palette with role tags, header / footer content per section, list styles with bullet glyphs and indentation, table styling (borders, shading, cell margins), paragraph spacing before / after, line spacing. Records both *named style IDs* in the DOCX (e.g. `Heading1`, `BodyText`) and their resolved attributes — the agent must reference styles by ID when authoring, not duplicate the attributes inline.
+- `02-visual-style.md` — The measured format record, and the file the downstream agent leans on hardest. Page setup (paper size, margins per side, gutter), edge strips and corner accents with thickness and hex, header and footer zone-by-zone with their **verbatim** strings, cover layout (logo position and size, title block position and per-line typography, banner shape and layer colours, any properties table), typography per heading level and per named paragraph style (exact face / size / weight / **independently sampled** hex / underline / margins / letter spacing), the colour palette with semantic role tags, list styles with bullet glyphs and indentation, inline emphasis conventions, table styling per distinct table type, special elements, and the flowchart shape vocabulary where the genre has one.
+
+  Write it as **one structured block the agent can read whole**, not as prose scattered through the file — it is consulted as a lookup during rendering, not read as an essay. Every value is a measured number or a sampled hex; a descriptor like "blue heading" or "small font" is a defect here. Where a value genuinely doesn't apply, say `none` rather than leaving it out.
+
+  For a DOCX reference, record both the *named style IDs* (e.g. `Heading1`, `BodyText`) and their resolved attributes — the agent references styles by ID when authoring and needs the attributes only for the rebuild path.
 - `03-language-and-tone.md` — Voice and prose patterns. Sentence length distribution. Tense and modality. Person. Capitalization rule for defined terms. Conventions for dates, currency, percentages, durations. Typical opening / closing phrases per section.
 - `04-vocabulary.md` — Domain keywords and named entities with fixed surface forms. Capitalized defined terms with reference definitions. Acronyms with expansions. Product / platform names and their exact written form (spacing, casing, registered marks).
-- `05-tables-and-figures.md` — For every table type observed: exact column count, column headers verbatim, column widths or proportions, header-row styling, alternating-row policy, cell-content conventions per column, empty-cell rendering convention.
-- `06-boilerplate.md` — Verbatim text for every clause or section reused near-identically across reference samples. Do not paraphrase. Mark which clauses have per-instance fill-ins (`{{Effective Date}}`, `{{Client Name}}`, etc.) and which are fully fixed. Preserve paragraph breaks and any internal numbering.
-- `07-variable-vs-fixed.md` — Per-section breakdown: fixed (boilerplate, identical across instances), per-instance variable (client name, scope items, pricing, dates, contacts, signing authority, client logo), conditional (sections that appear only when applicable). Bridge between visual spec, asset policy, and input checklist.
-- `08-assets.md` — Embedded image inventory: every distinct image in the reference (logos, cover-page artwork, section icons, process diagrams, architecture diagrams, screenshots). Per asset: where it appears in the doc, its source file path inside the DOCX media folder, its role tag (vendor logo / client logo / cover hero / process diagram / etc.), and its **replacement policy** (keep verbatim / per-instance swap / regenerate from MOMs / request from operator).
+- `05-tables-and-figures.md` — For every table type observed: exact column count, column headers verbatim, column widths or proportions, header-row styling, alternating-row policy, cell-content conventions per column, empty-cell rendering convention. Distinguish tables whose **rows are standard across every document this team issues** from those that merely share a style — for the standard ones, record every row verbatim so the agent inserts them rather than re-deriving them; for the per-instance ones, record the shape and say the rows come from the brief. Note explicitly whether the table of contents is a data table or a styled list, and if a list, its per-level indentation, weights, and page-number alignment.
+- `06-boilerplate.md` — Verbatim text for every clause or section reused near-identically across reference samples. Do not paraphrase. Mark which clauses have per-instance fill-ins (`{{Effective Date}}`, `{{Client Name}}`, etc.) and which are fully fixed. Preserve paragraph breaks and any internal numbering. For each fill-in, say **where its value comes from** — a named field in the brief, a fact in the product knowledge, or a fixed default — so substitution is mechanical and the agent never has to guess what fills a slot. Include the short recurring structural labels too (the one-line headings that introduce a block in every section); they read as trivial and are exactly the strings an agent paraphrases when they aren't written down.
+- `07-variable-vs-fixed.md` — Per-section breakdown across the five tiers above: fixed legal, boilerplate template, reference data, standard image, and per-instance variable — plus which sections are conditional and what signals their inclusion. **Carries the render order for each section**: the exact sequence of blocks on the page, each named with its tier, including blocks marked absent. Bridge between visual spec, asset policy, and input checklist.
+- `08-assets.md` — Embedded image inventory: every distinct image in the reference (logos, cover-page artwork, section icons, process diagrams, architecture diagrams, screenshots). Per asset: where it appears in the doc — **including which section body, for images that sit inside sections** — its bundled relative path inside the KB, its verified role tag (vendor logo / client logo / cover hero / process diagram / etc.), its real pixel dimensions, and its **replacement policy** (keep verbatim / per-instance swap / regenerate from the brief / request from operator). For section-body diagrams, state plainly whether the image is the team's own standard asset (embed it in every document) or belongs to one deal (placeholder instead), since that decision cannot be made at generate time.
 - `09-patterns.md` — Composition patterns from references — how a pricing tier is laid out, how a milestone table connects to a payment schedule, how out-of-scope is phrased, how assumptions are listed, how a use-case is written up. Each pattern: when-to-use, exact template with placeholders, variations observed.
 - `10-input-checklist.md` — Per-instance fields the downstream agent must extract from MOMs / transcripts / emails before drafting. Tiered by criticality (BLOCKING / IMPORTANT / NICE TO HAVE). For each field, include "what to extract" guidance — typical MOM / transcript / email phrasings that signal the field — so extraction is grounded, not guessed.
 - `11-constraints.md` — Numbered. What makes a generated doc invalid: defined term used before defined; pricing-table totals don't sum; sign-off block missing; section ordering deviates from template; boilerplate paraphrased; placeholder `{{...}}` left in output; font / color / margin deviation from visual-style; cross-reference to nonexistent section; client logo missing or wrong; previous-client identifying details retained.
