@@ -135,8 +135,8 @@ RELAY_TEXT = (
     "with the answer: if you have a real local path use `input_paths`; if you can "
     "make HTTP requests call get_upload_url first, PUT the file to the returned "
     "upload_url, then pass the r2_key in `r2_keys`; if you cannot make HTTP requests "
-    "(Claude Desktop / claude.ai chat) call upload_file(name, content) and pass the "
-    "returned r2_key in `r2_keys` on the SAME run_skill call. Do NOT answer the question yourself."
+    "(Claude Desktop / claude.ai chat) pass the text inline via `artifacts` "
+    "[{name, content}] on the SAME run_skill call. Do NOT answer the question yourself."
 )
 POLL_TEXT = (
     "Still working. Tell the user the current `progress` and `files_written`, then "
@@ -385,7 +385,9 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
             if config.USE_R2 and sess.r2_keys:
                 storage.delete_inputs(sess.r2_keys)
 
-            # Auto-register any generated skills (e.g. from a document-generator run).
+            # Auto-register any generated skills. No skill shipped in this repo emits one
+            # today — document-generator and find-bugs both read their KB at run time now —
+            # so this path is currently unexercised, but it stays for caller-authored skills.
             # Registration installs a private, tenant-scoped COPY under .claude/skills;
             # it does not consume the harvest. Everything the run produced — a compiled
             # SKILL.md, its assets, a KB, a document — is still the caller's artifact and
@@ -669,41 +671,6 @@ async def get_upload_url(filename: str) -> dict:
         "r2_key": r2_key,
         "instructions": "HTTP PUT your file bytes to upload_url, then pass r2_key to run_skill via r2_keys.",
     }
-
-
-@mcp.tool()
-async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
-    """Upload a text file to R2 storage by passing its content directly (for Claude
-    Desktop and claude.ai chat clients that cannot make HTTP PUT requests).
-
-    Content is written as UTF-8 text. Binary files (PDF, DOCX, images) are not
-    accepted here — call get_upload_url and PUT the raw bytes to the returned URL.
-
-    `encoding` is kept solely to reject the retired base64 path out loud. Dropping the
-    parameter is not enough: MCP clients cache tool schemas, so one that still advertises
-    encoding="base64" goes on sending it, and an unknown argument is silently discarded
-    rather than refused — which would store the base64 *text* as the file. That lands a
-    plausibly-named, corrupt document in R2 and the skill then runs against it.
-
-    Returns {r2_key, name, bytes}. Pass r2_key to run_skill via the `r2_keys`
-    parameter on the same or a subsequent call.
-
-    For Claude Code CLI clients that can run curl, prefer get_upload_url instead
-    (it uploads directly to R2 without passing bytes through the server).
-    """
-    if not config.USE_R2:
-        return {"error": "R2 is not configured on this server. Cannot upload file."}
-    if encoding.strip().lower() not in ("utf-8", "utf8", "text", "plain", ""):
-        return {"error": (
-            f"encoding={encoding!r} is no longer supported — upload_file takes UTF-8 text "
-            "only. For a binary file (PDF, DOCX, image) call get_upload_url and HTTP PUT "
-            "the raw bytes to the returned upload_url, then pass the r2_key to run_skill. "
-            "Do not send a text extract of a binary file instead."
-        )}
-    clean = Path(name).name or "upload.txt"
-    data = content.encode("utf-8")
-    r2_key = storage.upload_bytes(clean, data)
-    return {"r2_key": r2_key, "name": clean, "bytes": len(data)}
 
 
 @mcp.tool()
