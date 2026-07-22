@@ -13,6 +13,7 @@ leak hazards of the previous parked-client design.
 from __future__ import annotations
 
 import shutil
+import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -42,6 +43,10 @@ class Session:
     # this session: enforced on poll/continue, and names where a generated skill is
     # registered (only a tenant may install a private custom skill).
     tenant: str | None = None
+    # Wall-clock bounds of THIS run (a continuation is a new record, so these describe
+    # the continuing run, not the whole lineage). Reported in the Slack run feed.
+    started_at: float = 0.0
+    finished_at: float = 0.0
     # Job state, polled by the client across short calls:
     status: str = "running"   # running | need_input | done | error
     progress: str = ""        # human-readable "what it's doing now", shown on poll
@@ -73,7 +78,7 @@ def new_session(skill: str, durable_id: str | None = None) -> Session:
     output_dir.mkdir(parents=True, exist_ok=True)
     (sandbox / "work").mkdir(parents=True, exist_ok=True)
     sess = Session(id=sid, cc_id=cc_id, skill=skill, result_id=result_id, sandbox=sandbox,
-                   inputs_dir=inputs_dir, output_dir=output_dir)
+                   inputs_dir=inputs_dir, output_dir=output_dir, started_at=time.time())
     _SESSIONS[sid] = sess
     _gc()
     return sess

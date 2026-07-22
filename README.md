@@ -40,6 +40,11 @@ agentic-workflow-backend/
 │   ├── sessions.py                   #   in-process session records + sandbox/transcript purge
 │   ├── registry.py                   #   indexes .claude/skills so any skill is runnable
 │   ├── storage.py                    #   Cloudflare R2 integration: upload inputs, deliver outputs
+│   ├── web.py                        #   browser login page (/login) + its OTP endpoints
+│   ├── oauth.py                      #   OAuth 2.1 authorization server (Mongo-backed token store)
+│   ├── otp.py                        #   Gupshup hosted email OTP (send + verify)
+│   ├── db.py                         #   Mongo user/tenant registry + tenant resolution
+│   ├── slack.py                      #   Slack feed: registrations + skill-run completions
 │   ├── config.py                     #   paths, host/port, model, markers, safety bounds, R2 config
 │   ├── __main__.py                   #   `python -m likeminds_mcp` entrypoint
 
@@ -416,7 +421,7 @@ To have jobs bill to **your own** Anthropic key instead of the server's creds, a
 
 | Tool             | What it does                                                                                                                                                 |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `run_skill`      | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file. |
+| `run_skill`      | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file — including a compiled skill and its KB, which are also installed server-side. |
 | `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. Use for Claude Code / any client that can make HTTP requests. PUT the file to `upload_url`, then pass `r2_key` to `run_skill` via `r2_keys`. |
 | `upload_file`    | Upload file content through the server to R2. Returns `{r2_key, name, bytes}`. Use for Claude Desktop and claude.ai chat (no HTTP client available). Pass `r2_key` to `run_skill` via `r2_keys`. |
 | `list_skills`    | List every Agent Skill the server can run.                                                                                                                   |
@@ -581,8 +586,9 @@ BYOK `x-api-key` header: **`x-user-id` says who you are; `x-api-key` says who pa
   auto-registered **only** for the tenant that created it (its `SKILL.md` name is
   rewritten to match, so the right tenant's copy always resolves even if two tenants
   pick the same skill name). An anonymous caller (no / unverified token) can still run
-  built-ins, but a skill it generates is returned as a downloadable deliverable rather
-  than installed.
+  built-ins, but a skill it generates is only returned for download, never installed.
+  Registration is always a **copy**: the caller gets download links for the generated
+  `SKILL.md`, its assets, and every KB file either way.
 - Isolation here is a **registry filter** — skills are co-located on disk and filtered
   by token — which is enough to keep tenants from seeing or running each other's skills.
 
@@ -684,6 +690,27 @@ Server env vars (put persistent ones in `.env`):
 
 **R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` and `upload_file` return an error, and `run_skill` does not return `download_urls`. Deliverables are still written to `outputs/mcp/<result_id>/` on the server.
 
+### Slack notifications
+
+Set a Slack Incoming Webhook URL and the server posts two kinds of event into that channel:
+
+- **Registration** — a user's **first** verified login (OAuth handshake or the standalone token page). Posts the email that registered, how they connected, and their user id. Routine re-logins are not posted; they'd bury the registrations the channel exists to surface.
+- **Skill run finished** — a run reaches `done` **or** `error` — both post, since a failure is the one you most want to see. Posts the user's email, the skill, the `session_id`, start / finish timestamps and duration, and a download link for every artifact produced.
+
+Those artifact links are the same presigned R2 URLs the MCP client gets, so they expire after `R2_URL_EXPIRY` (1 hour by default) — a posted message can't re-sign itself the way a polling client can, so the message states the expiry rather than leaving a dead link looking live. Raise `R2_URL_EXPIRY` (max 7 days) if you want them to outlive the workday.
+
+Setup: Slack app → **Incoming Webhooks** → Activate → **Add New Webhook to Workspace** → pick the channel → copy the URL into `.env`.
+
+| Variable            | Description                                            | Default          |
+| ------------------- | ------------------------------------------------------ | ---------------- |
+| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook (`https://hooks.slack.com/…`)   | unset (feed off) |
+
+That is the entire configuration surface — one variable on/off. The target channel is fixed when the webhook is created, which is why there's no channel setting; to post elsewhere, make another webhook.
+
+**The URL is the credential.** There's no token and no auth header, so anyone holding it can post to your channel — keep it in `.env` (gitignored) and regenerate it in the Slack app config if it ever leaks into a ticket, a chat, or a commit. It is redacted from this server's own error logs.
+
+Notifications are fire-and-forget: a revoked webhook, a Slack outage, or a deleted channel never fails a login or loses a deliverable — the failure prints one `[slack]` line to stderr. The run email comes from the Mongo user registry, so runs from anonymous/dev tokens post as `anonymous`.
+
 ### Production deployment
 
 To run the server on a remote machine so any client can reach it:
@@ -733,7 +760,12 @@ as a link in Claude chat / Cowork rather than a path the user cannot reach.
 The links are presigned and expire after `download_expires_in_seconds` (`R2_URL_EXPIRY`,
 default 1 hour); re-poll the same `session_id` to mint fresh ones. When R2 is not configured —
 or its upload fails — no links are produced and `next_step` instead points at the server-side
-copy under `outputs/mcp/<result_id>/`. Runs that only register a generated skill return no
-deliverable and no links, by design.
+copy under `outputs/mcp/<result_id>/`.
+
+**Every produced file is delivered**, whatever the run was. A compile run (e.g.
+`create-document-generator`) both installs the skill — reported in `registered_skills` — and
+returns download links for the generated `SKILL.md`, its bundled assets, and every KB file it
+wrote. Registration is in addition to delivery, never instead of it: nothing a run produces
+stays server-side-only.
 
 
