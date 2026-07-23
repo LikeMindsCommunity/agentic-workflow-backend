@@ -1,4 +1,4 @@
-"""FastMCP server: the client-facing tools `run_skill`, `get_upload_url`, `list_skills`.
+"""FastMCP server: the client-facing tools `run_skill`, `run_pipeline`, `get_upload_url`, `list_skills`.
 
 Execution model — background asyncio task + long-poll (avoids the client's MCP
 idle timeout). A skill turn can run for minutes, far longer than the client's
@@ -40,7 +40,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, db, engine, oauth, registry, sessions, slack, storage
+from . import config, db, engine, oauth, pipeline, registry, sessions, slack, storage
 
 # Load .env when this module is imported directly. The `python -m likeminds_mcp`
 # entrypoint also loads it before importing config, so R2 / other computed constants
@@ -132,8 +132,7 @@ RELAY_TEXT = (
     "Show these question(s) to the user verbatim and wait for their reply. They may "
     "answer, or reply 'done' to stop and finish with whatever is complete. Then call "
     "run_skill again with this session_id and their `response`. To attach a file "
-    "with the answer: if you have a real local path use `input_paths`; if you can "
-    "make HTTP requests call get_upload_url first, PUT the file to the returned "
+    "with the answer: call get_upload_url first, PUT the file to the returned "
     "upload_url, then pass the r2_key in `r2_keys`; if you cannot make HTTP requests "
     "(Claude Desktop / claude.ai chat) pass the text inline via `artifacts` "
     "[{name, content}] on the SAME run_skill call. Do NOT answer the question yourself."
@@ -513,9 +512,6 @@ async def _start_continuation(
     session_id: str,
     client_key: Optional[str],
     tenant: Optional[str],
-    artifacts: Optional[list],
-    files: Optional[list],
-    input_paths: Optional[list],
     r2_keys: Optional[list],
     urls: Optional[list],
     context: Optional[str],
@@ -547,10 +543,6 @@ async def _start_continuation(
     sess.tenant = tenant       # ownership + private-skill registration scope
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
-    # Stage any NEW inputs the caller attached alongside the continuation request.
-    engine._write_artifacts(sess.inputs_dir, artifacts)
-    engine._write_artifacts(sess.inputs_dir, files)
-    _copy_input_paths(sess.inputs_dir, input_paths)
     if config.USE_R2:
         storage.download_inputs(r2_keys, sess.inputs_dir)
     # Seed the prior deliverable into the output dir so the skill continues in place.
@@ -566,18 +558,6 @@ async def _start_continuation(
 # ----------------------------------------------------------------------------- #
 # Inputs plumbing
 # ----------------------------------------------------------------------------- #
-
-def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
-    """Copy local files (incl. binaries) into the session inputs dir.
-    Only works when the server and client share the same filesystem (local use)."""
-    copied: list[str] = []
-    for p in paths or []:
-        src = Path(str(p)).expanduser()
-        if src.is_file():
-            shutil.copy2(src, inputs_dir / src.name)
-            copied.append(src.name)
-    return copied
-
 
 # ----------------------------------------------------------------------------- #
 # Per-request BYOK — the caller's Anthropic key, read fresh from the request header
@@ -660,11 +640,9 @@ async def get_upload_url(filename: str) -> dict:
 
     This uploads directly from the client to R2 — the server never holds
     the file bytes in memory. The upload URL is valid for 5 minutes.
-    For plain text content you can skip this and use run_skill's `artifacts`
-    parameter directly instead.
     """
     if not config.USE_R2:
-        return {"error": "R2 is not configured on this server. Use `artifacts` for text content."}
+        return {"error": "R2 is not configured on this server. Upload files via upload_file instead."}
     upload_url, r2_key = storage.presigned_put_url(filename)
     return {
         "upload_url": upload_url,
@@ -676,14 +654,11 @@ async def get_upload_url(filename: str) -> dict:
 @mcp.tool()
 async def run_skill(
     skill: Optional[str] = None,
-    artifacts: Optional[list] = None,
-    input_paths: Optional[list] = None,
     r2_keys: Optional[list] = None,
     urls: Optional[list] = None,
     context: Optional[str] = None,
     session_id: Optional[str] = None,
     response: Optional[str] = None,
-    files: Optional[list] = None,
     ctx: Optional[Context] = None,
 ) -> dict:
     """Run any LikeMinds skill (background job + poll).
@@ -691,12 +666,10 @@ async def run_skill(
     First call: provide `skill` (any name from `list_skills`, e.g. 'kb-builder',
     'config-agent', 'setup-document-generator') and its inputs. `context` says WHAT to do
     (a prompt / SOW / instructions). Ways to supply files:
-    - `r2_keys`     — R2 keys from get_upload_url (preferred for all file types).
+    - `r2_keys`     — R2 keys from get_upload_url or upload_file (required for all files).
                       Call get_upload_url first, PUT the file to the returned
                       upload_url, then pass the r2_key here.
-    - `input_paths` — absolute local paths (only works when client and server share
-                      the same filesystem, e.g. Claude Code CLI on the same machine).
-    - `artifacts` / `files` — inline text content [{name, content}] for small text.
+    - `urls`        — public URLs to fetch as inputs.
     You get back `status: "running"` with a `session_id`.
 
     Then POLL: call again with ONLY that `session_id` (no other args). Keep polling
@@ -735,7 +708,7 @@ async def run_skill(
     if skill and session_id:
         return await _start_continuation(
             skill, session_id, client_key, tenant,
-            artifacts, files, input_paths, r2_keys, urls, context,
+            r2_keys, urls, context,
         )
 
     if session_id:
@@ -759,16 +732,13 @@ async def run_skill(
         # session_id (or an empty response) is just a poll — it must NOT finish the
         # run. Only deliver a reply while the skill is actually waiting for one.
         has_answer = bool(
-            (response and response.strip()) or files or input_paths or artifacts or r2_keys
+            (response and response.strip()) or r2_keys
         )
         if has_answer and sess.status == "need_input":
             if r2_keys and config.USE_R2:
                 sess.r2_keys.extend(r2_keys)
             added = (
-                engine._write_artifacts(sess.inputs_dir, artifacts)
-                + engine._write_artifacts(sess.inputs_dir, files)
-                + _copy_input_paths(sess.inputs_dir, input_paths)
-                + (storage.download_inputs(r2_keys, sess.inputs_dir) if config.USE_R2 else [])
+                storage.download_inputs(r2_keys, sess.inputs_dir) if config.USE_R2 else []
             )
             _deliver_reply(sess, engine.build_reply_message(response, added))
         await _wait_for_change(sess)
@@ -796,15 +766,330 @@ async def run_skill(
     sess.tenant = tenant       # ownership + private-skill registration scope
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
-    engine._write_artifacts(sess.inputs_dir, artifacts)
-    engine._write_artifacts(sess.inputs_dir, files)
-    _copy_input_paths(sess.inputs_dir, input_paths)
     if config.USE_R2:
         storage.download_inputs(r2_keys, sess.inputs_dir)
     first_message = engine.build_first_message(entry["folder"], sess, urls, context)
     sess.task = asyncio.create_task(_drive(sess, first_message))
     await _wait_for_change(sess)
     return _snapshot(sess)
+
+
+# ----------------------------------------------------------------------------- #
+# Pipeline orchestration — multi-step skill chains
+# ----------------------------------------------------------------------------- #
+
+async def _drive_pipeline(
+    psess: pipeline.PipelineSession,
+    r2_keys: Optional[list],
+    urls: Optional[list],
+    context: Optional[str],
+) -> None:
+    """Drive a pipeline step-by-step as a background task.
+
+    Each step is a regular skill run (_drive task). After each step's _drive task
+    finishes, the promoted output dir is threaded into the next step's inputs_dir.
+    Dynamic steps ({{generated_skill}}) are resolved from the prior step's
+    registered_skills. If any step goes need_input, the pipeline surfaces it to the
+    client and waits for a reply before forwarding it to the skill session.
+    """
+    import time as _time
+
+    try:
+        psess.reply_event = asyncio.Event()
+
+        for i in range(psess.current_step, len(psess.steps)):
+            step_name = psess.steps[i]
+
+            # Resolve dynamic step name from prior step's registered skills
+            if step_name == "{{generated_skill}}":
+                prior_registered = psess.step_registered_skills.get(str(i - 1), [])
+                if not prior_registered:
+                    raise RuntimeError(
+                        f"Step {i} is {{{{generated_skill}}}} but step {i - 1} "
+                        "registered no skill — cannot resolve the step name."
+                    )
+                step_name = prior_registered[0]
+                psess.steps[i] = step_name  # resolve in place for state persistence
+
+            psess.progress = f"Step {i + 1}/{len(psess.steps)}: {step_name}"
+
+            # Resolve the skill entry in the caller's tenant scope
+            entry = registry.resolve_skill(step_name, psess.tenant)
+            if entry is None:
+                raise RuntimeError(
+                    f"Step {i + 1} skill '{step_name}' not found. "
+                    f"Available: {', '.join(s['name'] for s in registry.list_skills(psess.tenant))}"
+                )
+
+            # Create a fresh session for this step
+            sess = sessions.new_session(entry["name"])
+            sess.api_key = psess.api_key
+            sess.tenant = psess.tenant
+            psess.current_skill_sess = sess
+
+            # Write inputs — step 0 gets the caller's files; later steps get the
+            # promoted output dir of the prior step copied into their inputs.
+            if i == 0:
+                if r2_keys and config.USE_R2:
+                    sess.r2_keys.extend(r2_keys)
+                    storage.download_inputs(r2_keys, sess.inputs_dir)
+            else:
+                prior_result_id = psess.step_result_ids.get(str(i - 1), "")
+                prior_dir = config.RESULTS_DIR / prior_result_id
+                if prior_dir.is_dir():
+                    for src in sorted(prior_dir.rglob("*")):
+                        if src.is_file():
+                            rel = src.relative_to(prior_dir)
+                            dest = sess.inputs_dir / rel
+                            dest.parent.mkdir(parents=True, exist_ok=True)
+                            shutil.copy2(src, dest)
+
+            # Build the first message — pass context on every step so the skill
+            # knows the end goal. URLs only on step 0 (they're reference inputs).
+            step_urls = urls if i == 0 else None
+            first_msg = engine.build_first_message(entry["folder"], sess, step_urls, context)
+
+            # Start the step driver
+            sess.task = asyncio.create_task(_drive(sess, first_msg))
+            pipeline.save_state(psess)
+
+            # Monitor the step until it finishes, surfacing need_input to the client
+            while not sess.finished:
+                psess.progress = (
+                    f"Step {i + 1}/{len(psess.steps)}: {step_name} — {sess.progress}"
+                )
+
+                if sess.status == "need_input" and psess.status != "need_input":
+                    psess.questions = sess.questions
+                    psess.status = "need_input"
+                    # Wait for the pipeline client to answer
+                    try:
+                        await asyncio.wait_for(
+                            psess.reply_event.wait(), timeout=config.REPLY_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        sess.task.cancel()
+                        raise RuntimeError(
+                            f"No reply within {config.REPLY_TIMEOUT}s; pipeline closed."
+                        )
+                    psess.reply_event.clear()
+                    psess.status = "running"
+                    # Forward the reply to the skill session so _drive resumes
+                    _deliver_reply(sess, engine.build_reply_message(psess.pending_reply, []))
+
+                await asyncio.sleep(0.5)
+
+            if sess.status == "error":
+                psess.failed_step = i
+                pipeline.save_state(psess)
+                raise RuntimeError(
+                    f"Step {i + 1}/{len(psess.steps)} ({step_name}) failed: {sess.error}"
+                )
+
+            # Step done — record result_id and registered skills for next step
+            psess.step_result_ids[str(i)] = sess.result_id
+            psess.step_registered_skills[str(i)] = (sess.result or {}).get(
+                "registered_skills", []
+            )
+            psess.current_step = i + 1
+            pipeline.save_state(psess)
+
+        # All steps done — expose last step's result as the pipeline result
+        last = psess.current_skill_sess
+        psess.result = (last.result or {}) if last else {}
+        psess.status = "done"
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        psess.status = "error"
+        psess.error = f"{type(e).__name__}: {e}"
+        pipeline.save_state(psess)
+    finally:
+        psess.finished = True
+        psess.finished_at = _time.time()
+
+
+async def _wait_for_change_pipeline(
+    psess: pipeline.PipelineSession, seconds: int = POLL_WAIT
+) -> None:
+    """Long-poll for a pipeline session: wait until status leaves 'running'."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while psess.status == "running" and loop.time() < deadline:
+        await asyncio.sleep(0.5)
+
+
+def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
+    """Serialise a PipelineSession into the response dict the client receives."""
+    if psess.status == "need_input":
+        return {
+            "status": "need_input",
+            "session_id": psess.id,
+            "pipeline": psess.pipeline_name,
+            "current_step": psess.current_step + 1,
+            "total_steps": len(psess.steps),
+            "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
+            "questions": psess.questions,
+            "next_step": RELAY_TEXT,
+        }
+    if psess.status == "done":
+        result = psess.result or {}
+        urls = result.get("download_urls") or {}
+        has_links = bool(urls) and "_error" not in urls
+        if has_links and config.USE_R2:
+            try:
+                last_result_id = result.get("result_id", "")
+                result = {**result, "download_urls": storage.output_urls(last_result_id, list(urls))}
+            except Exception:  # noqa: BLE001
+                pass
+        return {
+            "status": "done",
+            "session_id": psess.id,
+            "pipeline": psess.pipeline_name,
+            "steps_completed": len(psess.steps),
+            **result,
+            **({"download_expires_in_seconds": config.R2_URL_EXPIRY} if has_links else {}),
+            "next_step": "Pipeline complete. " + (DELIVERY_TEXT if has_links else "No download links produced."),
+        }
+    if psess.status == "error":
+        failed = psess.failed_step
+        resume_hint = (
+            f" Call run_pipeline again with session_id='{psess.id}' and intent to resume "
+            f"from step {failed + 1} ({psess.steps[failed] if failed >= 0 and failed < len(psess.steps) else '?'}) "
+            "without re-running earlier steps."
+            if failed >= 0 else ""
+        )
+        return {
+            "status": "error",
+            "session_id": psess.id,
+            "pipeline": psess.pipeline_name,
+            "failed_step": failed + 1 if failed >= 0 else None,
+            "failed_step_name": psess.steps[failed] if 0 <= failed < len(psess.steps) else None,
+            "steps_completed": failed if failed >= 0 else psess.current_step,
+            "message": (psess.error or "unknown error") + resume_hint,
+        }
+    # running
+    return {
+        "status": "running",
+        "session_id": psess.id,
+        "pipeline": psess.pipeline_name,
+        "current_step": psess.current_step + 1,
+        "total_steps": len(psess.steps),
+        "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
+        "progress": psess.progress or "starting…",
+        "next_step": POLL_TEXT,
+    }
+
+
+async def run_pipeline(
+    pipeline_name: Optional[str] = None,
+    context: Optional[str] = None,
+    r2_keys: Optional[list] = None,
+    urls: Optional[list] = None,
+    session_id: Optional[str] = None,
+    response: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> dict:
+    client_key = _client_api_key(ctx)
+    tenant = await _resolve_tenant(ctx)
+
+    # POLL or ANSWER on an existing pipeline session
+    if session_id and not pipeline_name:
+        psess = pipeline.get_pipeline_session(session_id)
+        if psess is None:
+            # Not in memory — check disk for a resumable failed state
+            state = pipeline.load_state(session_id)
+            if state is None:
+                return {"status": "error", "message": f"Pipeline session '{session_id}' not found or expired."}
+            failed = state.get("failed_step", -1)
+            failed_name = state["steps"][failed] if 0 <= failed < len(state["steps"]) else "?"
+            return {
+                "status": "error",
+                "session_id": session_id,
+                "pipeline": state.get("pipeline_name"),
+                "failed_step": failed + 1 if failed >= 0 else None,
+                "failed_step_name": failed_name,
+                "steps_completed": failed if failed >= 0 else 0,
+                "message": (
+                    f"Pipeline failed at step {failed + 1} ({failed_name}). "
+                    f"Call run_pipeline with session_id='{session_id}' and pipeline_name to resume from that step."
+                ),
+            }
+
+        if client_key:
+            psess.api_key = client_key
+
+        if psess.status in ("done", "error"):
+            return _pipeline_snapshot(psess)
+
+        has_answer = bool((response and response.strip()) or r2_keys)
+        if has_answer and psess.status == "need_input":
+            psess.pending_reply = response or ""
+            skill_sess = psess.current_skill_sess
+            if skill_sess is not None:
+                if r2_keys and config.USE_R2:
+                    storage.download_inputs(r2_keys, skill_sess.inputs_dir)
+            psess.reply_event.set()
+
+        await _wait_for_change_pipeline(psess)
+        return _pipeline_snapshot(psess)
+
+    # RESUME: session_id + pipeline_name → restart from the failed step
+    if session_id and pipeline_name:
+        state = pipeline.load_state(session_id)
+        if state is None:
+            return {"status": "error", "message": f"No saved pipeline state for session_id '{session_id}'."}
+        new_inputs = {"r2_keys": r2_keys, "urls": urls, "context": context}
+        psess = pipeline.restore_pipeline_session(session_id, state, client_key, tenant, new_inputs)
+        psess.task = asyncio.create_task(
+            _drive_pipeline(psess, r2_keys, urls, context)
+        )
+        await _wait_for_change_pipeline(psess)
+        return _pipeline_snapshot(psess)
+
+    # FIRST CALL: pipeline_name required
+    if not pipeline_name:
+        available = [p["name"] for p in pipeline.load_pipelines()]
+        return {"status": "error", "message": (
+            "run_pipeline needs `pipeline_name` to start a pipeline, or `session_id` to poll/resume. "
+            f"Available pipelines: {', '.join(available) or 'none'}."
+        )}
+
+    matched = pipeline.find_pipeline(pipeline_name)
+    if matched is None:
+        available = [p["name"] for p in pipeline.load_pipelines()]
+        return {"status": "error", "message": (
+            f"Unknown pipeline '{pipeline_name}'. "
+            f"Available: {', '.join(available) or 'none'}."
+        )}
+
+    original_inputs = {
+        "r2_keys": r2_keys or [],
+        "urls": urls or [],
+        "context": context,
+    }
+    psess = pipeline.new_pipeline_session(matched, client_key, tenant, original_inputs)
+    psess.task = asyncio.create_task(
+        _drive_pipeline(psess, r2_keys, urls, context)
+    )
+    await _wait_for_change_pipeline(psess)
+    return _pipeline_snapshot(psess)
+
+
+# Set the docstring BEFORE mcp.tool() decorates so FastMCP registers the live description.
+run_pipeline.__doc__ = pipeline.build_run_pipeline_doc()
+run_pipeline = mcp.tool()(run_pipeline)
+
+
+@mcp.tool()
+async def list_pipelines(ctx: Optional[Context] = None) -> dict:
+    """Return the configured pipelines with their names, descriptions, steps, and trigger phrases.
+
+    Read this before calling run_pipeline so you know what pipelines exist and what
+    kind of intent each one matches."""
+    pipelines = pipeline.load_pipelines()
+    return {"pipelines": pipelines}
 
 
 @mcp.tool()

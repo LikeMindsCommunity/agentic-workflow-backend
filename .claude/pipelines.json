@@ -1,0 +1,37 @@
+{
+  "pipelines": [
+    {
+      "name": "document-agent",
+      "description": "Build a reusable document-generation skill from reference files. Runs kb-builder to extract product knowledge, then document-generator to compile a custom skill, then the generated skill to produce the final document.",
+      "triggers": [
+        "create document agent",
+        "build document generator",
+        "create document generator",
+        "generate SOW generator",
+        "generate BRD generator",
+        "generate HLD generator",
+        "create document skill",
+        "set up document generator",
+        "build a document skill",
+        "create a custom document skill"
+      ],
+      "steps": ["kb-builder", "document-generator", "{{generated_skill}}"]
+    },
+    {
+      "name": "config-generator",
+      "description": "Generate a final configuration file (JSON, XML, YAML etc.) from reference documents. Runs kb-builder to extract knowledge, then config-agent to produce the config.",
+      "triggers": [
+        "create config",
+        "generate config",
+        "build config",
+        "generate JSON config",
+        "generate XML config",
+        "generate YAML config",
+        "create configuration",
+        "build configuration file",
+        "generate configuration from documents"
+      ],
+      "steps": ["kb-builder", "config-agent"]
+    }
+  ]
+}
