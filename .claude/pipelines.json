@@ -16,6 +16,22 @@
       "steps": ["kb-builder", "document-generator"]
     },
     {
+      "name": "document-from-kb",
+      "requires_seed": true,
+      "description": "Generate a finished business document (SOW, BRD, HLD, proposal, etc.) from an EXISTING knowledge base, WITHOUT rebuilding it. Use when the KB was already built by an earlier run and you just want another document from it for a new deal. This is the 'straight to generation' path that skips the kb-builder phase of document-agent. Point at the KB via `seed_session_id` — the id of the KB's output bucket (for a KB built by document-agent, that is the `kb-builder_...` id listed under `step_outputs` in that run's done result; for a standalone kb-builder run, its own session id). Upload the per-deal MOM/brief via `r2_keys`/`urls` and describe the deal in `context`. The KB is staged in as read-only reference and the finished document is written to its own fresh output bucket — the KB is never modified.",
+      "triggers": [
+        "generate the document from the existing KB",
+        "generate another document from the same KB",
+        "write a new SOW from the existing knowledge base",
+        "the KB is ready, generate the document",
+        "regenerate the document without rebuilding the KB",
+        "produce a document from the KB we already built",
+        "skip KB building and generate the document",
+        "generate the deliverable for a new deal from the existing KB"
+      ],
+      "steps": ["document-generator"]
+    },
+    {
       "name": "config-generator",
       "description": "Generate a final configuration file (JSON, XML, YAML etc.) from reference documents. Runs kb-builder to extract knowledge, then config-agent to produce the config.",
       "triggers": [
@@ -32,17 +48,19 @@
       "steps": ["kb-builder", "config-agent"]
     },
     {
-      "name": "kb-feedback",
+      "name": "output-feedback",
       "requires_seed": true,
-      "description": "Turn a user's complaint about a generated deliverable into approved amendments to the knowledge base that produced it, so the next generation is better. Point it at the kb-builder session whose KB is at fault via `seed_session_id`, and pass the flagged issues as `context`; optionally attach the defective deliverable and/or a corrected version as uploads (r2_keys/urls). Runs diagnose-bug in KB mode to analyse the KB against the feedback and propose amendments for review (adding a fact the KB never recorded, correcting one it recorded wrongly, or flagging a rule the KB already states correctly as a generator defect rather than restating it), then apply-fixes in KB mode to write the approved amendments back into that same KB in place. The KB is edited on disk with no git commit; the amended KB is written back into its own outputs/mcp bucket in place so every skill that reads it at runtime picks up the improvement.",
+      "seed_writeback": true,
+      "description": "Turn a user's complaint about a generated OUTPUT into approved amendments to the knowledge base behind it, so the next generation is better. The user talks about the OUTPUT — 'the SOW is off-brand', 'the document missed a section', 'the config has the wrong value' — and need NOT mention the KB at all; this flow deliberately routes the fix to the KB, because every generator skill reads the KB at runtime, so correcting the KB is what actually fixes future outputs. Point it at the run whose output is at fault via `seed_session_id` (its KB bucket is resolved and refined in place), and pass the flagged issues as `context`; optionally attach the defective output and/or a corrected version as uploads (r2_keys/urls). Runs diagnose-bug in KB mode to analyse the KB against the feedback and propose amendments for review (adding a fact the KB never recorded, correcting one it recorded wrongly, or flagging a rule the KB already states correctly as a generator defect rather than restating it), then apply-fixes in KB mode to write the approved amendments back into that same KB in place. The KB is edited on disk with no git commit; the amended KB is written back into its own outputs/mcp bucket in place so every skill that reads it at runtime picks up the improvement.",
       "triggers": [
         "the SOW you generated was wrong",
-        "the output was off-brand or incomplete",
-        "improve the KB from this feedback",
-        "the generated document missed something, fix the knowledge base",
-        "refine the KB from the flagged issues",
-        "reinforce the KB with this correction",
-        "update the KB from user feedback"
+        "the document you produced is off-brand or incomplete",
+        "the generated output missed something",
+        "the deliverable has a mistake, fix it for next time",
+        "the config came out wrong",
+        "improve future outputs from this feedback",
+        "the result wasn't right, make the next one better",
+        "fix whatever caused this bad output"
       ],
       "steps": [
         {"skill": "diagnose-bug", "args": {"target": "kb"}},
