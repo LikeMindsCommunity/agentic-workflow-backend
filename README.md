@@ -773,7 +773,8 @@ copy under `outputs/mcp/<result_id>/`.
 comparison sheet. Should a run ever emit a skill, it is both installed — reported in
 `registered_skills` — and returned as download links; registration is in addition to delivery,
 never instead of it, so nothing a run produces stays server-side-only. No skill shipped in this
-repo emits skills today: the two that did (`document-generator`, `generate-find-bugs-skill`)
-were both converted to read their KB at run time instead, so that path is currently unexercised.
+repo emits skills today: the two that did (`document-generator`, and the former
+`generate-find-bugs-skill`, now `find-bugs`) were both converted to read their KB at run time
+instead, so that path is currently unexercised.
 
 

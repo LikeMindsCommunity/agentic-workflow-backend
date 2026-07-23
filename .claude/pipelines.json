@@ -2,20 +2,18 @@
   "pipelines": [
     {
       "name": "document-agent",
-      "description": "Build a reusable document-generation skill from reference files. Runs kb-builder to extract product knowledge, then document-generator to compile a custom skill, then the generated skill to produce the final document.",
+      "description": "Produce a finished business document from raw reference files end to end. Runs kb-builder to extract the team's format and product knowledge into a KB, then document-generator to write and render the final document (PDF or DOCX) directly from that KB.",
       "triggers": [
-        "create document agent",
-        "build document generator",
-        "create document generator",
-        "generate SOW generator",
-        "generate BRD generator",
-        "generate HLD generator",
-        "create document skill",
-        "set up document generator",
-        "build a document skill",
-        "create a custom document skill"
+        "generate a document from reference files",
+        "build a document from samples",
+        "create SOW from reference documents",
+        "create BRD from sample documents",
+        "generate HLD from references",
+        "generate a document end to end",
+        "build KB and generate the document",
+        "produce a document from these references"
       ],
-      "steps": ["kb-builder", "document-generator", "{{generated_skill}}"]
+      "steps": ["kb-builder", "document-generator"]
     },
     {
       "name": "config-generator",
@@ -32,6 +30,24 @@
         "generate configuration from documents"
       ],
       "steps": ["kb-builder", "config-agent"]
+    },
+    {
+      "name": "kb-feedback",
+      "requires_seed": true,
+      "description": "Turn a user's complaint about a generated deliverable into approved amendments to the knowledge base that produced it, so the next generation is better. Point it at the kb-builder session whose KB is at fault via `seed_session_id`, and pass the flagged issues as `context`; optionally attach the defective deliverable and/or a corrected version as uploads (r2_keys/urls). Runs diagnose-bug in KB mode to analyse the KB against the feedback and propose amendments for review (adding a fact the KB never recorded, correcting one it recorded wrongly, or flagging a rule the KB already states correctly as a generator defect rather than restating it), then apply-fixes in KB mode to write the approved amendments back into that same KB in place. The KB is edited on disk with no git commit; the amended KB is written back into its own outputs/mcp bucket in place so every skill that reads it at runtime picks up the improvement.",
+      "triggers": [
+        "the SOW you generated was wrong",
+        "the output was off-brand or incomplete",
+        "improve the KB from this feedback",
+        "the generated document missed something, fix the knowledge base",
+        "refine the KB from the flagged issues",
+        "reinforce the KB with this correction",
+        "update the KB from user feedback"
+      ],
+      "steps": [
+        {"skill": "diagnose-bug", "args": {"target": "kb"}},
+        {"skill": "apply-fixes", "args": {"target": "kb"}}
+      ]
     }
   ]
 }

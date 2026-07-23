@@ -778,6 +778,48 @@ async def run_skill(
 # Pipeline orchestration — multi-step skill chains
 # ----------------------------------------------------------------------------- #
 
+def _resolve_seed_buckets(seed_session_id: Optional[str]) -> list[str]:
+    """Resolve a caller-supplied session id to existing deliverable bucket NAME(s) under
+    outputs/mcp/ — SKILL-AGNOSTIC, so the seed can be a KB today, a generated skill or any
+    other prior deliverable tomorrow. Accepts either the full result_id (the exact bucket
+    folder, e.g. `kb-builder_<sid>` or `document-generator_<sid>`) → returns [that]; or the
+    bare durable id `<sid>` → returns every `<skill>_<sid>` bucket (usually exactly one).
+    Empty list means nothing matched; more than one means the bare id is ambiguous and the
+    caller must pass the full result_id."""
+    if not seed_session_id or not seed_session_id.strip():
+        return []
+    sid = seed_session_id.strip()
+    if (config.RESULTS_DIR / sid).is_dir():
+        return [sid]
+    if not config.RESULTS_DIR.is_dir():
+        return []
+    return sorted(
+        d.name for d in config.RESULTS_DIR.iterdir()
+        if d.is_dir() and d.name.endswith(f"_{sid}")
+    )
+
+
+def _stage_bucket(src_dir: Path, dest_dir: Path) -> None:
+    """Copy every file under an outputs/mcp bucket into a step's inputs dir, preserving
+    relative paths — used to seed an existing deliverable (e.g. a KB) into a pipeline step."""
+    if not src_dir.is_dir():
+        return
+    for src in sorted(src_dir.rglob("*")):
+        if src.is_file():
+            dest = dest_dir / src.relative_to(src_dir)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+
+
+def _apply_step_args(context: Optional[str], args: Optional[dict]) -> Optional[str]:
+    """Fold a pipeline step's declared args into the caller context as explicit key=value
+    run parameters, so a skill receives them the same way run_skill args would arrive."""
+    if not args:
+        return context
+    directive = "Run parameters: " + ", ".join(f"{k}={v}" for k, v in args.items())
+    return f"{directive}\n\n{context}" if context else directive
+
+
 async def _drive_pipeline(
     psess: pipeline.PipelineSession,
     r2_keys: Optional[list],
@@ -821,8 +863,15 @@ async def _drive_pipeline(
                     f"Available: {', '.join(s['name'] for s in registry.list_skills(psess.tenant))}"
                 )
 
-            # Create a fresh session for this step
-            sess = sessions.new_session(entry["name"])
+            # Create a session for this step. In a SEEDED pipeline the final step writes
+            # back into the seed bucket in place (result_id override), so the refined
+            # deliverable persists under the seed's own session id; every other step gets
+            # a fresh bucket of its own.
+            is_writeback = bool(psess.seed_result_id) and i == len(psess.steps) - 1
+            sess = sessions.new_session(
+                entry["name"],
+                result_id=psess.seed_result_id if is_writeback else None,
+            )
             sess.api_key = psess.api_key
             sess.tenant = psess.tenant
             psess.current_skill_sess = sess
@@ -832,22 +881,29 @@ async def _drive_pipeline(
             if i == 0:
                 if r2_keys and config.USE_R2:
                     sess.r2_keys.extend(r2_keys)
-                    storage.download_inputs(r2_keys, sess.inputs_dir)
+                    # In a seeded (refinement) pipeline the seed fills inputs root, so
+                    # caller uploads — the artifact under critique — go into a dedicated
+                    # generated/ subdir to keep them separate from the seeded deliverable.
+                    upload_dest = sess.inputs_dir / "generated" if psess.seed_result_id else sess.inputs_dir
+                    upload_dest.mkdir(parents=True, exist_ok=True)
+                    storage.download_inputs(r2_keys, upload_dest)
             else:
                 prior_result_id = psess.step_result_ids.get(str(i - 1), "")
-                prior_dir = config.RESULTS_DIR / prior_result_id
-                if prior_dir.is_dir():
-                    for src in sorted(prior_dir.rglob("*")):
-                        if src.is_file():
-                            rel = src.relative_to(prior_dir)
-                            dest = sess.inputs_dir / rel
-                            dest.parent.mkdir(parents=True, exist_ok=True)
-                            shutil.copy2(src, dest)
+                _stage_bucket(config.RESULTS_DIR / prior_result_id, sess.inputs_dir)
 
-            # Build the first message — pass context on every step so the skill
-            # knows the end goal. URLs only on step 0 (they're reference inputs).
+            # Seeded pipeline: stage the existing deliverable bucket (a KB, a skill, any
+            # prior output) into EVERY step's inputs. Threading only carries the PRIOR step's
+            # output, so a step that must READ the seed itself — not just what the step before
+            # it produced — needs it staged here directly.
+            if psess.seed_result_id:
+                _stage_bucket(config.RESULTS_DIR / psess.seed_result_id, sess.inputs_dir)
+
+            # Build the first message — pass context on every step so the skill knows the
+            # end goal, with this step's declared args (e.g. target=kb) folded in. URLs only
+            # on step 0 (they're reference inputs).
             step_urls = urls if i == 0 else None
-            first_msg = engine.build_first_message(entry["folder"], sess, step_urls, context)
+            step_context = _apply_step_args(context, psess.step_args.get(str(i)))
+            first_msg = engine.build_first_message(entry["folder"], sess, step_urls, step_context)
 
             # Start the step driver
             sess.task = asyncio.create_task(_drive(sess, first_msg))
@@ -987,6 +1043,7 @@ async def run_pipeline(
     context: Optional[str] = None,
     r2_keys: Optional[list] = None,
     urls: Optional[list] = None,
+    seed_session_id: Optional[str] = None,
     session_id: Optional[str] = None,
     response: Optional[str] = None,
     ctx: Optional[Context] = None,
@@ -1064,12 +1121,34 @@ async def run_pipeline(
             f"Available: {', '.join(available) or 'none'}."
         )}
 
+    seed_matches = _resolve_seed_buckets(seed_session_id)
+    if seed_session_id and not seed_matches:
+        return {"status": "error", "message": (
+            f"No deliverable bucket found for seed_session_id='{seed_session_id}' under outputs/mcp/. "
+            "Pass the session id (or result id) of the earlier run whose output you want to refine."
+        )}
+    if len(seed_matches) > 1:
+        return {"status": "error", "message": (
+            f"seed_session_id='{seed_session_id}' is ambiguous — it matches several buckets "
+            f"({', '.join(seed_matches)}). Pass the full result id (one of those) instead."
+        )}
+    seed_result_id = seed_matches[0] if seed_matches else None
+    if matched.get("requires_seed") and not seed_result_id:
+        return {"status": "error", "message": (
+            f"Pipeline '{pipeline_name}' needs `seed_session_id` — the session id of the earlier run "
+            "whose output is being refined — so the server can stage it and write the changes back "
+            "into it in place. Pass seed_session_id and try again."
+        )}
+
     original_inputs = {
         "r2_keys": r2_keys or [],
         "urls": urls or [],
         "context": context,
+        "seed_session_id": seed_session_id,
     }
-    psess = pipeline.new_pipeline_session(matched, client_key, tenant, original_inputs)
+    psess = pipeline.new_pipeline_session(
+        matched, client_key, tenant, original_inputs, seed_result_id=seed_result_id
+    )
     psess.task = asyncio.create_task(
         _drive_pipeline(psess, r2_keys, urls, context)
     )

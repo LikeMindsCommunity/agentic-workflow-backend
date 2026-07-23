@@ -1,9 +1,18 @@
 ---
 name: diagnose-bug
-description: Validate one or more bug reports and, for each real defect, diagnose the root cause and propose a fix as a PENDING row in the client's approval sheet (outputs/{client}/approval_sheet.md) — validate-only, never editing source or committing. Handles a single bug, a batch (with cross-fix interaction analysis), or "sheet" mode over existing rows. Use when a bug is reported and you want it triaged and a fix proposed for review. Triggers: "diagnose this bug", "diagnose-bug", "is this a real bug and what is the fix", "triage these bugs for {client}".
+description: Validate one or more bug reports and, for each real defect, diagnose the root cause and propose a fix as a PENDING row in the client's approval sheet (outputs/{client}/approval_sheet.md) — validate-only, never editing source or committing. Handles a single bug, a batch (with cross-fix interaction analysis), or "sheet" mode over existing rows. Use when a bug is reported and you want it triaged and a fix proposed for review. Also supports a KB target (target=kb): instead of source code, it analyses a knowledge base against a user's complaint about a deliverable it produced and proposes amendments to that KB for review — used by the kb-feedback pipeline. Triggers: "diagnose this bug", "diagnose-bug", "is this a real bug and what is the fix", "triage these bugs for {client}".
 ---
 
 You are a bug diagnosis agent. Given one or more bug reports in $ARGUMENTS, do the following.
+
+## Target: code (default) or KB
+
+Check the run parameters / $ARGUMENTS for a `target=` selector before anything else:
+
+- **`target=code`** (the default when no `target=` is present) — the source-code bug flow in the rest of this document (Phases A–D).
+- **`target=kb`** — the **KB-feedback** flow. Skip Phases A–D entirely and follow the **[KB mode](#kb-mode--targetkb)** section at the end of this file: you analyse a knowledge base against a user's complaint about a deliverable it produced and propose amendments to the KB, rather than diagnosing source code.
+
+Everything below this point up to the "KB mode" section is the `target=code` flow, and applies only when you were NOT sent `target=kb`.
 
 This skill merges three jobs into one: it **validates** a report (is this a real, actionable bug?), and if valid it **diagnoses** and **proposes a fix** — handling a single bug like a focused diagnosis and multiple bugs like a batch with interaction analysis.
 
@@ -183,3 +192,65 @@ Then stop. Do not take any further action in this turn.
 5. **Dual-layer fixes still propose-only.** Even if both a prompt file and a code file need changes, describe both in `Fix Description` with separate file paths and line ranges — do not edit either.
 6. **One row per bug.** Do not split a single bug into multiple approval rows; do not merge distinct bugs into one row. Multiple distinct bugs in one input each get their own row and their own Bug ID.
 7. **Interaction analysis is advisory.** In batch mode it reports conflicts and ordering but never applies or reorders anything.
+
+---
+
+# KB mode — `target=kb`
+
+Follow this section INSTEAD of Phases A–D when the run parameters contain `target=kb`. You are not diagnosing source code. You analyse a **knowledge base (KB)** against a user's complaint about a deliverable generated from it, and propose **amendments to the KB** for review. You never edit the KB here — that is apply-fixes' job. You only propose.
+
+## Inputs (KB mode)
+- **The KB** — the files staged into your `inputs=` dir (what a kb-builder run produced). If a `kb=<dir>` path is given, use that instead. Treat every file under `inputs=` as part of the KB **except**: a `feedback/` subdir, a `generated/` subdir, or an `expected/` subdir.
+- **The flagged issues** — the user's complaint, verbatim, in $ARGUMENTS / context. This is WHAT went wrong with the deliverable.
+- **`generated/`** (optional) — the deliverable being complained about, under `inputs=/generated/`.
+- **`expected/`** (optional) — the user's corrected version of it, under `inputs=/expected/`.
+
+Determine your **evidence mode** from which artifacts are present, and never claim more than it supports:
+
+| Present | Mode | What you may conclude |
+|---|---|---|
+| generated + expected | **diff** | Everything — compare the two; each finding cites a KB rule |
+| generated only | **conformance** | Where the output breaks the KB's own rules; not what it should have said instead |
+| expected only | **reference-check** | Where the KB disagrees with known-good output → the KB is wrong |
+| neither | **prose-only** | Only what the KB does / does not say; every finding is UNVERIFIED |
+
+## Phase K1 — Learn what the KB already says
+Read **every** KB file completely (chunk large files until fully consumed). The entire routing decision in K2 turns on whether the KB already covers each complaint, and a partial read produces confident wrong answers in the most damaging direction — a rule you failed to read looks identical to one that was never written. Note where each kind of fact lives and the KB's file / heading / vocabulary conventions; your amendments must match them.
+
+## Phase K2 — Route each flagged issue
+For each distinct issue in the complaint, trace it to its real cause and assign a **Change Type**:
+- **KB-ADD** — the KB never recorded this fact. Propose the fact to add and where (file / section).
+- **KB-FIX** — the KB recorded this fact but wrongly. Propose the corrected value.
+- **KB_IGNORED** — the KB **already states this correctly**. The KB is not at fault; the generator ignored it. Do **NOT** propose a KB edit — restating a rule the KB already holds hides the generator bug. Record it as KB_IGNORED, citing the KB location that already covers it, so it can be escalated to a generator/source fix (a separate `target=code` run) instead.
+- **ASK** — the complaint **contradicts** an existing KB rule (which may encode a deliberate house standard). Do not assume the newest opinion wins — record it and ask before changing.
+
+Record every value the way it must be stored: a colour is the measured hex, a size is the number **with its physical unit**, a heading is the wording exactly as it appears. A value whose unit is implied will be misread later.
+
+## Phase K3 — Write proposals to the approval sheet
+Write PENDING rows to **`output=/feedback/approval_sheet.md`** (your deliverable is the `output=` dir — do NOT write under `outputs/{client}/…` in this mode, and keep it under `feedback/` so it never mixes with the KB's own files). Create the file and its `feedback/` folder if missing. One row per issue:
+
+| Item ID | Reported | Flagged Issue | Change Type | KB Location | Proposed Amendment | Evidence Mode | Confidence | Status | Reviewed By |
+
+- **Item ID** = `KB-YYYY-MM-DD-NNN` (sequential per day)
+- **Flagged Issue** = the user's words, verbatim — do not summarise
+- **Change Type** = KB-ADD / KB-FIX / KB_IGNORED / ASK
+- **KB Location** = the file + section the amendment targets (for KB_IGNORED, the location that ALREADY covers it)
+- **Proposed Amendment** = the exact fact/value to add or correct, **with units**; for KB_IGNORED write `KB already states this here — generator defect, no KB change`; for ASK write the question
+- **Evidence Mode** = diff / conformance / reference-check / prose-only
+- **Confidence** = LOW / MEDIUM / HIGH
+- **Status** = `PENDING`
+- **Reviewed By** = `_pending_`
+
+## Phase K4 — Summary & stop
+Print a compact table (Item ID, Change Type, KB Location, Confidence), then:
+- counts by Change Type, the evidence mode you ran in, and which missing artifact would have sharpened it
+- this exact line: `Proposed KB amendments written to output=/feedback/approval_sheet.md with Status=PENDING. The KB was not modified. Review, set Status=APPROVED on the rows to apply, then run apply-fixes (target=kb).`
+
+Then stop. Do not modify the KB.
+
+## KB-mode rules
+1. **Propose-only.** The only file you write is `output=/feedback/approval_sheet.md`. The KB is read-only in this skill.
+2. **KB_IGNORED is a hard guard.** If the KB already states a rule correctly, never propose restating it — route it out as a generator defect.
+3. **Every amendment traces to a flagged issue.** You are not auditing the KB; a change no complaint asked for does not belong here.
+4. **Conform to the KB's existing shape.** Amendments use the files, headings and vocabulary already there; never rename or re-bucket settled content.
+5. **Never claim beyond your evidence mode.** In prose-only mode you have not seen the deliverable — say "the KB records no X, which would explain the complaint," not "the output used the wrong X."

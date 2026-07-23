@@ -40,6 +40,8 @@ class PipelineSession:
     original_inputs: dict[str, Any]  # {r2_keys, urls, context} from first call
     api_key: str | None
     tenant: str | None
+    step_args: dict[str, dict] = field(default_factory=dict)  # str(step_index) → per-step args, e.g. {"target": "kb"}
+    seed_result_id: str | None = None  # existing outputs/mcp bucket staged into every step; last step writes back to it
     status: str = "running"          # running | need_input | done | error
     progress: str = ""
     questions: list = field(default_factory=list)
@@ -69,19 +71,49 @@ def find_pipeline(name: str) -> Optional[dict]:
     return next((p for p in load_pipelines() if p.get("name") == name), None)
 
 
+def _step_name(step) -> str:
+    """A pipeline step is either a bare skill name (`"kb-builder"`) or an object
+    (`{"skill": "diagnose-bug", "args": {"target": "kb"}}`). Return the skill name."""
+    return step["skill"] if isinstance(step, dict) else step
+
+
+def _parse_steps(raw_steps: list) -> tuple[list[str], dict[str, dict]]:
+    """Split a pipeline's `steps` into resolved skill names and a per-index args map.
+
+    Keeping `steps` a plain list[str] means the existing {{generated_skill}} resolution and
+    in-place step mutation keep working unchanged; any per-step args ride alongside, keyed
+    by str(index). A bare-string step contributes no args."""
+    names: list[str] = []
+    args: dict[str, dict] = {}
+    for i, s in enumerate(raw_steps):
+        names.append(_step_name(s))
+        if isinstance(s, dict) and s.get("args"):
+            args[str(i)] = dict(s["args"])
+    return names, args
+
+
 def new_pipeline_session(
     pipeline: dict,
     api_key: str | None,
     tenant: str | None,
     original_inputs: dict,
+    seed_result_id: str | None = None,
 ) -> "PipelineSession":
-    """Create and register a new PipelineSession."""
+    """Create and register a new PipelineSession.
+
+    `seed_result_id` (optional) names an existing deliverable bucket under outputs/mcp/
+    that the driver stages into every step's inputs and that the final step writes back to
+    in place — used by refinement pipelines (e.g. kb-feedback) to change an existing
+    deliverable, whatever it is, and persist it under its own session id."""
     import time
     sid = str(uuid.uuid4())
+    steps, step_args = _parse_steps(pipeline["steps"])
     psess = PipelineSession(
         id=sid,
         pipeline_name=pipeline["name"],
-        steps=list(pipeline["steps"]),
+        steps=steps,
+        step_args=step_args,
+        seed_result_id=seed_result_id,
         current_step=0,
         failed_step=-1,
         step_result_ids={},
@@ -124,6 +156,8 @@ def restore_pipeline_session(
         id=session_id,
         pipeline_name=state["pipeline_name"],
         steps=state["steps"],
+        step_args=state.get("step_args", {}),
+        seed_result_id=state.get("seed_result_id"),
         current_step=state.get("failed_step", 0),  # resume from the failed step
         failed_step=-1,
         step_result_ids=state.get("step_result_ids", {}),
@@ -157,6 +191,8 @@ def save_state(psess: "PipelineSession") -> None:
     state = {
         "pipeline_name": psess.pipeline_name,
         "steps": psess.steps,
+        "step_args": psess.step_args,
+        "seed_result_id": psess.seed_result_id,
         "current_step": psess.current_step,
         "failed_step": psess.failed_step,
         "step_result_ids": psess.step_result_ids,
@@ -189,8 +225,12 @@ Run a multi-step skill pipeline by picking a pipeline name from the list below.
 
 First call: pass `pipeline_name` (e.g. "config-generator") and your files via
 `r2_keys` (from get_upload_url) or `urls`. `context` is free-form instructions
-passed to every step. The server runs each skill in sequence and threads outputs
-automatically between steps.
+passed to every step. For a pipeline that REFINES an existing deliverable rather
+than building one from uploads (e.g. "kb-feedback"), also pass `seed_session_id`
+— the session id of the earlier run whose output is being changed (a KB today, a
+generated skill or any other prior deliverable tomorrow). The server stages that
+bucket into every step and writes the result back into it in place. The server
+runs each skill in sequence and threads outputs automatically between steps.
 
 {pipeline_block}
 
@@ -215,7 +255,7 @@ Render each as a clickable link for the user.\
 def _format_pipeline_entry(p: dict) -> str:
     name = p.get("name", "")
     description = p.get("description", "")
-    steps = " -> ".join(p.get("steps", []))
+    steps = " -> ".join(_step_name(s) for s in p.get("steps", []))
     triggers = ", ".join(f'"{t}"' for t in p.get("triggers", []))
     return (
         f"[{name}]\n"

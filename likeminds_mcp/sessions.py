@@ -62,15 +62,22 @@ class Session:
     pending_reply: str = ""           # the reply handed to the driver
 
 
-def new_session(skill: str, durable_id: str | None = None) -> Session:
+def new_session(
+    skill: str, durable_id: str | None = None, result_id: str | None = None
+) -> Session:
     """Create a session record. Pass `durable_id` to CONTINUE an earlier session — it
     names the caller-facing poll handle and the output bucket (outputs/mcp/<result_id>/).
     Omit it for a brand-new session (the id is then a fresh UUID). The Claude Code
     session id (`cc_id`) is ALWAYS fresh, so reusing a durable id never collides with a
-    purged CC transcript; the sandbox is keyed by cc_id so lineages never clash."""
+    purged CC transcript; the sandbox is keyed by cc_id so lineages never clash.
+
+    `result_id` overrides the derived `<skill>_<durable-id>` bucket name, so a run of ONE
+    skill can promote its deliverable into ANOTHER session's bucket. Seeded pipelines use
+    this for write-back: the final step (e.g. apply-fixes) writes the amended artifact
+    straight back into the seed KB bucket in place, rather than into a bucket of its own."""
     cc_id = str(uuid.uuid4())        # valid UUID: required by `claude --session-id`
     sid = durable_id or cc_id
-    result_id = f"{skill}_{sid}"     # stable deliverable id (output bucket), stable across a durable session's turns
+    result_id = result_id or f"{skill}_{sid}"     # stable deliverable id (output bucket), stable across a durable session's turns
     sandbox = SESSIONS_DIR / cc_id
     inputs_dir = sandbox / "inputs"
     output_dir = sandbox / "output" / result_id
