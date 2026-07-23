@@ -31,7 +31,7 @@ class Session:
     id: str                   # durable id: names outputs/mcp/<id>/ + the poll handle
     cc_id: str                # Claude Code session id for --session-id/--resume (fresh per run)
     skill: str                # the skill this session is running
-    result_id: str            # stable deliverable id "<skill>_<durable-id>" — names the output bucket (local + R2)
+    result_id: str            # deliverable id → output bucket (local + R2). Standalone: "<skill>_<durable-id>"; pipeline step: "pipeline_<pid>/<NN>_<skill>" (nested under the pipeline folder)
     sandbox: Path             # <project>/.sessions/<cc_id>
     inputs_dir: Path          # <sandbox>/inputs
     output_dir: Path          # <sandbox>/output/<result_id>  (deliverable harvested from here)
@@ -72,9 +72,12 @@ def new_session(
     purged CC transcript; the sandbox is keyed by cc_id so lineages never clash.
 
     `result_id` overrides the derived `<skill>_<durable-id>` bucket name, so a run of ONE
-    skill can promote its deliverable into ANOTHER session's bucket. Seeded pipelines use
-    this for write-back: the final step (e.g. apply-fixes) writes the amended artifact
-    straight back into the seed KB bucket in place, rather than into a bucket of its own."""
+    skill can promote its deliverable into ANOTHER location. Pipelines use this two ways:
+    every step is handed a NESTED id `pipeline_<pid>/<NN>_<skill>` so its output lands in its
+    own subfolder INSIDE the pipeline's folder; and a seeded write-back step (e.g. apply-fixes)
+    is handed the seed KB's own id so it writes the amended artifact straight back into that KB
+    bucket in place, rather than into a bucket of its own. A slash in `result_id` simply nests —
+    both the sandbox output dir and the outputs/mcp bucket create parents as needed."""
     cc_id = str(uuid.uuid4())        # valid UUID: required by `claude --session-id`
     sid = durable_id or cc_id
     result_id = result_id or f"{skill}_{sid}"     # stable deliverable id (output bucket), stable across a durable session's turns

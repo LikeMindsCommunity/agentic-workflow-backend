@@ -162,6 +162,24 @@ DELIVERY_TEXT = (
     "`download_expires_in_seconds` and that they should re-run to get fresh ones after that."
 )
 
+# run_pipeline is the ONLY tool exposed to end users (run_skill is internal plumbing), so every
+# pipeline-facing instruction names run_pipeline — never run_skill. Answering a question or polling
+# must pass ONLY session_id (a pipeline_name on those calls would trigger a RESUME of the saved
+# pipeline instead of forwarding the reply), so these say so explicitly.
+PIPELINE_RELAY_TEXT = (
+    "Show these question(s) to the user verbatim and wait for their reply. They may answer, or "
+    "reply 'done' to stop and finish with whatever is complete. Then call run_pipeline again with "
+    "ONLY this session_id and their `response` — do NOT pass pipeline_name (that would restart the "
+    "pipeline instead of delivering the answer). To attach a file with the answer: call "
+    "get_upload_url first, PUT the file to the returned upload_url, then pass the r2_key in "
+    "`r2_keys` on the same run_pipeline call. Do NOT answer the question yourself."
+)
+PIPELINE_POLL_TEXT = (
+    "Still working. Tell the user the current `progress`, then call run_pipeline again with ONLY "
+    "this session_id (no other arguments) to keep polling. This is normal long-running progress, "
+    "not an error. Repeat until status is 'need_input' or 'done'."
+)
+
 
 # ----------------------------------------------------------------------------- #
 # Output harvesting + deliverable promotion
@@ -778,25 +796,90 @@ async def run_skill(
 # Pipeline orchestration — multi-step skill chains
 # ----------------------------------------------------------------------------- #
 
+def _kb_bucket_from_pipeline(pipeline_session_id: str) -> Optional[str]:
+    """Given a PIPELINE session id, return the bucket id of the knowledge base that run produced
+    (or used), read from that pipeline's persisted state.json. This is what lets the user hold ONE
+    id — the pipeline session id — and still seed a continuation: the individual step buckets are
+    recorded in state, so the KB the run built is recoverable from the pipeline id alone.
+
+    The KB is the reusable artifact a seed-based pipeline consumes, so we resolve to it specifically
+    (seeding every step bucket would drag the generated document into the KB inputs). Preference:
+    the kb-builder step's output; then the KB a seeded pipeline carried in; then the last step's
+    output as a last resort."""
+    state = pipeline.load_state(pipeline_session_id)
+    if not state:
+        return None
+    steps = state.get("steps") or []
+    step_result_ids = state.get("step_result_ids") or {}
+
+    def _live(rid: Optional[str]) -> Optional[str]:
+        return rid if rid and (config.RESULTS_DIR / rid).is_dir() else None
+
+    for i, name in enumerate(steps):  # the KB is produced by the kb-builder step, by convention
+        if name == "kb-builder" and _live(step_result_ids.get(str(i))):
+            return step_result_ids[str(i)]
+    if _live(state.get("seed_result_id")):  # a seeded pipeline (e.g. document-from-kb) carried the KB in
+        return state["seed_result_id"]
+    if steps and _live(step_result_ids.get(str(len(steps) - 1))):
+        return step_result_ids[str(len(steps) - 1)]
+    return None
+
+
 def _resolve_seed_buckets(seed_session_id: Optional[str]) -> list[str]:
-    """Resolve a caller-supplied session id to existing deliverable bucket NAME(s) under
-    outputs/mcp/ — SKILL-AGNOSTIC, so the seed can be a KB today, a generated skill or any
-    other prior deliverable tomorrow. Accepts either the full result_id (the exact bucket
-    folder, e.g. `kb-builder_<sid>` or `document-generator_<sid>`) → returns [that]; or the
-    bare durable id `<sid>` → returns every `<skill>_<sid>` bucket (usually exactly one).
-    Empty list means nothing matched; more than one means the bare id is ambiguous and the
-    caller must pass the full result_id."""
+    """Resolve a caller-supplied id to existing deliverable bucket NAME(s) under outputs/mcp/ —
+    SKILL-AGNOSTIC, so the seed can be a KB today, a generated skill or any other prior deliverable
+    tomorrow. Resolution order (most-specific first):
+      1. a PIPELINE session id (the handle a finished run reports), bare or `pipeline_`-prefixed →
+         the reusable bucket (the KB) recorded in that pipeline's state.json. Resolved FIRST, and
+         it maps to the KB STEP's own subfolder (`pipeline_<pid>/<NN>_kb-builder`), NEVER to the
+         `pipeline_<pid>` ROOT — the root also holds state.json and every other step's output, so
+         staging it would drag the whole run (and any generated document) into the next step.
+      2. an id/path that already names an existing bucket → [that] — covers a nested step path
+         (`pipeline_<pid>/<NN>_<skill>`) and a standalone `<skill>_<sid>` bucket.
+      3. a bare durable id `<sid>` → every standalone `<skill>_<sid>` bucket (usually exactly one).
+    `pipeline_*` folders are excluded from rule 3's scan: a pipeline id is handled by rule 1, and a
+    `pipeline_<pid>` state root ends with `_<pid>` so it would otherwise false-match a bare id.
+    Empty list means nothing matched; more than one (only possible at rule 3) means the bare id is
+    ambiguous and the caller must pass the full result_id."""
     if not seed_session_id or not seed_session_id.strip():
         return []
     sid = seed_session_id.strip()
+
+    # 1. Pipeline session id → the KB bucket named in its state. A pipeline_<pid> folder always
+    # carries a state.json, and its presence is exactly what marks sid as a pipeline id (vs a
+    # plain bucket); resolve to the KB step's subfolder, never the pipeline root.
+    bare = sid[len("pipeline_"):] if sid.startswith("pipeline_") else sid
+    if pipeline.load_state(bare) is not None:
+        kb = _kb_bucket_from_pipeline(bare)
+        return [kb] if kb else []
+
+    # 2. An id/path that is itself an existing bucket (a nested step path, or a standalone bucket).
     if (config.RESULTS_DIR / sid).is_dir():
         return [sid]
-    if not config.RESULTS_DIR.is_dir():
-        return []
-    return sorted(
-        d.name for d in config.RESULTS_DIR.iterdir()
-        if d.is_dir() and d.name.endswith(f"_{sid}")
-    )
+
+    # 3. A bare durable id → standalone <skill>_<sid> bucket(s); never a pipeline_* state root.
+    if config.RESULTS_DIR.is_dir():
+        direct = sorted(
+            d.name for d in config.RESULTS_DIR.iterdir()
+            if d.is_dir() and not d.name.startswith("pipeline_")
+            and d.name.endswith(f"_{sid}")
+        )
+        if direct:
+            return direct
+
+    return []
+
+
+def _seed_pipeline_id(seed_session_id: Optional[str]) -> Optional[str]:
+    """If `seed_session_id` names an existing PIPELINE (its state.json exists), return that
+    pipeline's bare id — the signal to CONTINUE it in place (reuse its id + folder) rather than
+    mint a new pipeline. Returns None for a raw bucket seed or nothing, i.e. a normal new run.
+    Accepts the id bare or `pipeline_`-prefixed, mirroring _resolve_seed_buckets rule 1."""
+    if not seed_session_id or not seed_session_id.strip():
+        return None
+    bare = seed_session_id.strip()
+    bare = bare[len("pipeline_"):] if bare.startswith("pipeline_") else bare
+    return bare if pipeline.load_state(bare) is not None else None
 
 
 def _stage_bucket(src_dir: Path, dest_dir: Path) -> None:
@@ -818,6 +901,38 @@ def _apply_step_args(context: Optional[str], args: Optional[dict]) -> Optional[s
         return context
     directive = "Run parameters: " + ", ".join(f"{k}={v}" for k, v in args.items())
     return f"{directive}\n\n{context}" if context else directive
+
+
+def _kb_reference_for_step(
+    psess: pipeline.PipelineSession, i: int
+) -> tuple[Optional[str], bool, bool]:
+    """Decide how step `i` receives the upstream KB. Returns
+    (reference_kb, stage_prior, stage_seed):
+
+      - reference_kb — the CANONICAL outputs/mcp path to hand the skill as `kb=` and read
+        in place (never copied), or None to fall back to staging.
+      - stage_prior  — whether to copy the PRIOR step's output bucket into this step's inputs.
+      - stage_seed   — whether to copy the SEED bucket into this step's inputs.
+
+    The KB is passed by reference (no copy) for every NON-writeback pipeline, because the KB
+    it reads is always either the seed or a kb-builder step's output, and those consumers
+    (document-generator, config-agent, diagnose-bug) all accept a kb=<dir> at any path. The
+    WRITEBACK pipeline (apply-fixes) is the exception: it reads the KB from inputs= and mirrors
+    the changed files into output= for the harness to merge back, so it MUST get the KB staged.
+    A prior non-KB output (e.g. diagnose-bug's approval sheet) is always staged as before."""
+    stage_prior = i > 0
+    stage_seed = bool(psess.seed_result_id)
+    reference_kb: Optional[str] = None
+    if not psess.seed_writeback:
+        if psess.seed_result_id:  # seeded generation (document-from-kb / config-from-kb)
+            reference_kb = str(config.RESULTS_DIR / psess.seed_result_id)
+            stage_seed = False
+        elif i > 0 and psess.steps[i - 1] == "kb-builder":  # build-then-generate (document-agent…)
+            prior_rid = psess.step_result_ids.get(str(i - 1), "")
+            if prior_rid:
+                reference_kb = str(config.RESULTS_DIR / prior_rid)
+                stage_prior = False
+    return reference_kb, stage_prior, stage_seed
 
 
 async def _drive_pipeline(
@@ -863,47 +978,66 @@ async def _drive_pipeline(
                     f"Available: {', '.join(s['name'] for s in registry.list_skills(psess.tenant))}"
                 )
 
-            # Create a session for this step. In a SEEDED pipeline the final step writes
-            # back into the seed bucket in place (result_id override), so the refined
-            # deliverable persists under the seed's own session id; every other step gets
-            # a fresh bucket of its own.
-            is_writeback = bool(psess.seed_result_id) and i == len(psess.steps) - 1
-            sess = sessions.new_session(
-                entry["name"],
-                result_id=psess.seed_result_id if is_writeback else None,
+            # Create a session for this step. WRITEBACK (the final step promotes INTO the
+            # seed bucket in place) happens only for a pipeline that opted in via
+            # seed_writeback — a refinement flow like output-feedback, which mutates the seed
+            # and persists it under the seed's own session id. A seeded but non-writeback
+            # pipeline (document-from-kb, config-from-kb) stages the seed read-only and writes
+            # a fresh bucket, leaving the seed untouched.
+            is_writeback = (
+                bool(psess.seed_result_id) and psess.seed_writeback and i == len(psess.steps) - 1
             )
+            # Every non-writeback step lands in its OWN subfolder INSIDE this pipeline's
+            # folder — outputs/mcp/pipeline_<pid>/<NN>_<skill>/ — so one pipeline session's
+            # entire footprint (state.json plus every step's deliverable) lives under a single
+            # pipeline_<pid> root. The <NN> step-index prefix keeps the steps ordered and
+            # unique even if a skill repeats, and makes a resumed step overwrite its own folder
+            # in place rather than fork a new one. A writeback step is the sole exception: it
+            # promotes back into the SEED's own bucket (a KB from an earlier pipeline), refining
+            # it where it already lives. (result_id may contain a slash — both the sandbox
+            # output dir and the outputs/mcp bucket simply nest.)
+            step_result_id = (
+                psess.seed_result_id if is_writeback
+                else f"pipeline_{psess.id}/{psess.folder_offset + i:02d}_{entry['name']}"
+            )
+            sess = sessions.new_session(entry["name"], result_id=step_result_id)
             sess.api_key = psess.api_key
             sess.tenant = psess.tenant
             psess.current_skill_sess = sess
 
-            # Write inputs — step 0 gets the caller's files; later steps get the
-            # promoted output dir of the prior step copied into their inputs.
+            # Decide whether the upstream KB is REFERENCED (kb=<canonical path>, read in
+            # place) or STAGED (copied into inputs). Non-writeback pipelines reference it and
+            # never duplicate it; the writeback pipeline still stages it (apply-fixes needs it
+            # in inputs= to mirror changed files back). A prior NON-KB output is staged either
+            # way.
+            reference_kb, stage_prior, stage_seed = _kb_reference_for_step(psess, i)
+
+            # Write inputs. Step 0 gets the caller's uploaded files (into inputs/, or into
+            # inputs/generated/ in a seeded pipeline so the artifact under critique stays
+            # separate). A later step gets the prior step's output copied in UNLESS that output
+            # is the KB we chose to pass by reference. The seed is copied in only when it is
+            # NOT being referenced (i.e. the writeback pipeline).
             if i == 0:
                 if r2_keys and config.USE_R2:
                     sess.r2_keys.extend(r2_keys)
-                    # In a seeded (refinement) pipeline the seed fills inputs root, so
-                    # caller uploads — the artifact under critique — go into a dedicated
-                    # generated/ subdir to keep them separate from the seeded deliverable.
                     upload_dest = sess.inputs_dir / "generated" if psess.seed_result_id else sess.inputs_dir
                     upload_dest.mkdir(parents=True, exist_ok=True)
                     storage.download_inputs(r2_keys, upload_dest)
-            else:
+            elif stage_prior:
                 prior_result_id = psess.step_result_ids.get(str(i - 1), "")
                 _stage_bucket(config.RESULTS_DIR / prior_result_id, sess.inputs_dir)
 
-            # Seeded pipeline: stage the existing deliverable bucket (a KB, a skill, any
-            # prior output) into EVERY step's inputs. Threading only carries the PRIOR step's
-            # output, so a step that must READ the seed itself — not just what the step before
-            # it produced — needs it staged here directly.
-            if psess.seed_result_id:
+            if stage_seed:
                 _stage_bucket(config.RESULTS_DIR / psess.seed_result_id, sess.inputs_dir)
 
-            # Build the first message — pass context on every step so the skill knows the
-            # end goal, with this step's declared args (e.g. target=kb) folded in. URLs only
-            # on step 0 (they're reference inputs).
+            # Build the first message — pass context on every step so the skill knows the end
+            # goal, with this step's declared args (e.g. target=kb) folded in, and the KB by
+            # reference (kb=<canonical path>) when we chose not to copy it. URLs only on step 0.
             step_urls = urls if i == 0 else None
             step_context = _apply_step_args(context, psess.step_args.get(str(i)))
-            first_msg = engine.build_first_message(entry["folder"], sess, step_urls, step_context)
+            first_msg = engine.build_first_message(
+                entry["folder"], sess, step_urls, step_context, kb_path=reference_kb
+            )
 
             # Start the step driver
             sess.task = asyncio.create_task(_drive(sess, first_msg))
@@ -976,6 +1110,32 @@ async def _wait_for_change_pipeline(
         await asyncio.sleep(0.5)
 
 
+def _seed_pipeline_names() -> list[str]:
+    """Names of the seed-based (requires_seed) pipelines — the ones a finished run can be
+    continued INTO. Read live from pipelines.json so this never drifts from the config."""
+    return [p.get("name", "") for p in pipeline.load_pipelines() if p.get("requires_seed")]
+
+
+def _pipeline_continue_text(psess: pipeline.PipelineSession) -> str:
+    """Instruction for the model to hand the user a clean session id and the exact, correct way to
+    continue. The pipeline session id is the ONLY handle the user keeps — every underlying bucket
+    (the KB and each step's output) is recorded in the run's state.json and recovered from that id
+    server-side, so no other id is ever exposed. Continuation is ALWAYS via run_pipeline (run_skill
+    is not exposed); to build on a finished run, pass this same session id as `seed_session_id`
+    (NOT session_id — that only resumes an unfinished run of THIS pipeline)."""
+    seed_pipelines = _seed_pipeline_names()
+    seed_list = ", ".join(f"'{n}'" for n in seed_pipelines) or "the seed-based pipelines"
+    return (
+        f"This pipeline is finished. Give the user its session id explicitly: {psess.id}. That is "
+        f"the ONLY id they need to keep — the knowledge base and every step output are recoverable "
+        f"from it server-side. To build on this result, call run_pipeline again (run_skill is not "
+        f"available to the user) with a seed-based pipeline ({seed_list}; see run_pipeline's list "
+        f"for what each does) and pass THIS session id as `seed_session_id` — not session_id. The "
+        f"server resolves it to the knowledge base behind this run. Use session_id only to resume "
+        f"this pipeline while it is unfinished."
+    )
+
+
 def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
     """Serialise a PipelineSession into the response dict the client receives."""
     if psess.status == "need_input":
@@ -987,7 +1147,7 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
             "total_steps": len(psess.steps),
             "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
             "questions": psess.questions,
-            "next_step": RELAY_TEXT,
+            "next_step": PIPELINE_RELAY_TEXT,
         }
     if psess.status == "done":
         result = psess.result or {}
@@ -999,14 +1159,23 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
                 result = {**result, "download_urls": storage.output_urls(last_result_id, list(urls))}
             except Exception:  # noqa: BLE001
                 pass
+        delivery = DELIVERY_TEXT if has_links else "No download links produced."
         return {
             "status": "done",
-            "session_id": psess.id,
             "pipeline": psess.pipeline_name,
             "steps_completed": len(psess.steps),
             **result,
             **({"download_expires_in_seconds": config.R2_URL_EXPIRY} if has_links else {}),
-            "next_step": "Pipeline complete. " + (DELIVERY_TEXT if has_links else "No download links produced."),
+            # The pipeline session id is the one handle the user keeps; it comes AFTER **result so a
+            # step's own result dict can never shadow it. No step/bucket ids are exposed — they are
+            # recovered from this id server-side when a continuation seeds from it.
+            "session_id": psess.id,
+            "how_to_continue": _pipeline_continue_text(psess),
+            "next_step": (
+                "Pipeline complete. " + delivery
+                + " Then give the user the pipeline session_id and relay how_to_continue so they "
+                "know how to refine or reuse this result — all continuation is via run_pipeline."
+            ),
         }
     if psess.status == "error":
         failed = psess.failed_step
@@ -1034,7 +1203,7 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
         "total_steps": len(psess.steps),
         "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
         "progress": psess.progress or "starting…",
-        "next_step": POLL_TEXT,
+        "next_step": PIPELINE_POLL_TEXT,
     }
 
 
@@ -1146,9 +1315,22 @@ async def run_pipeline(
         "context": context,
         "seed_session_id": seed_session_id,
     }
-    psess = pipeline.new_pipeline_session(
-        matched, client_key, tenant, original_inputs, seed_result_id=seed_result_id
-    )
+    # Continue-in-place: when the seed is itself a PIPELINE (not a bare bucket), this run
+    # APPENDS to that pipeline — reusing its id as the poll handle and dropping the new
+    # deliverable into the same pipeline_<id>/ folder next to the KB it is generated from,
+    # instead of minting a fresh top-level pipeline. Any other seed (a raw bucket) still
+    # starts a new pipeline that merely references the seed.
+    seed_pid = _seed_pipeline_id(seed_session_id)
+    if seed_pid:
+        base_state = pipeline.load_state(seed_pid)
+        psess = pipeline.new_appended_session(
+            seed_pid, base_state, matched, seed_result_id,
+            client_key, tenant, original_inputs,
+        )
+    else:
+        psess = pipeline.new_pipeline_session(
+            matched, client_key, tenant, original_inputs, seed_result_id=seed_result_id
+        )
     psess.task = asyncio.create_task(
         _drive_pipeline(psess, r2_keys, urls, context)
     )

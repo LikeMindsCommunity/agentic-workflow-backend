@@ -10,8 +10,13 @@
 # `claude --permission-mode bypassPermissions`, which refuses to run as root.
 #
 # Build:  docker build -t likeminds-mcp .
-# Run:    docker run --rm -p 8787:8787 --env-file .env --shm-size=1g likeminds-mcp
+# Run:    docker run --rm -p 8787:8787 --env-file .env --shm-size=1g \
+#             -v mcp_outputs:/app/outputs likeminds-mcp
 #         (--shm-size is important — headless Chromium crashes on Docker's default 64M)
+#         (-v mcp_outputs:/app/outputs keeps generated deliverables across rebuilds:
+#          a NAMED volume survives `--rm` and every `docker build`, so re-building the
+#          image never loses outputs. Only `docker volume rm mcp_outputs` clears it.
+#          docker-compose wires the same volume up automatically — see docker-compose.yml.)
 
 FROM python:3.13-slim-bookworm
 
@@ -64,6 +69,16 @@ RUN useradd -m -u 1000 appuser \
     && chown -R appuser:appuser /app
 USER appuser
 ENV HOME=/home/appuser
+
+# ── Persistent output volume ─────────────────────────────────────────────────────
+# Generated deliverables land in /app/outputs (RESULTS_DIR = /app/outputs/mcp).
+# Declaring it a VOLUME keeps that data OFF the container's writable layer, so it is
+# NOT thrown away when the container is removed or the image is rebuilt. Back it with a
+# named volume at run time (`-v mcp_outputs:/app/outputs`, or docker-compose's
+# `mcp_outputs`) and the deliverables persist across `docker build` runs. /app/outputs
+# is created and chowned to appuser above, so a fresh volume is seeded with the right
+# ownership on first run.
+VOLUME /app/outputs
 
 # ── Runtime config ─────────────────────────────────────────────────────────────
 # Bind on all interfaces so the container is reachable. Auth (CLAUDE_TOKEN or

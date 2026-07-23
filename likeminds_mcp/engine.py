@@ -79,6 +79,7 @@ def build_first_message(
     context: str | None,
     continued: bool = False,
     seeded: list[str] | None = None,
+    kb_path: str | None = None,
 ) -> str:
     """The message that seeds the skill. Asks the model to use the named Agent Skill
     (`.claude/skills/<name>/SKILL.md`) and passes inputs=/output= so the harness can
@@ -91,13 +92,30 @@ def build_first_message(
     silently resumes someone else's work. So: `continued` means the engine already copied
     that session's deliverable into the output directory — read and extend it in place.
     Otherwise this is a fresh run, and the skill's own resume branches are overridden;
-    prior output found lying around is not adopted, it is asked about (see HARNESS)."""
+    prior output found lying around is not adopted, it is asked about (see HARNESS).
+
+    `kb_path` (pipelines only) hands the skill its knowledge base BY REFERENCE — the
+    canonical outputs/mcp path where an earlier step (or the seed) already built it —
+    instead of copying it into this step's inputs. The subprocess runs at the project
+    root so it reads the KB in place; nothing is duplicated and the KB is never modified.
+    Emitted as a `kb=` edge (the contract every KB-consuming skill already reads), with a
+    note carving it out of the FRESH-RUN 'do not adopt earlier output' caution."""
     lines = [f"Use the {skill} skill."]
     lines.append(f"inputs={sess.inputs_dir}")
     lines.append(f"output={sess.output_dir}")
+    if kb_path:
+        lines.append(f"kb={kb_path}")
     if urls:
         lines.append("Reference URLs: " + " ".join(str(u) for u in urls))
     msg = "\n".join(lines)
+    if kb_path:
+        msg += (
+            f"\n\nThe kb= path above is this run's knowledge base, already built and living "
+            f"at that canonical location. Read it there DIRECTLY — it is a provided input for "
+            f"this run, not stray output: do NOT copy it into your inputs or output, and do "
+            f"NOT modify it. (For this one path, this overrides the 'do not adopt earlier "
+            f"output' caution below.)"
+        )
     if continued:
         listing = ", ".join(seeded) if seeded else "the files already present there"
         msg += (

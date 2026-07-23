@@ -41,7 +41,16 @@ class PipelineSession:
     api_key: str | None
     tenant: str | None
     step_args: dict[str, dict] = field(default_factory=dict)  # str(step_index) → per-step args, e.g. {"target": "kb"}
-    seed_result_id: str | None = None  # existing outputs/mcp bucket staged into every step; last step writes back to it
+    seed_result_id: str | None = None  # existing outputs/mcp bucket staged (read-only) into every step
+    seed_writeback: bool = False     # True → the final step writes back INTO seed_result_id in place (refine, e.g. output-feedback); False → the seed is staged read-only and the final step writes a FRESH bucket (generate-from-seed, e.g. document-from-kb / config-from-kb)
+    # Continue-in-place: when a run is SEEDED BY A PIPELINE id, it reuses that pipeline's id
+    # and folder instead of minting a new one. Its steps keep their own 0-based indices (so
+    # threading / writeback / KB-reference are unchanged), but their output folders are shifted
+    # by folder_offset so they land AFTER the reused pipeline's existing steps, and save_state
+    # persists the CUMULATIVE pipeline (base_state + this run) so pipeline_<id>/state.json is the
+    # one growing record. folder_offset == 0 (the default) is an ordinary first-of-its-kind run.
+    folder_offset: int = 0
+    base_state: dict | None = None
     status: str = "running"          # running | need_input | done | error
     progress: str = ""
     questions: list = field(default_factory=list)
@@ -102,9 +111,12 @@ def new_pipeline_session(
     """Create and register a new PipelineSession.
 
     `seed_result_id` (optional) names an existing deliverable bucket under outputs/mcp/
-    that the driver stages into every step's inputs and that the final step writes back to
-    in place — used by refinement pipelines (e.g. kb-feedback) to change an existing
-    deliverable, whatever it is, and persist it under its own session id."""
+    that the driver stages (read-only) into every step's inputs. Whether the final step
+    then writes its output BACK into that same bucket in place is decided by the pipeline's
+    own `seed_writeback` flag: refinement pipelines (e.g. output-feedback) set it and mutate
+    the seed in place, while generate-from-seed pipelines (e.g. document-from-kb,
+    config-from-kb) leave it unset so the seed stays untouched and the deliverable lands in
+    a fresh bucket of its own."""
     import time
     sid = str(uuid.uuid4())
     steps, step_args = _parse_steps(pipeline["steps"])
@@ -114,6 +126,7 @@ def new_pipeline_session(
         steps=steps,
         step_args=step_args,
         seed_result_id=seed_result_id,
+        seed_writeback=bool(pipeline.get("seed_writeback")),
         current_step=0,
         failed_step=-1,
         step_result_ids={},
@@ -125,6 +138,52 @@ def new_pipeline_session(
         started_at=time.time(),
     )
     _PIPELINE_SESSIONS[sid] = psess
+    return psess
+
+
+def new_appended_session(
+    pipeline_id: str,
+    base_state: dict,
+    new_pipeline: dict,
+    kb_bucket: str | None,
+    api_key: str | None,
+    tenant: str | None,
+    original_inputs: dict,
+) -> "PipelineSession":
+    """Create a run that CONTINUES an existing pipeline `pipeline_id` in place, rather than
+    minting a new top-level pipeline. Used when a seeded run is pointed at a PIPELINE id: the
+    caller keeps that one id as their poll handle, and the new deliverable lands inside the
+    same `pipeline_<id>/` folder next to the KB it was generated from.
+
+    The new pipeline's steps run as their OWN 0-based sequence (threading, writeback and
+    KB-reference logic are all unchanged), but `folder_offset` shifts their output folders to
+    start after the reused pipeline's existing steps, so `<NN>_<skill>` indices never collide.
+    `kb_bucket` is the reused pipeline's KB, referenced (or, for a writeback pipeline, written
+    back) by the appended steps. `base_state` is the reused pipeline's persisted state, kept so
+    save_state can persist the cumulative pipeline. This registration REPLACES the finished
+    original session under the same id so a poll on `pipeline_id` follows the new run."""
+    import time
+    steps, step_args = _parse_steps(new_pipeline["steps"])
+    psess = PipelineSession(
+        id=pipeline_id,
+        pipeline_name=new_pipeline["name"],
+        steps=steps,
+        step_args=step_args,
+        seed_result_id=kb_bucket,
+        seed_writeback=bool(new_pipeline.get("seed_writeback")),
+        folder_offset=len(base_state.get("steps") or []),
+        base_state=base_state,
+        current_step=0,
+        failed_step=-1,
+        step_result_ids={},
+        step_registered_skills={},
+        original_inputs=original_inputs,
+        api_key=api_key,
+        tenant=tenant,
+        reply_event=asyncio.Event(),
+        started_at=time.time(),
+    )
+    _PIPELINE_SESSIONS[pipeline_id] = psess
     return psess
 
 
@@ -158,6 +217,7 @@ def restore_pipeline_session(
         steps=state["steps"],
         step_args=state.get("step_args", {}),
         seed_result_id=state.get("seed_result_id"),
+        seed_writeback=state.get("seed_writeback", False),
         current_step=state.get("failed_step", 0),  # resume from the failed step
         failed_step=-1,
         step_result_ids=state.get("step_result_ids", {}),
@@ -185,18 +245,51 @@ def _state_path(session_id: str) -> Path:
 
 
 def save_state(psess: "PipelineSession") -> None:
-    """Persist pipeline progress to disk. Called after each step and on failure."""
+    """Persist pipeline progress to disk. Called after each step and on failure.
+
+    For a continue-in-place run (folder_offset > 0) the CUMULATIVE pipeline is written —
+    the reused pipeline's steps plus this run's, with this run's own 0-based indices mapped
+    to their offset positions — so pipeline_<id>/state.json stays the single growing record
+    (and _kb_bucket_from_pipeline still finds the KB at index 0)."""
     path = _state_path(psess.id)
     path.parent.mkdir(parents=True, exist_ok=True)
+
+    steps = psess.steps
+    step_args = psess.step_args
+    step_result_ids = psess.step_result_ids
+    step_registered_skills = psess.step_registered_skills
+    current_step = psess.current_step
+    failed_step = psess.failed_step
+
+    if psess.folder_offset and psess.base_state is not None:
+        off = psess.folder_offset
+        base = psess.base_state
+
+        def _merge(base_map: dict, own_map: dict) -> dict:
+            merged = dict(base_map or {})
+            for k, v in (own_map or {}).items():
+                merged[str(off + int(k))] = v
+            return merged
+
+        steps = list(base.get("steps") or []) + list(psess.steps)
+        step_args = _merge(base.get("step_args") or {}, psess.step_args)
+        step_result_ids = _merge(base.get("step_result_ids") or {}, psess.step_result_ids)
+        step_registered_skills = _merge(
+            base.get("step_registered_skills") or {}, psess.step_registered_skills
+        )
+        current_step = off + psess.current_step
+        failed_step = off + psess.failed_step if psess.failed_step >= 0 else -1
+
     state = {
         "pipeline_name": psess.pipeline_name,
-        "steps": psess.steps,
-        "step_args": psess.step_args,
+        "steps": steps,
+        "step_args": step_args,
         "seed_result_id": psess.seed_result_id,
-        "current_step": psess.current_step,
-        "failed_step": psess.failed_step,
-        "step_result_ids": psess.step_result_ids,
-        "step_registered_skills": psess.step_registered_skills,
+        "seed_writeback": psess.seed_writeback,
+        "current_step": current_step,
+        "failed_step": failed_step,
+        "step_result_ids": step_result_ids,
+        "step_registered_skills": step_registered_skills,
         "original_inputs": {
             k: v for k, v in psess.original_inputs.items()
             if k != "r2_keys"  # don't persist R2 keys — they expire
@@ -225,12 +318,14 @@ Run a multi-step skill pipeline by picking a pipeline name from the list below.
 
 First call: pass `pipeline_name` (e.g. "config-generator") and your files via
 `r2_keys` (from get_upload_url) or `urls`. `context` is free-form instructions
-passed to every step. For a pipeline that REFINES an existing deliverable rather
-than building one from uploads (e.g. "kb-feedback"), also pass `seed_session_id`
-— the session id of the earlier run whose output is being changed (a KB today, a
-generated skill or any other prior deliverable tomorrow). The server stages that
-bucket into every step and writes the result back into it in place. The server
-runs each skill in sequence and threads outputs automatically between steps.
+passed to every step. For a seed-based pipeline — one that REFINES or BUILDS ON an
+earlier run's output rather than starting from uploads (e.g. "output-feedback",
+"document-from-kb") — also pass `seed_session_id`: the PIPELINE SESSION ID that the
+earlier run reported on completion. That one id is enough — the server recovers the
+underlying deliverable bucket (the KB, or any other prior output) from that run's
+saved state, stages it into the pipeline, and (for a write-back pipeline) writes the
+result back into it in place. The server runs each skill in sequence and threads
+outputs automatically between steps.
 
 {pipeline_block}
 
@@ -247,8 +342,12 @@ again with the same `session_id` + `pipeline_name` to resume from the failed
 step — completed steps are NOT re-run, so only the failed step and anything
 after it is retried.
 
-On `done`: `download_urls` maps each result filename to a presigned download URL.
-Render each as a clickable link for the user.\
+On `done`: `download_urls` maps each result filename to a presigned download URL —
+render each as a clickable link for the user. Also give the user the `session_id`
+(the pipeline session id) explicitly and relay `how_to_continue`: it is the only id
+they need to keep, and the way to refine or reuse this result is another run_pipeline
+call that passes this same id as `seed_session_id`. Do not surface any internal bucket
+or step ids — they are recovered from the pipeline session id server-side.\
 """
 
 
