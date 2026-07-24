@@ -1,4 +1,4 @@
-"""FastMCP server: the client-facing tools `run_skill`, `get_upload_url`, `list_skills`.
+"""FastMCP server: the client-facing tools `run_skill`, `run_pipeline`, `get_upload_url`, `list_skills`.
 
 Execution model — background asyncio task + long-poll (avoids the client's MCP
 idle timeout). A skill turn can run for minutes, far longer than the client's
@@ -40,7 +40,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, db, engine, oauth, registry, sessions, slack, storage
+from . import config, db, engine, oauth, pipeline, registry, sessions, slack, storage
 
 # Load .env when this module is imported directly. The `python -m likeminds_mcp`
 # entrypoint also loads it before importing config, so R2 / other computed constants
@@ -132,11 +132,10 @@ RELAY_TEXT = (
     "Show these question(s) to the user verbatim and wait for their reply. They may "
     "answer, or reply 'done' to stop and finish with whatever is complete. Then call "
     "run_skill again with this session_id and their `response`. To attach a file "
-    "with the answer: if you have a real local path use `input_paths`; if you can "
-    "make HTTP requests call get_upload_url first, PUT the file to the returned "
+    "with the answer: call get_upload_url first, PUT the file to the returned "
     "upload_url, then pass the r2_key in `r2_keys`; if you cannot make HTTP requests "
-    "(Claude Desktop / claude.ai chat) call upload_file(name, content) and pass the "
-    "returned r2_key in `r2_keys` on the SAME run_skill call. Do NOT answer the question yourself."
+    "(Claude Desktop / claude.ai chat) pass the text inline via `artifacts` "
+    "[{name, content}] on the SAME run_skill call. Do NOT answer the question yourself."
 )
 POLL_TEXT = (
     "Still working. Tell the user the current `progress` and `files_written`, then "
@@ -161,6 +160,24 @@ DELIVERY_TEXT = (
     "as plain text, never replace an artifact with a summary of it, and never tell the user "
     "to go find it on the server. Say that the links expire in "
     "`download_expires_in_seconds` and that they should re-run to get fresh ones after that."
+)
+
+# run_pipeline is the ONLY tool exposed to end users (run_skill is internal plumbing), so every
+# pipeline-facing instruction names run_pipeline — never run_skill. Answering a question or polling
+# must pass ONLY session_id (a pipeline_name on those calls would trigger a RESUME of the saved
+# pipeline instead of forwarding the reply), so these say so explicitly.
+PIPELINE_RELAY_TEXT = (
+    "Show these question(s) to the user verbatim and wait for their reply. They may answer, or "
+    "reply 'done' to stop and finish with whatever is complete. Then call run_pipeline again with "
+    "ONLY this session_id and their `response` — do NOT pass pipeline_name (that would restart the "
+    "pipeline instead of delivering the answer). To attach a file with the answer: call "
+    "get_upload_url first, PUT the file to the returned upload_url, then pass the r2_key in "
+    "`r2_keys` on the same run_pipeline call. Do NOT answer the question yourself."
+)
+PIPELINE_POLL_TEXT = (
+    "Still working. Tell the user the current `progress`, then call run_pipeline again with ONLY "
+    "this session_id (no other arguments) to keep polling. This is normal long-running progress, "
+    "not an error. Repeat until status is 'need_input' or 'done'."
 )
 
 
@@ -385,7 +402,9 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
             if config.USE_R2 and sess.r2_keys:
                 storage.delete_inputs(sess.r2_keys)
 
-            # Auto-register any generated skills (e.g. from a document-generator run).
+            # Auto-register any generated skills. No skill shipped in this repo emits one
+            # today — document-generator and find-bugs both read their KB at run time now —
+            # so this path is currently unexercised, but it stays for caller-authored skills.
             # Registration installs a private, tenant-scoped COPY under .claude/skills;
             # it does not consume the harvest. Everything the run produced — a compiled
             # SKILL.md, its assets, a KB, a document — is still the caller's artifact and
@@ -511,9 +530,6 @@ async def _start_continuation(
     session_id: str,
     client_key: Optional[str],
     tenant: Optional[str],
-    artifacts: Optional[list],
-    files: Optional[list],
-    input_paths: Optional[list],
     r2_keys: Optional[list],
     urls: Optional[list],
     context: Optional[str],
@@ -545,10 +561,6 @@ async def _start_continuation(
     sess.tenant = tenant       # ownership + private-skill registration scope
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
-    # Stage any NEW inputs the caller attached alongside the continuation request.
-    engine._write_artifacts(sess.inputs_dir, artifacts)
-    engine._write_artifacts(sess.inputs_dir, files)
-    _copy_input_paths(sess.inputs_dir, input_paths)
     if config.USE_R2:
         storage.download_inputs(r2_keys, sess.inputs_dir)
     # Seed the prior deliverable into the output dir so the skill continues in place.
@@ -564,18 +576,6 @@ async def _start_continuation(
 # ----------------------------------------------------------------------------- #
 # Inputs plumbing
 # ----------------------------------------------------------------------------- #
-
-def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
-    """Copy local files (incl. binaries) into the session inputs dir.
-    Only works when the server and client share the same filesystem (local use)."""
-    copied: list[str] = []
-    for p in paths or []:
-        src = Path(str(p)).expanduser()
-        if src.is_file():
-            shutil.copy2(src, inputs_dir / src.name)
-            copied.append(src.name)
-    return copied
-
 
 # ----------------------------------------------------------------------------- #
 # Per-request BYOK — the caller's Anthropic key, read fresh from the request header
@@ -658,11 +658,9 @@ async def get_upload_url(filename: str) -> dict:
 
     This uploads directly from the client to R2 — the server never holds
     the file bytes in memory. The upload URL is valid for 5 minutes.
-    For plain text content you can skip this and use run_skill's `artifacts`
-    parameter directly instead.
     """
     if not config.USE_R2:
-        return {"error": "R2 is not configured on this server. Use `artifacts` for text content."}
+        return {"error": "R2 is not configured on this server. Upload files via upload_file instead."}
     upload_url, r2_key = storage.presigned_put_url(filename)
     return {
         "upload_url": upload_url,
@@ -672,51 +670,13 @@ async def get_upload_url(filename: str) -> dict:
 
 
 @mcp.tool()
-async def upload_file(name: str, content: str, encoding: str = "utf-8") -> dict:
-    """Upload a text file to R2 storage by passing its content directly (for Claude
-    Desktop and claude.ai chat clients that cannot make HTTP PUT requests).
-
-    Content is written as UTF-8 text. Binary files (PDF, DOCX, images) are not
-    accepted here — call get_upload_url and PUT the raw bytes to the returned URL.
-
-    `encoding` is kept solely to reject the retired base64 path out loud. Dropping the
-    parameter is not enough: MCP clients cache tool schemas, so one that still advertises
-    encoding="base64" goes on sending it, and an unknown argument is silently discarded
-    rather than refused — which would store the base64 *text* as the file. That lands a
-    plausibly-named, corrupt document in R2 and the skill then runs against it.
-
-    Returns {r2_key, name, bytes}. Pass r2_key to run_skill via the `r2_keys`
-    parameter on the same or a subsequent call.
-
-    For Claude Code CLI clients that can run curl, prefer get_upload_url instead
-    (it uploads directly to R2 without passing bytes through the server).
-    """
-    if not config.USE_R2:
-        return {"error": "R2 is not configured on this server. Cannot upload file."}
-    if encoding.strip().lower() not in ("utf-8", "utf8", "text", "plain", ""):
-        return {"error": (
-            f"encoding={encoding!r} is no longer supported — upload_file takes UTF-8 text "
-            "only. For a binary file (PDF, DOCX, image) call get_upload_url and HTTP PUT "
-            "the raw bytes to the returned upload_url, then pass the r2_key to run_skill. "
-            "Do not send a text extract of a binary file instead."
-        )}
-    clean = Path(name).name or "upload.txt"
-    data = content.encode("utf-8")
-    r2_key = storage.upload_bytes(clean, data)
-    return {"r2_key": r2_key, "name": clean, "bytes": len(data)}
-
-
-@mcp.tool()
 async def run_skill(
     skill: Optional[str] = None,
-    artifacts: Optional[list] = None,
-    input_paths: Optional[list] = None,
     r2_keys: Optional[list] = None,
     urls: Optional[list] = None,
     context: Optional[str] = None,
     session_id: Optional[str] = None,
     response: Optional[str] = None,
-    files: Optional[list] = None,
     ctx: Optional[Context] = None,
 ) -> dict:
     """Run any LikeMinds skill (background job + poll).
@@ -724,12 +684,10 @@ async def run_skill(
     First call: provide `skill` (any name from `list_skills`, e.g. 'kb-builder',
     'config-agent', 'setup-document-generator') and its inputs. `context` says WHAT to do
     (a prompt / SOW / instructions). Ways to supply files:
-    - `r2_keys`     — R2 keys from get_upload_url (preferred for all file types).
+    - `r2_keys`     — R2 keys from get_upload_url or upload_file (required for all files).
                       Call get_upload_url first, PUT the file to the returned
                       upload_url, then pass the r2_key here.
-    - `input_paths` — absolute local paths (only works when client and server share
-                      the same filesystem, e.g. Claude Code CLI on the same machine).
-    - `artifacts` / `files` — inline text content [{name, content}] for small text.
+    - `urls`        — public URLs to fetch as inputs.
     You get back `status: "running"` with a `session_id`.
 
     Then POLL: call again with ONLY that `session_id` (no other args). Keep polling
@@ -768,7 +726,7 @@ async def run_skill(
     if skill and session_id:
         return await _start_continuation(
             skill, session_id, client_key, tenant,
-            artifacts, files, input_paths, r2_keys, urls, context,
+            r2_keys, urls, context,
         )
 
     if session_id:
@@ -792,16 +750,13 @@ async def run_skill(
         # session_id (or an empty response) is just a poll — it must NOT finish the
         # run. Only deliver a reply while the skill is actually waiting for one.
         has_answer = bool(
-            (response and response.strip()) or files or input_paths or artifacts or r2_keys
+            (response and response.strip()) or r2_keys
         )
         if has_answer and sess.status == "need_input":
             if r2_keys and config.USE_R2:
                 sess.r2_keys.extend(r2_keys)
             added = (
-                engine._write_artifacts(sess.inputs_dir, artifacts)
-                + engine._write_artifacts(sess.inputs_dir, files)
-                + _copy_input_paths(sess.inputs_dir, input_paths)
-                + (storage.download_inputs(r2_keys, sess.inputs_dir) if config.USE_R2 else [])
+                storage.download_inputs(r2_keys, sess.inputs_dir) if config.USE_R2 else []
             )
             _deliver_reply(sess, engine.build_reply_message(response, added))
         await _wait_for_change(sess)
@@ -829,15 +784,573 @@ async def run_skill(
     sess.tenant = tenant       # ownership + private-skill registration scope
     if r2_keys and config.USE_R2:
         sess.r2_keys.extend(r2_keys)
-    engine._write_artifacts(sess.inputs_dir, artifacts)
-    engine._write_artifacts(sess.inputs_dir, files)
-    _copy_input_paths(sess.inputs_dir, input_paths)
     if config.USE_R2:
         storage.download_inputs(r2_keys, sess.inputs_dir)
     first_message = engine.build_first_message(entry["folder"], sess, urls, context)
     sess.task = asyncio.create_task(_drive(sess, first_message))
     await _wait_for_change(sess)
     return _snapshot(sess)
+
+
+# ----------------------------------------------------------------------------- #
+# Pipeline orchestration — multi-step skill chains
+# ----------------------------------------------------------------------------- #
+
+def _kb_bucket_from_pipeline(pipeline_session_id: str) -> Optional[str]:
+    """Given a PIPELINE session id, return the bucket id of the knowledge base that run produced
+    (or used), read from that pipeline's persisted state.json. This is what lets the user hold ONE
+    id — the pipeline session id — and still seed a continuation: the individual step buckets are
+    recorded in state, so the KB the run built is recoverable from the pipeline id alone.
+
+    The KB is the reusable artifact a seed-based pipeline consumes, so we resolve to it specifically
+    (seeding every step bucket would drag the generated document into the KB inputs). Preference:
+    the kb-builder step's output; then the KB a seeded pipeline carried in; then the last step's
+    output as a last resort."""
+    state = pipeline.load_state(pipeline_session_id)
+    if not state:
+        return None
+    steps = state.get("steps") or []
+    step_result_ids = state.get("step_result_ids") or {}
+
+    def _live(rid: Optional[str]) -> Optional[str]:
+        return rid if rid and (config.RESULTS_DIR / rid).is_dir() else None
+
+    for i, name in enumerate(steps):  # the KB is produced by the kb-builder step, by convention
+        if name == "kb-builder" and _live(step_result_ids.get(str(i))):
+            return step_result_ids[str(i)]
+    if _live(state.get("seed_result_id")):  # a seeded pipeline (e.g. document-from-kb) carried the KB in
+        return state["seed_result_id"]
+    if steps and _live(step_result_ids.get(str(len(steps) - 1))):
+        return step_result_ids[str(len(steps) - 1)]
+    return None
+
+
+def _resolve_seed_buckets(seed_session_id: Optional[str]) -> list[str]:
+    """Resolve a caller-supplied id to existing deliverable bucket NAME(s) under outputs/mcp/ —
+    SKILL-AGNOSTIC, so the seed can be a KB today, a generated skill or any other prior deliverable
+    tomorrow. Resolution order (most-specific first):
+      1. a PIPELINE session id (the handle a finished run reports), bare or `pipeline_`-prefixed →
+         the reusable bucket (the KB) recorded in that pipeline's state.json. Resolved FIRST, and
+         it maps to the KB STEP's own subfolder (`pipeline_<pid>/<NN>_kb-builder`), NEVER to the
+         `pipeline_<pid>` ROOT — the root also holds state.json and every other step's output, so
+         staging it would drag the whole run (and any generated document) into the next step.
+      2. an id/path that already names an existing bucket → [that] — covers a nested step path
+         (`pipeline_<pid>/<NN>_<skill>`) and a standalone `<skill>_<sid>` bucket.
+      3. a bare durable id `<sid>` → every standalone `<skill>_<sid>` bucket (usually exactly one).
+    `pipeline_*` folders are excluded from rule 3's scan: a pipeline id is handled by rule 1, and a
+    `pipeline_<pid>` state root ends with `_<pid>` so it would otherwise false-match a bare id.
+    Empty list means nothing matched; more than one (only possible at rule 3) means the bare id is
+    ambiguous and the caller must pass the full result_id."""
+    if not seed_session_id or not seed_session_id.strip():
+        return []
+    sid = seed_session_id.strip()
+
+    # 1. Pipeline session id → the KB bucket named in its state. A pipeline_<pid> folder always
+    # carries a state.json, and its presence is exactly what marks sid as a pipeline id (vs a
+    # plain bucket); resolve to the KB step's subfolder, never the pipeline root.
+    bare = sid[len("pipeline_"):] if sid.startswith("pipeline_") else sid
+    if pipeline.load_state(bare) is not None:
+        kb = _kb_bucket_from_pipeline(bare)
+        return [kb] if kb else []
+
+    # 2. An id/path that is itself an existing bucket (a nested step path, or a standalone bucket).
+    if (config.RESULTS_DIR / sid).is_dir():
+        return [sid]
+
+    # 3. A bare durable id → standalone <skill>_<sid> bucket(s); never a pipeline_* state root.
+    if config.RESULTS_DIR.is_dir():
+        direct = sorted(
+            d.name for d in config.RESULTS_DIR.iterdir()
+            if d.is_dir() and not d.name.startswith("pipeline_")
+            and d.name.endswith(f"_{sid}")
+        )
+        if direct:
+            return direct
+
+    return []
+
+
+def _seed_pipeline_id(seed_session_id: Optional[str]) -> Optional[str]:
+    """If `seed_session_id` names an existing PIPELINE (its state.json exists), return that
+    pipeline's bare id — the signal to CONTINUE it in place (reuse its id + folder) rather than
+    mint a new pipeline. Returns None for a raw bucket seed or nothing, i.e. a normal new run.
+    Accepts the id bare or `pipeline_`-prefixed, mirroring _resolve_seed_buckets rule 1."""
+    if not seed_session_id or not seed_session_id.strip():
+        return None
+    bare = seed_session_id.strip()
+    bare = bare[len("pipeline_"):] if bare.startswith("pipeline_") else bare
+    return bare if pipeline.load_state(bare) is not None else None
+
+
+def _stage_bucket(src_dir: Path, dest_dir: Path) -> None:
+    """Copy every file under an outputs/mcp bucket into a step's inputs dir, preserving
+    relative paths — used to seed an existing deliverable (e.g. a KB) into a pipeline step."""
+    if not src_dir.is_dir():
+        return
+    for src in sorted(src_dir.rglob("*")):
+        if src.is_file():
+            dest = dest_dir / src.relative_to(src_dir)
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dest)
+
+
+def _apply_step_args(context: Optional[str], args: Optional[dict]) -> Optional[str]:
+    """Fold a pipeline step's declared args into the caller context as explicit key=value
+    run parameters, so a skill receives them the same way run_skill args would arrive."""
+    if not args:
+        return context
+    directive = "Run parameters: " + ", ".join(f"{k}={v}" for k, v in args.items())
+    return f"{directive}\n\n{context}" if context else directive
+
+
+def _kb_reference_for_step(
+    psess: pipeline.PipelineSession, i: int
+) -> tuple[Optional[str], bool, bool]:
+    """Decide how step `i` receives the upstream KB. Returns
+    (reference_kb, stage_prior, stage_seed):
+
+      - reference_kb — the CANONICAL outputs/mcp path to hand the skill as `kb=` and read
+        in place (never copied), or None to fall back to staging.
+      - stage_prior  — whether to copy the PRIOR step's output bucket into this step's inputs.
+      - stage_seed   — whether to copy the SEED bucket into this step's inputs.
+
+    The KB is passed by reference (no copy) for every NON-writeback pipeline, because the KB
+    it reads is always either the seed or a kb-builder step's output, and those consumers
+    (document-generator, config-agent, diagnose-bug) all accept a kb=<dir> at any path. The
+    WRITEBACK pipeline (apply-fixes) is the exception: it reads the KB from inputs= and mirrors
+    the changed files into output= for the harness to merge back, so it MUST get the KB staged.
+    A prior non-KB output (e.g. diagnose-bug's approval sheet) is always staged as before."""
+    stage_prior = i > 0
+    stage_seed = bool(psess.seed_result_id)
+    reference_kb: Optional[str] = None
+    if not psess.seed_writeback:
+        if psess.seed_result_id:  # seeded generation (document-from-kb / config-from-kb)
+            reference_kb = str(config.RESULTS_DIR / psess.seed_result_id)
+            stage_seed = False
+        elif i > 0 and psess.steps[i - 1] == "kb-builder":  # build-then-generate (document-agent…)
+            prior_rid = psess.step_result_ids.get(str(i - 1), "")
+            if prior_rid:
+                reference_kb = str(config.RESULTS_DIR / prior_rid)
+                stage_prior = False
+    return reference_kb, stage_prior, stage_seed
+
+
+async def _drive_pipeline(
+    psess: pipeline.PipelineSession,
+    r2_keys: Optional[list],
+    urls: Optional[list],
+    context: Optional[str],
+) -> None:
+    """Drive a pipeline step-by-step as a background task.
+
+    Each step is a regular skill run (_drive task). After each step's _drive task
+    finishes, the promoted output dir is threaded into the next step's inputs_dir.
+    Dynamic steps ({{generated_skill}}) are resolved from the prior step's
+    registered_skills. If any step goes need_input, the pipeline surfaces it to the
+    client and waits for a reply before forwarding it to the skill session.
+    """
+    import time as _time
+
+    try:
+        psess.reply_event = asyncio.Event()
+
+        for i in range(psess.current_step, len(psess.steps)):
+            step_name = psess.steps[i]
+
+            # Resolve dynamic step name from prior step's registered skills
+            if step_name == "{{generated_skill}}":
+                prior_registered = psess.step_registered_skills.get(str(i - 1), [])
+                if not prior_registered:
+                    raise RuntimeError(
+                        f"Step {i} is {{{{generated_skill}}}} but step {i - 1} "
+                        "registered no skill — cannot resolve the step name."
+                    )
+                step_name = prior_registered[0]
+                psess.steps[i] = step_name  # resolve in place for state persistence
+
+            psess.progress = f"Step {i + 1}/{len(psess.steps)}: {step_name}"
+
+            # Resolve the skill entry in the caller's tenant scope
+            entry = registry.resolve_skill(step_name, psess.tenant)
+            if entry is None:
+                raise RuntimeError(
+                    f"Step {i + 1} skill '{step_name}' not found. "
+                    f"Available: {', '.join(s['name'] for s in registry.list_skills(psess.tenant))}"
+                )
+
+            # Create a session for this step. WRITEBACK (the final step promotes INTO the
+            # seed bucket in place) happens only for a pipeline that opted in via
+            # seed_writeback — a refinement flow like output-feedback, which mutates the seed
+            # and persists it under the seed's own session id. A seeded but non-writeback
+            # pipeline (document-from-kb, config-from-kb) stages the seed read-only and writes
+            # a fresh bucket, leaving the seed untouched.
+            is_writeback = (
+                bool(psess.seed_result_id) and psess.seed_writeback and i == len(psess.steps) - 1
+            )
+            # Every non-writeback step lands in its OWN subfolder INSIDE this pipeline's
+            # folder — outputs/mcp/pipeline_<pid>/<NN>_<skill>/ — so one pipeline session's
+            # entire footprint (state.json plus every step's deliverable) lives under a single
+            # pipeline_<pid> root. The <NN> step-index prefix keeps the steps ordered and
+            # unique even if a skill repeats, and makes a resumed step overwrite its own folder
+            # in place rather than fork a new one. A writeback step is the sole exception: it
+            # promotes back into the SEED's own bucket (a KB from an earlier pipeline), refining
+            # it where it already lives. (result_id may contain a slash — both the sandbox
+            # output dir and the outputs/mcp bucket simply nest.)
+            step_result_id = (
+                psess.seed_result_id if is_writeback
+                else f"pipeline_{psess.id}/{psess.folder_offset + i:02d}_{entry['name']}"
+            )
+            sess = sessions.new_session(entry["name"], result_id=step_result_id)
+            sess.api_key = psess.api_key
+            sess.tenant = psess.tenant
+            psess.current_skill_sess = sess
+
+            # Decide whether the upstream KB is REFERENCED (kb=<canonical path>, read in
+            # place) or STAGED (copied into inputs). Non-writeback pipelines reference it and
+            # never duplicate it; the writeback pipeline still stages it (apply-fixes needs it
+            # in inputs= to mirror changed files back). A prior NON-KB output is staged either
+            # way.
+            reference_kb, stage_prior, stage_seed = _kb_reference_for_step(psess, i)
+
+            # Write inputs. Step 0 gets the caller's uploaded files (into inputs/, or into
+            # inputs/generated/ in a seeded pipeline so the artifact under critique stays
+            # separate). A later step gets the prior step's output copied in UNLESS that output
+            # is the KB we chose to pass by reference. The seed is copied in only when it is
+            # NOT being referenced (i.e. the writeback pipeline).
+            if i == 0:
+                if r2_keys and config.USE_R2:
+                    sess.r2_keys.extend(r2_keys)
+                    upload_dest = sess.inputs_dir / "generated" if psess.seed_result_id else sess.inputs_dir
+                    upload_dest.mkdir(parents=True, exist_ok=True)
+                    storage.download_inputs(r2_keys, upload_dest)
+            elif stage_prior:
+                prior_result_id = psess.step_result_ids.get(str(i - 1), "")
+                _stage_bucket(config.RESULTS_DIR / prior_result_id, sess.inputs_dir)
+
+            if stage_seed:
+                _stage_bucket(config.RESULTS_DIR / psess.seed_result_id, sess.inputs_dir)
+
+            # Build the first message — pass context on every step so the skill knows the end
+            # goal, with this step's declared args (e.g. target=kb) folded in, and the KB by
+            # reference (kb=<canonical path>) when we chose not to copy it. URLs only on step 0.
+            step_urls = urls if i == 0 else None
+            step_context = _apply_step_args(context, psess.step_args.get(str(i)))
+            first_msg = engine.build_first_message(
+                entry["folder"], sess, step_urls, step_context, kb_path=reference_kb
+            )
+
+            # Start the step driver
+            sess.task = asyncio.create_task(_drive(sess, first_msg))
+            pipeline.save_state(psess)
+
+            # Monitor the step until it finishes, surfacing need_input to the client
+            while not sess.finished:
+                psess.progress = (
+                    f"Step {i + 1}/{len(psess.steps)}: {step_name} — {sess.progress}"
+                )
+
+                if sess.status == "need_input" and psess.status != "need_input":
+                    psess.questions = sess.questions
+                    psess.status = "need_input"
+                    # Wait for the pipeline client to answer
+                    try:
+                        await asyncio.wait_for(
+                            psess.reply_event.wait(), timeout=config.REPLY_TIMEOUT
+                        )
+                    except asyncio.TimeoutError:
+                        sess.task.cancel()
+                        raise RuntimeError(
+                            f"No reply within {config.REPLY_TIMEOUT}s; pipeline closed."
+                        )
+                    psess.reply_event.clear()
+                    psess.status = "running"
+                    # Forward the reply to the skill session so _drive resumes
+                    _deliver_reply(sess, engine.build_reply_message(psess.pending_reply, []))
+
+                await asyncio.sleep(0.5)
+
+            if sess.status == "error":
+                psess.failed_step = i
+                pipeline.save_state(psess)
+                raise RuntimeError(
+                    f"Step {i + 1}/{len(psess.steps)} ({step_name}) failed: {sess.error}"
+                )
+
+            # Step done — record result_id and registered skills for next step
+            psess.step_result_ids[str(i)] = sess.result_id
+            psess.step_registered_skills[str(i)] = (sess.result or {}).get(
+                "registered_skills", []
+            )
+            psess.current_step = i + 1
+            pipeline.save_state(psess)
+
+        # All steps done — expose last step's result as the pipeline result
+        last = psess.current_skill_sess
+        psess.result = (last.result or {}) if last else {}
+        psess.status = "done"
+
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001
+        psess.status = "error"
+        psess.error = f"{type(e).__name__}: {e}"
+        pipeline.save_state(psess)
+    finally:
+        psess.finished = True
+        psess.finished_at = _time.time()
+
+
+async def _wait_for_change_pipeline(
+    psess: pipeline.PipelineSession, seconds: int = POLL_WAIT
+) -> None:
+    """Long-poll for a pipeline session: wait until status leaves 'running'."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while psess.status == "running" and loop.time() < deadline:
+        await asyncio.sleep(0.5)
+
+
+def _seed_pipeline_names() -> list[str]:
+    """Names of the seed-based (requires_seed) pipelines — the ones a finished run can be
+    continued INTO. Read live from pipelines.json so this never drifts from the config."""
+    return [p.get("name", "") for p in pipeline.load_pipelines() if p.get("requires_seed")]
+
+
+def _pipeline_continue_text(psess: pipeline.PipelineSession) -> str:
+    """Instruction for the model to hand the user a clean session id and the exact, correct way to
+    continue. The pipeline session id is the ONLY handle the user keeps — every underlying bucket
+    (the KB and each step's output) is recorded in the run's state.json and recovered from that id
+    server-side, so no other id is ever exposed. Continuation is ALWAYS via run_pipeline (run_skill
+    is not exposed); to build on a finished run, pass this same session id as `seed_session_id`
+    (NOT session_id — that only resumes an unfinished run of THIS pipeline)."""
+    seed_pipelines = _seed_pipeline_names()
+    seed_list = ", ".join(f"'{n}'" for n in seed_pipelines) or "the seed-based pipelines"
+    return (
+        f"This pipeline is finished. Give the user its session id explicitly: {psess.id}. That is "
+        f"the ONLY id they need to keep — the knowledge base and every step output are recoverable "
+        f"from it server-side. To build on this result, call run_pipeline again (run_skill is not "
+        f"available to the user) with a seed-based pipeline ({seed_list}; see run_pipeline's list "
+        f"for what each does) and pass THIS session id as `seed_session_id` — not session_id. The "
+        f"server resolves it to the knowledge base behind this run. Use session_id only to resume "
+        f"this pipeline while it is unfinished."
+    )
+
+
+def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
+    """Serialise a PipelineSession into the response dict the client receives."""
+    if psess.status == "need_input":
+        return {
+            "status": "need_input",
+            "session_id": psess.id,
+            "pipeline": psess.pipeline_name,
+            "current_step": psess.current_step + 1,
+            "total_steps": len(psess.steps),
+            "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
+            "questions": psess.questions,
+            "next_step": PIPELINE_RELAY_TEXT,
+        }
+    if psess.status == "done":
+        result = psess.result or {}
+        urls = result.get("download_urls") or {}
+        has_links = bool(urls) and "_error" not in urls
+        if has_links and config.USE_R2:
+            try:
+                last_result_id = result.get("result_id", "")
+                result = {**result, "download_urls": storage.output_urls(last_result_id, list(urls))}
+            except Exception:  # noqa: BLE001
+                pass
+        delivery = DELIVERY_TEXT if has_links else "No download links produced."
+        return {
+            "status": "done",
+            "pipeline": psess.pipeline_name,
+            "steps_completed": len(psess.steps),
+            **result,
+            **({"download_expires_in_seconds": config.R2_URL_EXPIRY} if has_links else {}),
+            # The pipeline session id is the one handle the user keeps; it comes AFTER **result so a
+            # step's own result dict can never shadow it. No step/bucket ids are exposed — they are
+            # recovered from this id server-side when a continuation seeds from it.
+            "session_id": psess.id,
+            "how_to_continue": _pipeline_continue_text(psess),
+            "next_step": (
+                "Pipeline complete. " + delivery
+                + " Then give the user the pipeline session_id and relay how_to_continue so they "
+                "know how to refine or reuse this result — all continuation is via run_pipeline."
+            ),
+        }
+    if psess.status == "error":
+        failed = psess.failed_step
+        resume_hint = (
+            f" Call run_pipeline again with session_id='{psess.id}' and intent to resume "
+            f"from step {failed + 1} ({psess.steps[failed] if failed >= 0 and failed < len(psess.steps) else '?'}) "
+            "without re-running earlier steps."
+            if failed >= 0 else ""
+        )
+        return {
+            "status": "error",
+            "session_id": psess.id,
+            "pipeline": psess.pipeline_name,
+            "failed_step": failed + 1 if failed >= 0 else None,
+            "failed_step_name": psess.steps[failed] if 0 <= failed < len(psess.steps) else None,
+            "steps_completed": failed if failed >= 0 else psess.current_step,
+            "message": (psess.error or "unknown error") + resume_hint,
+        }
+    # running
+    return {
+        "status": "running",
+        "session_id": psess.id,
+        "pipeline": psess.pipeline_name,
+        "current_step": psess.current_step + 1,
+        "total_steps": len(psess.steps),
+        "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
+        "progress": psess.progress or "starting…",
+        "next_step": PIPELINE_POLL_TEXT,
+    }
+
+
+async def run_pipeline(
+    pipeline_name: Optional[str] = None,
+    context: Optional[str] = None,
+    r2_keys: Optional[list] = None,
+    urls: Optional[list] = None,
+    seed_session_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+    response: Optional[str] = None,
+    ctx: Optional[Context] = None,
+) -> dict:
+    client_key = _client_api_key(ctx)
+    tenant = await _resolve_tenant(ctx)
+
+    # POLL or ANSWER on an existing pipeline session
+    if session_id and not pipeline_name:
+        psess = pipeline.get_pipeline_session(session_id)
+        if psess is None:
+            # Not in memory — check disk for a resumable failed state
+            state = pipeline.load_state(session_id)
+            if state is None:
+                return {"status": "error", "message": f"Pipeline session '{session_id}' not found or expired."}
+            failed = state.get("failed_step", -1)
+            failed_name = state["steps"][failed] if 0 <= failed < len(state["steps"]) else "?"
+            return {
+                "status": "error",
+                "session_id": session_id,
+                "pipeline": state.get("pipeline_name"),
+                "failed_step": failed + 1 if failed >= 0 else None,
+                "failed_step_name": failed_name,
+                "steps_completed": failed if failed >= 0 else 0,
+                "message": (
+                    f"Pipeline failed at step {failed + 1} ({failed_name}). "
+                    f"Call run_pipeline with session_id='{session_id}' and pipeline_name to resume from that step."
+                ),
+            }
+
+        if client_key:
+            psess.api_key = client_key
+
+        if psess.status in ("done", "error"):
+            return _pipeline_snapshot(psess)
+
+        has_answer = bool((response and response.strip()) or r2_keys)
+        if has_answer and psess.status == "need_input":
+            psess.pending_reply = response or ""
+            skill_sess = psess.current_skill_sess
+            if skill_sess is not None:
+                if r2_keys and config.USE_R2:
+                    storage.download_inputs(r2_keys, skill_sess.inputs_dir)
+            psess.reply_event.set()
+
+        await _wait_for_change_pipeline(psess)
+        return _pipeline_snapshot(psess)
+
+    # RESUME: session_id + pipeline_name → restart from the failed step
+    if session_id and pipeline_name:
+        state = pipeline.load_state(session_id)
+        if state is None:
+            return {"status": "error", "message": f"No saved pipeline state for session_id '{session_id}'."}
+        new_inputs = {"r2_keys": r2_keys, "urls": urls, "context": context}
+        psess = pipeline.restore_pipeline_session(session_id, state, client_key, tenant, new_inputs)
+        psess.task = asyncio.create_task(
+            _drive_pipeline(psess, r2_keys, urls, context)
+        )
+        await _wait_for_change_pipeline(psess)
+        return _pipeline_snapshot(psess)
+
+    # FIRST CALL: pipeline_name required
+    if not pipeline_name:
+        available = [p["name"] for p in pipeline.load_pipelines()]
+        return {"status": "error", "message": (
+            "run_pipeline needs `pipeline_name` to start a pipeline, or `session_id` to poll/resume. "
+            f"Available pipelines: {', '.join(available) or 'none'}."
+        )}
+
+    matched = pipeline.find_pipeline(pipeline_name)
+    if matched is None:
+        available = [p["name"] for p in pipeline.load_pipelines()]
+        return {"status": "error", "message": (
+            f"Unknown pipeline '{pipeline_name}'. "
+            f"Available: {', '.join(available) or 'none'}."
+        )}
+
+    seed_matches = _resolve_seed_buckets(seed_session_id)
+    if seed_session_id and not seed_matches:
+        return {"status": "error", "message": (
+            f"No deliverable bucket found for seed_session_id='{seed_session_id}' under outputs/mcp/. "
+            "Pass the session id (or result id) of the earlier run whose output you want to refine."
+        )}
+    if len(seed_matches) > 1:
+        return {"status": "error", "message": (
+            f"seed_session_id='{seed_session_id}' is ambiguous — it matches several buckets "
+            f"({', '.join(seed_matches)}). Pass the full result id (one of those) instead."
+        )}
+    seed_result_id = seed_matches[0] if seed_matches else None
+    if matched.get("requires_seed") and not seed_result_id:
+        return {"status": "error", "message": (
+            f"Pipeline '{pipeline_name}' needs `seed_session_id` — the session id of the earlier run "
+            "whose output is being refined — so the server can stage it and write the changes back "
+            "into it in place. Pass seed_session_id and try again."
+        )}
+
+    original_inputs = {
+        "r2_keys": r2_keys or [],
+        "urls": urls or [],
+        "context": context,
+        "seed_session_id": seed_session_id,
+    }
+    # Continue-in-place: when the seed is itself a PIPELINE (not a bare bucket), this run
+    # APPENDS to that pipeline — reusing its id as the poll handle and dropping the new
+    # deliverable into the same pipeline_<id>/ folder next to the KB it is generated from,
+    # instead of minting a fresh top-level pipeline. Any other seed (a raw bucket) still
+    # starts a new pipeline that merely references the seed.
+    seed_pid = _seed_pipeline_id(seed_session_id)
+    if seed_pid:
+        base_state = pipeline.load_state(seed_pid)
+        psess = pipeline.new_appended_session(
+            seed_pid, base_state, matched, seed_result_id,
+            client_key, tenant, original_inputs,
+        )
+    else:
+        psess = pipeline.new_pipeline_session(
+            matched, client_key, tenant, original_inputs, seed_result_id=seed_result_id
+        )
+    psess.task = asyncio.create_task(
+        _drive_pipeline(psess, r2_keys, urls, context)
+    )
+    await _wait_for_change_pipeline(psess)
+    return _pipeline_snapshot(psess)
+
+
+# Set the docstring BEFORE mcp.tool() decorates so FastMCP registers the live description.
+run_pipeline.__doc__ = pipeline.build_run_pipeline_doc()
+run_pipeline = mcp.tool()(run_pipeline)
+
+
+@mcp.tool()
+async def list_pipelines(ctx: Optional[Context] = None) -> dict:
+    """Return the configured pipelines with their names, descriptions, steps, and trigger phrases.
+
+    Read this before calling run_pipeline so you know what pipelines exist and what
+    kind of intent each one matches."""
+    pipelines = pipeline.load_pipelines()
+    return {"pipelines": pipelines}
 
 
 @mcp.tool()

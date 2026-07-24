@@ -24,9 +24,8 @@ agentic-workflow-backend/
 │   │   ├── code-agent/               #   KB + SOW → integration code, wired into your repo
 │   │   ├── api-agent/                #   KB + SOW → LLD / execution document
 │   │   ├── runner-agent/             #   execute an LLD live (HTTP calls or browser actions)
-│   │   ├── create-document-generator/ #   one call: artifacts → KB → per-client generator
-│   │   ├── document-generator/       #   compile a per-client document generator from a KB + one sample
-│   │   ├── generate-find-bugs-skill/ #   KB → a per-client find-bugs-{client} checker skill
+│   │   ├── document-generator/       #   KB + MOM → the finished document (PDF or DOCX)
+│   │   ├── find-bugs/                #   KB + generated + expected → comparison sheet
 │   │   ├── diagnose-bug/             #   validate a bug report → PENDING row in the approval sheet
 │   │   ├── process-comparison/       #   approved comparison findings → approval sheet (with RCA)
 │   │   └── apply-fixes/              #   apply APPROVED fixes to source + one git commit
@@ -219,31 +218,39 @@ runner-agent lld=outputs/getstream/lld/feed.md               ->  live run + run 
 
 ### Document generators
 
-#### `create-document-generator` — one call: KB + compiled generator
+The same `kb-builder` → agent split as everywhere else in this repo: one builds the KB once,
+the other reads it on every run. Nothing is compiled, so improving the KB improves every
+document from that point on.
 
-The one-time entry point. Runs `kb-builder` then `document-generator` in a single session:
-builds (or extends) the client KB from raw artifacts, then compiles a reusable
-`generate-<client>-<doctype>` skill from that KB plus one sample document. After it finishes,
-call the generated skill with a MOM/brief to produce each document.
+```
+# once per team
+kb-builder         inputs=<reference docs>/ client=acme     ->  outputs/acme/kb/
+
+# once per document
+document-generator kb=outputs/acme/kb/ mom=inputs/contoso-call.md
+                                                            ->  outputs/acme/documents/
+```
+
+`kb-builder` measures the format from the team's reference document — pixel-sampling the
+palette, typography, page geometry and table styles — and bundles that document plus its
+assets into the KB, so the generator has both the numbers and the diff target at run time.
+Per-deal briefs handed in alongside the references are set aside, never ingested.
+
+#### `document-generator` — KB + MOM → the finished document
+
+Reads a team's KB plus a MOM/brief for one deal and writes the finished document in that
+team's measured format. Every format fact — palette, typography, page geometry, table
+styles, heading strings, boilerplate, section and render order, flowchart vocabulary —
+is read from the KB as measured, never re-derived. Delivers PDF or DOCX, asking which
+unless the KB policy or the request already says, and either draws the flow diagrams or
+leaves marked placeholders, asking the same way. Verifies the result page by page against
+the reference the KB bundles.
 
 |              |                                                                                                     |
 | ------------ | --------------------------------------------------------------------------------------------------- |
-| **Triggers** | *"set up a document generator for {client}"*, *"onboard {client} from these artifacts"*             |
-| **Inputs**   | `inputs=<artifacts dir>` · `sample=<format-reference doc>` · optional `customer` / `prompt`         |
-| **Output**   | the client KB + a reusable `generate-<client>-<doctype>` skill                                      |
-
-#### `document-generator` — compile a per-client document skill
-
-Reads an organisation's KB plus **one sample document** (a SOW, BRD, HLD, proposal, or any
-structured deliverable, used as a pixel-level visual format reference) and writes a
-self-contained skill that turns a new MOM/brief into a complete document matching the
-sample's exact format.
-
-
-|              |                                                                                                     |
-| ------------ | --------------------------------------------------------------------------------------------------- |
-| **Triggers** | *"build a document generator for {customer}"*, *"compile a document skill from this KB and sample"* |
-| **Output**   | a new `.claude/skills/generate-<customer>-<doc-type>/` skill                                        |
+| **Triggers** | *"generate the SOW for {recipient} from this KB and brief"*, *"draft the BRD as a Word doc"*        |
+| **Inputs**   | `kb=<dir>` · `mom=<brief>` · optional `format=pdf\|docx` / `diagrams=draw\|placeholder` / `output`  |
+| **Output**   | `<recipient>_<DOC_TYPE>.<pdf\|docx>` under `outputs/{client}/documents/`                            |
 
 
 ### Automated bug-fix loop
@@ -254,10 +261,10 @@ under `outputs/{client}/`; project context (file index, architecture layers,
 constraints) is read from a `CLAUDE.md` in the **target** project.
 
 ```
-generate-find-bugs-skill ─► find-bugs-{client} ─► outputs/{client}/comparisons/*.md
-   (once, from the KB)         (compare gen vs expected)          │
-                                                                  ▼  (review, mark APPROVED)
-bug report ─► diagnose-bug ─┐                          process-comparison  (RCA)
+find-bugs ─────────────────────────────────► outputs/{client}/comparisons/*.md
+  (KB + generated + expected, every run)              │
+                                                      ▼  (review, mark APPROVED)
+bug report ─► diagnose-bug ─┐              process-comparison  (RCA)
                             └────────────►  outputs/{client}/approval_sheet.md
                                                          │  (review, mark APPROVED)
                                                          ▼
@@ -265,13 +272,16 @@ bug report ─► diagnose-bug ─┐                          process-compariso
 ```
 
 
-| Skill                            | Role                                                           | Writes                                         |
-| -------------------------------- | -------------------------------------------------------------- | ---------------------------------------------- |
-| `generate-find-bugs-skill`       | Compile a per-client generated-vs-expected checker from the KB | `.claude/skills/find-bugs-{client}/SKILL.md`   |
-| *find-bugs-{client}* (generated) | Compare a generated file against an expected file              | `outputs/{client}/comparisons/<name>.md`       |
-| `process-comparison`             | Root-cause the APPROVED comparison items and propose fixes     | `outputs/{client}/approval_sheet.md` (PENDING) |
-| `diagnose-bug`                   | Validate one or more bug reports and propose fixes             | `outputs/{client}/approval_sheet.md` (PENDING) |
-| `apply-fixes`                    | Apply every APPROVED row to source and commit                  | source files + one git commit                  |
+| Skill                | Role                                                        | Writes                                         |
+| -------------------- | ----------------------------------------------------------- | ---------------------------------------------- |
+| `find-bugs`          | Compare a generated file against an expected one, judged by the KB | `outputs/{client}/comparisons/<name>.md` |
+| `process-comparison` | Root-cause the APPROVED comparison items and propose fixes  | `outputs/{client}/approval_sheet.md` (PENDING) |
+| `diagnose-bug`       | Validate one or more bug reports and propose fixes          | `outputs/{client}/approval_sheet.md` (PENDING) |
+| `apply-fixes`        | Apply every APPROVED row to source and commit               | source files + one git commit                  |
+
+`find-bugs` reads the KB on every run rather than being compiled per client, so a constraint
+kb-builder added yesterday is checked today. A frozen checker would keep reporting *"all check
+classes ran to completion"* against rules it had never seen — clean, authoritative, and wrong.
 
 
 Only `apply-fixes` edits source or touches git; `diagnose-bug` and `process-comparison`
@@ -422,8 +432,7 @@ To have jobs bill to **your own** Anthropic key instead of the server's creds, a
 | Tool             | What it does                                                                                                                                                 |
 | ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | `run_skill`      | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file — including a compiled skill and its KB, which are also installed server-side. |
-| `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. Use for Claude Code / any client that can make HTTP requests. PUT the file to `upload_url`, then pass `r2_key` to `run_skill` via `r2_keys`. |
-| `upload_file`    | Upload file content through the server to R2. Returns `{r2_key, name, bytes}`. Use for Claude Desktop and claude.ai chat (no HTTP client available). Pass `r2_key` to `run_skill` via `r2_keys`. |
+| `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. The only path for binary files. PUT the file to `upload_url`, then pass `r2_key` to `run_skill` via `r2_keys`. |
 | `list_skills`    | List every Agent Skill the server can run.                                                                                                                   |
 
 
@@ -431,10 +440,9 @@ To have jobs bill to **your own** Anthropic key instead of the server's creds, a
 
 | Method | Best for | How |
 | --- | --- | --- |
-| `get_upload_url` + HTTP PUT → `r2_keys` | Claude Code CLI (can run `curl`) | Call `get_upload_url(filename)`, PUT file bytes to `upload_url`, pass `r2_key` in `run_skill(r2_keys=[…])` |
-| `upload_file(name, content)` → `r2_keys` | Claude Desktop, claude.ai chat (no HTTP client), **text only** | Call `upload_file(name, content)`, pass returned `r2_key` in `run_skill(r2_keys=[…])` |
+| `get_upload_url` + HTTP PUT → `r2_keys` | Any client that can make HTTP requests; **the only way to send binary** (PDF, DOCX, images) | Call `get_upload_url(filename)`, PUT file bytes to `upload_url`, pass `r2_key` in `run_skill(r2_keys=[…])` |
+| `artifacts` / `files` | Text content, any client — including ones with no HTTP client (Claude Desktop, claude.ai chat) | Inline `[{name, content}]` — no R2 needed |
 | `input_paths` | Claude Code on the **same machine** as the server | Pass absolute local paths; server copies them into the session |
-| `artifacts` / `files` | Any client, small text content only | Inline `[{name, content}]` — no R2 needed |
 
 **`run_skill` protocol:**
 
@@ -503,8 +511,8 @@ the `done` snapshot. The session sandbox and its Claude Code transcript are then
 
 | Module        | Responsibility                                                                                                     |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `server.py`   | FastMCP HTTP server + 4 tools (`run_skill`, `get_upload_url`, `upload_file`, `list_skills`); background driver `_drive`; output harvest/promote; auth config; long-poll. |
-| `storage.py`  | Cloudflare R2 integration: presigned PUT URLs for direct client uploads, server-side `upload_bytes`, `download_inputs` into session sandbox, `upload_outputs` after `<<<LM_DONE>>>`. |
+| `server.py`   | FastMCP HTTP server + 3 tools (`run_skill`, `get_upload_url`, `list_skills`); background driver `_drive`; output harvest/promote; auth config; long-poll. |
+| `storage.py`  | Cloudflare R2 integration: presigned PUT URLs for direct client uploads, `download_inputs` into session sandbox, `upload_outputs` after `<<<LM_DONE>>>`. |
 | `engine.py`   | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
 | `harness.py`  | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
 | `sessions.py` | Lightweight in-process session records + sandbox/transcript purge + record GC.                                     |
@@ -688,7 +696,7 @@ Server env vars (put persistent ones in `.env`):
 | `R2_ENDPOINT`                 | R2 account endpoint (`https://<account_id>.r2.cloudflarestorage.com`)                 |                                                       |
 | `R2_URL_EXPIRY`               | Presigned GET URL TTL for output downloads, seconds                                    | `3600` (1 hour)                                       |
 
-**R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` and `upload_file` return an error, and `run_skill` does not return `download_urls`. Deliverables are still written to `outputs/mcp/<result_id>/` on the server.
+**R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` returns an error, and `run_skill` does not return `download_urls`. Deliverables are still written to `outputs/mcp/<result_id>/` on the server.
 
 ### Slack notifications
 
@@ -732,9 +740,8 @@ To run the server on a remote machine so any client can reach it:
 3. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
 
 # Claude Desktop / claude.ai chat (no HTTP client) — text only
-1. upload_file("file.txt", "<content>") → {r2_key, …}
+1. run_skill(skill="kb-builder", artifacts=[{"name":"file.txt","content":"…"}], context="…")
    # binary (PDF, DOCX, images) must go through get_upload_url + PUT
-2. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
 ```
 
 **Output delivery:**
@@ -762,10 +769,12 @@ default 1 hour); re-poll the same `session_id` to mint fresh ones. When R2 is no
 or its upload fails — no links are produced and `next_step` instead points at the server-side
 copy under `outputs/mcp/<result_id>/`.
 
-**Every produced file is delivered**, whatever the run was. A compile run (e.g.
-`create-document-generator`) both installs the skill — reported in `registered_skills` — and
-returns download links for the generated `SKILL.md`, its bundled assets, and every KB file it
-wrote. Registration is in addition to delivery, never instead of it: nothing a run produces
-stays server-side-only.
+**Every produced file is delivered**, whatever the run was — a KB, a config, a document, a
+comparison sheet. Should a run ever emit a skill, it is both installed — reported in
+`registered_skills` — and returned as download links; registration is in addition to delivery,
+never instead of it, so nothing a run produces stays server-side-only. No skill shipped in this
+repo emits skills today: the two that did (`document-generator`, and the former
+`generate-find-bugs-skill`, now `find-bugs`) were both converted to read their KB at run time
+instead, so that path is currently unexercised.
 
 

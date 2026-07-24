@@ -37,17 +37,6 @@ def _client():
 # INPUT: presigned PUT URL for direct client → R2 upload
 # --------------------------------------------------------------------------- #
 
-def upload_bytes(filename: str, data: bytes) -> str:
-    """Upload raw bytes directly to R2 from the server and return the r2_key.
-    Used by upload_file tool — bytes pass through the server but are not stored
-    in memory beyond this call.
-    """
-    clean = Path(filename).name or "upload.bin"
-    r2_key = f"{_INPUT_PREFIX}/{uuid.uuid4().hex}/{clean}"
-    _client().put_object(Bucket=config.R2_BUCKET, Key=r2_key, Body=data)
-    return r2_key
-
-
 def presigned_put_url(filename: str) -> tuple[str, str]:
     """Generate a presigned PUT URL for a client to upload a file directly to R2.
 
