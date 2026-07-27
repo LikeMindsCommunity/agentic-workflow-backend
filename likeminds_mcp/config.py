@@ -58,7 +58,7 @@ API_KEY_HEADER = os.environ.get("LIKEMINDS_MCP_KEY_HEADER", "x-api-key").strip()
 # A user logs in at /login (email OTP) and gets back a STABLE token — their Mongo
 # user _id — which their MCP client then sends on EVERY request in this header. The
 # server maps the token to a tenant, so custom skills a tenant creates are visible
-# only to that tenant (list_skills / run_skill are filtered by it). This is ORTHOGONAL
+# only to that tenant (pipeline steps are scoped to it). This is ORTHOGONAL
 # to API_KEY_HEADER: the api-key header selects who PAYS for inference; this header
 # selects WHO YOU ARE. A request with no (or an unverified) token is treated as
 # anonymous — it sees only the shared built-in skills and can't install private ones.
@@ -85,8 +85,8 @@ GUPSHUP_OTP_URL = os.environ.get(
 )
 
 # ─── Global skill kill-switch ────────────────────────────────────────────────
-# A JSON file listing skills disabled for EVERYONE — hidden from BOTH list_skills and
-# run_skill (so a disabled skill can be neither listed nor run, by any tenant). Shape:
+# A JSON file listing skills disabled for EVERYONE — hidden from the pipeline driver
+# so a disabled skill cannot be run by any tenant. Shape:
 # {"disabled": ["skill-name", ...]}. Read fresh per call, so toggling needs no restart.
 # LIKEMINDS_MCP_DISABLED_SKILLS is an optional comma-separated env override, merged in.
 DISABLED_SKILLS_FILE = Path(

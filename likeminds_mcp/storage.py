@@ -42,7 +42,7 @@ def presigned_put_url(filename: str) -> tuple[str, str]:
 
     Returns (upload_url, r2_key).
       - upload_url: HTTP PUT target; client uploads raw file bytes here.
-      - r2_key: opaque key to pass back via run_skill's `r2_keys` parameter.
+      - r2_key: opaque key to pass back via run_pipeline's `r2_keys` parameter.
     URL is valid for 5 minutes.
     """
     clean = Path(filename).name or "upload.bin"
