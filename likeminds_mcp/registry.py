@@ -15,9 +15,8 @@ On top of that a GLOBAL kill-switch (config.DISABLED_SKILLS_FILE / _ENV) hides n
 skills from BOTH listing and resolution, so a disabled skill can be neither listed nor
 run by anyone.
 
-The dispatch tool validates a requested skill against this index (passing the caller's
-tenant); `list_skills` returns the tenant-scoped catalog. Adding a built-in is still
-just dropping a folder here — no code change.
+The pipeline driver validates each step's skill against this index (passing the caller's
+tenant). Adding a built-in is still just dropping a folder here — no code change.
 """
 
 from __future__ import annotations

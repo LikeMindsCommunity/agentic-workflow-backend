@@ -210,7 +210,7 @@ _PAGE = r"""<!doctype html>
         <pre id="cli"></pre>
       </div>
 
-      <p class="hint">Sends header <code>__HEADER__</code> on every request. Run <b>list_skills</b> to confirm you're signed in.</p>
+      <p class="hint">Sends header <code>__HEADER__</code> on every request. Run <b>list_pipelines</b> to confirm you're signed in.</p>
     </div>
   </div>
 

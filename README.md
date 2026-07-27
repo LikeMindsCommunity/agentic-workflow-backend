@@ -299,10 +299,10 @@ apply-fixes client=acme
 
 ## Local MCP server
 
-Exposes **every** skill in `.claude/skills/` behind a single `run_skill` tool over
-local HTTP, so a Claude client — or the regular Claude chat — can invoke any skill and
-answer its runtime questions through pause/resume round-trips, **without ever seeing the
-skill prompt**. Each turn runs server-side as a fresh `claude -p` subprocess
+Exposes **pipelines** defined in `.claude/pipelines.json` via `run_pipeline` over local
+HTTP, so a Claude client (Claude Code or Claude Desktop) can run multi-step skill chains
+and answer their runtime questions through pause/resume round-trips, **without ever seeing
+the skill prompts**. Each turn runs server-side as a fresh `claude -p` subprocess
 (resume-per-turn); Claude Code's own on-disk session store carries state between turns,
 so nothing is parked in memory while a human answers.
 
@@ -426,63 +426,180 @@ To have jobs bill to **your own** Anthropic key instead of the server's creds, a
 `--header` arg to `args` (e.g. `"--header", "x-api-key:${ANTHROPIC_KEY}"` with the key in
 `env`) — see **Per-request BYOK** above.
 
+### Triggering pipelines
+
+Prefix any message with `@likeminds` to invoke the LikeMinds MCP server. Claude will
+call `list_pipelines` to discover available pipelines and their trigger phrases, then
+call `run_pipeline` with the right pipeline for your intent.
+
+```
+@likeminds build a knowledge base from these files
+@likeminds generate a SOW from these reference documents
+@likeminds the document you produced was wrong, fix it for next time
+```
+
 ### Tools exposed
 
+| Tool             | What it does |
+| ---------------- | ------------ |
+| `list_pipelines` | Returns all available pipelines with names, descriptions, steps, and trigger phrases. Always called before `run_pipeline` to pick the right pipeline. |
+| `run_pipeline`   | Runs a named pipeline (sequence of skills). Returns `running` / `need_input` / `done`; poll with `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file. |
+| `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. PUT file bytes to `upload_url`, then pass `r2_key` to `run_pipeline` via `r2_keys`. |
 
-| Tool             | What it does                                                                                                                                                 |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `run_skill`      | Run any `.claude/` skill. Returns `running` / `need_input` / `done`; poll or answer with the returned `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file — including a compiled skill and its KB, which are also installed server-side. |
-| `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. The only path for binary files. PUT the file to `upload_url`, then pass `r2_key` to `run_skill` via `r2_keys`. |
-| `list_skills`    | List every Agent Skill the server can run.                                                                                                                   |
+### Pipeline flows
 
-
-**Passing files to a skill — choose by client type:**
-
-| Method | Best for | How |
-| --- | --- | --- |
-| `get_upload_url` + HTTP PUT → `r2_keys` | Any client that can make HTTP requests; **the only way to send binary** (PDF, DOCX, images) | Call `get_upload_url(filename)`, PUT file bytes to `upload_url`, pass `r2_key` in `run_skill(r2_keys=[…])` |
-| `artifacts` / `files` | Text content, any client — including ones with no HTTP client (Claude Desktop, claude.ai chat) | Inline `[{name, content}]` — no R2 needed |
-| `input_paths` | Claude Code on the **same machine** as the server | Pass absolute local paths; server copies them into the session |
-
-**`run_skill` protocol:**
+#### `build-kb` — build a knowledge base
 
 ```
-# First call — start the skill
-run_skill(skill, context?, r2_keys?, artifacts?, input_paths?, urls?) →
-  {status:"running",    session_id, progress, files_written, next_step}  # keep polling
+@likeminds build the KB
+@likeminds create a KB from these artifacts
+@likeminds onboard this client from these artifacts
 
-# Poll calls — ONLY session_id, no other args
-run_skill(session_id) →
-  {status:"running",    session_id, progress, files_written, next_step}  # keep polling
-  {status:"need_input", session_id, questions[], next_step}              # relay questions verbatim, wait for user reply
+list_pipelines()
+run_pipeline(pipeline_name="build-kb", r2_keys=[...], context="...")
+  └── 00_kb-builder
+        reads uploaded reference files
+        builds KB
+        saves to outputs/mcp/pipeline_<id>/00_kb-builder/
+→ done: KB files + session_id
+```
 
-# Answer call — session_id + response (optionally add r2_keys/artifacts/files for file attachments)
-run_skill(session_id, response, r2_keys?) →
+#### `document-agent` — build KB then generate document
+
+```
+@likeminds generate a SOW from these reference documents
+@likeminds create BRD from sample documents
+@likeminds generate a document end to end
+
+list_pipelines()
+run_pipeline(pipeline_name="document-agent", r2_keys=[...], context="...")
+  └── 00_kb-builder   → builds KB from reference files
+  └── 01_document-generator → reads KB, generates PDF or DOCX
+→ done: document + session_id
+```
+
+#### `document-from-kb` — generate document from existing KB
+
+Use when the KB was already built by an earlier run. Pass that run's `session_id` as
+`seed_session_id` — the server recovers the KB bucket from it automatically.
+
+```
+@likeminds generate another SOW from the same KB
+@likeminds the KB is ready, generate the document
+
+list_pipelines()
+run_pipeline(pipeline_name="document-from-kb", seed_session_id="<prior-session-id>",
+             r2_keys=[MOM/brief], context="...")
+  └── 00_document-generator
+        reads KB from seed (in place, no copy)
+        reads new MOM/brief from uploads
+        generates document
+→ done: document + session_id
+```
+
+#### `config-generator` — build KB then generate config
+
+```
+@likeminds generate config from these reference files
+@likeminds generate JSON config
+@likeminds build configuration file
+
+list_pipelines()
+run_pipeline(pipeline_name="config-generator", r2_keys=[...], context="...")
+  └── 00_kb-builder   → builds KB from reference files
+  └── 01_config-agent → reads KB, generates config (JSON/XML/YAML/NodeFlow)
+→ done: config file + session_id
+```
+
+#### `config-from-kb` — generate config from existing KB
+
+```
+@likeminds generate another config from the same KB
+@likeminds the KB is ready, generate the config
+
+list_pipelines()
+run_pipeline(pipeline_name="config-from-kb", seed_session_id="<prior-session-id>",
+             r2_keys=[brief], context="...")
+  └── 00_config-agent
+        reads KB from seed (in place, no copy)
+        reads new brief from uploads
+        generates config
+→ done: config file + session_id
+```
+
+#### `output-feedback` — fix the KB when a generated output was wrong
+
+Points at the run whose output was wrong via `seed_session_id`. Analyses the KB against
+the complaint, proposes amendments for human review, then writes the approved changes
+back into the KB in place. The next generation run picks up the improved KB automatically.
+
+```
+@likeminds the SOW you generated was wrong
+@likeminds the document you produced is off-brand or incomplete
+@likeminds fix whatever caused this bad output
+
+list_pipelines()
+run_pipeline(pipeline_name="output-feedback", seed_session_id="<prior-session-id>",
+             context="the SOW missed the pricing table and used the wrong brand colour")
+  └── 00_diagnose-bug (target=kb)
+        reads KB + complaint
+        proposes amendments → approval_sheet.md
+        ← need_input: "please review and approve these amendments"
+        (customer reviews, replies "approved")
+  └── 01_apply-fixes (target=kb)
+        applies approved amendments
+        writes updated KB back into seed bucket in place
+→ done: amended KB (same session_id — KB updated in place)
+```
+
+### `run_pipeline` protocol
+
+```
+# First call — start a pipeline
+run_pipeline(pipeline_name, context?, r2_keys?, urls?, seed_session_id?) →
+  {status:"running", session_id, current_step, total_steps, step_name, progress}
+
+# Poll — ONLY session_id, no other args
+run_pipeline(session_id) →
+  {status:"running",    session_id, current_step, total_steps, progress}
+  {status:"need_input", session_id, questions[], next_step}   # relay questions verbatim
+
+# Answer a need_input
+run_pipeline(session_id, response, r2_keys?) →
   {status:"running", …}   # resume polling
-  {status:"done",    result_id, summary:{files:[…]}, download_urls:{filename: presigned_url, …}}
-  {status:"expired"|"error", message}
+
+# Done
+→ {status:"done", session_id, download_urls:{filename: presigned_url, …},
+   how_to_continue, download_expires_in_seconds}
+
+# Resume a failed pipeline from the failed step
+run_pipeline(session_id, pipeline_name) →
+  resumes from failed_step, completed steps are not re-run
 ```
 
-**Receiving outputs:** When `status` is `done`, `download_urls` maps each output filename to a presigned R2 GET URL (valid 1 hour by default). The client fetches them directly from R2. A local copy also lands in `outputs/mcp/<result_id>/` on the server.
+**Receiving outputs:** On `done`, `download_urls` maps each output filename to a presigned
+R2 GET URL (valid 1 hour by default). A local copy also lands in
+`outputs/mcp/pipeline_<id>/` on the server. Save the `session_id` — pass it as
+`seed_session_id` on a future `run_pipeline` call to build on this run's output.
 
 ---
 
 ## How the MCP server works
 
-A local MCP server that lets a Claude client run a private `.claude/` skill **without
-seeing the skill's prompt** — the skill executes server-side inside a real `claude -p`
-process, pausing to ask the user questions and returning finished files by reference.
+A local MCP server that lets a Claude client run multi-step pipelines **without seeing
+the skill prompts** — each step executes server-side inside a real `claude -p` process,
+pausing to ask the user questions and returning finished files by reference.
 
 ```
-Claude client ──run_skill──▶  likeminds server  ──spawns──▶  claude -p  (runs the skill)
-      ▲                            │  (background task)          │
-      │◀──── poll / questions ─────┤                             │ reads inputs/, writes output/
-      │────── answers ─────────────▶  ──resume──▶  claude -p  ◀──┘
-      │◀──── download_urls (done) ──┘         (same session, next turn)
-                                          ▲           │
-              Cloudflare R2 ─────────────┘           │ upload_outputs → presigned GET URLs
-              (inputs PUT by client,                  ▼
-               downloaded into sandbox,    outputs/ uploaded → r2, sandbox purged
+Claude client ──run_pipeline──▶  likeminds server  ──spawns──▶  claude -p  (runs step N)
+      ▲                               │  (background task)           │
+      │◀──── poll / questions ────────┤                              │ reads inputs/, writes output/
+      │────── answers ────────────────▶  ──resume──▶  claude -p  ◀──┘
+      │◀──── download_urls (done) ─────┘         (same session, next turn)
+                                             ▲           │
+              Cloudflare R2 ────────────────┘           │ upload_outputs → presigned GET URLs
+              (inputs PUT by client,                     ▼
+               downloaded into sandbox,     outputs/ uploaded → r2, sandbox purged
                outputs uploaded on done)
 ```
 
@@ -511,7 +628,7 @@ the `done` snapshot. The session sandbox and its Claude Code transcript are then
 
 | Module        | Responsibility                                                                                                     |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `server.py`   | FastMCP HTTP server + 3 tools (`run_skill`, `get_upload_url`, `list_skills`); background driver `_drive`; output harvest/promote; auth config; long-poll. |
+| `server.py`   | FastMCP HTTP server + 3 tools (`run_pipeline`, `list_pipelines`, `get_upload_url`); background pipeline driver; output harvest/promote; auth config; long-poll. |
 | `storage.py`  | Cloudflare R2 integration: presigned PUT URLs for direct client uploads, `download_inputs` into session sandbox, `upload_outputs` after `<<<LM_DONE>>>`. |
 | `engine.py`   | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
 | `harness.py`  | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
@@ -533,9 +650,9 @@ the `done` snapshot. The session sandbox and its Claude Code transcript are then
             └──▶ error     (crash / turn timeout / nudged out)
 ```
 
-`run_skill` **long-polls**: each call waits up to `POLL_WAIT` (~4s) for the state to
-change, then returns a snapshot. The background `_drive` task owns the real work; the
-tool handlers only read `sess.`* state to answer polls.
+`run_pipeline` **long-polls**: each call waits up to `POLL_WAIT` (~4s) for the state to
+change, then returns a snapshot. The background `_drive_pipeline` task owns the real work;
+the tool handlers only read session state to answer polls.
 
 **Retention.** On every terminal path, `sessions.purge` deletes the sandbox
 (`.sessions/<uuid>`, the raw caller inputs) **and** best-effort deletes the Claude Code
@@ -587,16 +704,13 @@ BYOK `x-api-key` header: **`x-user-id` says who you are; `x-api-key` says who pa
 
 ### What isolation you get
 
-- `list_skills` and `run_skill` are **scoped to the caller's token**: the built-in
-  skills plus only that caller's own generated skills. Another user's custom skills are
-  never listed or runnable.
+- Pipeline steps are **scoped to the caller's token**: built-in skills plus only that
+  caller's own generated skills. Another user's custom skills are never accessible.
 - A generated skill is stored on the server as `<skill-name>__u_<token>` and
   auto-registered **only** for the tenant that created it (its `SKILL.md` name is
   rewritten to match, so the right tenant's copy always resolves even if two tenants
   pick the same skill name). An anonymous caller (no / unverified token) can still run
-  built-ins, but a skill it generates is only returned for download, never installed.
-  Registration is always a **copy**: the caller gets download links for the generated
-  `SKILL.md`, its assets, and every KB file either way.
+  built-in pipelines but generated skills stay private to their owner.
 - Isolation here is a **registry filter** — skills are co-located on disk and filtered
   by token — which is enough to keep tenants from seeing or running each other's skills.
 
@@ -607,8 +721,8 @@ login.
 
 ### Disabling a skill for everyone
 
-To hide a skill from **all** users — both `list_skills` and `run_skill` — add its name
-to `disabled_skills.json` at the project root:
+To hide a skill from **all** users — preventing it from being used in any pipeline — add
+its name to `disabled_skills.json` at the project root:
 
 ```json
 { "disabled": ["some-skill", "another-skill"] }
@@ -696,7 +810,7 @@ Server env vars (put persistent ones in `.env`):
 | `R2_ENDPOINT`                 | R2 account endpoint (`https://<account_id>.r2.cloudflarestorage.com`)                 |                                                       |
 | `R2_URL_EXPIRY`               | Presigned GET URL TTL for output downloads, seconds                                    | `3600` (1 hour)                                       |
 
-**R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` returns an error, and `run_skill` does not return `download_urls`. Deliverables are still written to `outputs/mcp/<result_id>/` on the server.
+**R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` returns an error, and `run_pipeline` does not return `download_urls`. Deliverables are still written to `outputs/mcp/pipeline_<id>/` on the server.
 
 ### Slack notifications
 
@@ -724,7 +838,7 @@ Notifications are fire-and-forget: a revoked webhook, a Slack outage, or a delet
 To run the server on a remote machine so any client can reach it:
 
 1. Set `LIKEMINDS_MCP_HOST=0.0.0.0` (or the specific bind IP) and `LIKEMINDS_MCP_PORT` in `.env`.
-2. Set all four `R2_*` variables. All file I/O goes through R2 — inputs are uploaded to R2 by the client before `run_skill` and downloaded into the session sandbox by the server; outputs are uploaded to R2 after `<<<LM_DONE>>>` and presigned GET URLs are returned to the client.
+2. Set all four `R2_*` variables. All file I/O goes through R2 — inputs are uploaded to R2 by the client before `run_pipeline` and downloaded into the session sandbox by the server; outputs are uploaded to R2 after `<<<LM_DONE>>>` and presigned GET URLs are returned to the client.
 3. Set `CLAUDE_TOKEN` (or log the CLI in on the server machine with `claude setup-token`).
 4. Start the server: `venv/bin/python -m likeminds_mcp`.
 5. Point clients at the public URL instead of `127.0.0.1:8787`:
@@ -734,47 +848,35 @@ To run the server on a remote machine so any client can reach it:
 **File input flow (remote clients):**
 
 ```
-# Claude Code (has curl)
-1. get_upload_url("file.pdf") → {upload_url, r2_key}
-2. curl -X PUT upload_url --data-binary @file.pdf
-3. run_skill(skill="kb-builder", r2_keys=["<r2_key>"], context="…")
+# Step 1 — upload files to R2
+get_upload_url("brief.pdf") → {upload_url, r2_key}
+curl -X PUT upload_url --data-binary @brief.pdf
 
-# Claude Desktop / claude.ai chat (no HTTP client) — text only
-1. run_skill(skill="kb-builder", artifacts=[{"name":"file.txt","content":"…"}], context="…")
-   # binary (PDF, DOCX, images) must go through get_upload_url + PUT
+# Step 2 — run the pipeline with the r2_key
+run_pipeline(pipeline_name="build-kb", r2_keys=["<r2_key>"], context="…")
 ```
 
 **Output delivery:**
 
 ```
-run_skill(session_id) →
-  {status:"done", result_id:"kb-builder_abc12345",
-   summary:{files:["kb.md","playbook.md"]},
+run_pipeline(session_id) →
+  {status:"done",
+   session_id: "abc12345",
    download_urls:{
-     "kb.md":      "https://<account>.r2.cloudflarestorage.com/outputs/…?X-Amz-Expires=3600&…",
-     "playbook.md":"https://…"
+     "01-overview.md": "https://<account>.r2.cloudflarestorage.com/outputs/…?X-Amz-Expires=3600&…",
+     "02-visual-style.md": "https://…"
    },
    download_expires_in_seconds: 3600,
-   next_step: "…deliver it, don't just mention it…"}
+   how_to_continue: "To generate a document from this KB, call run_pipeline with seed_session_id='abc12345'…"}
 ```
 
-`next_step` tells the calling client how to hand the files over: render each `download_urls`
-entry as a **clickable markdown link** labelled with the filename, so the user can download it
-straight from the chat — and, on clients with a filesystem (Claude Code / CLI), fetch and save
-each file locally as well and report the path. This is what makes a generated `SOW.pdf` arrive
-as a link in Claude chat / Cowork rather than a path the user cannot reach.
+Render each `download_urls` entry as a **clickable markdown link** labelled with the filename
+so the user can download it straight from the chat. Save the `session_id` — pass it as
+`seed_session_id` on a future `run_pipeline` call to build on this run's output without
+re-uploading files.
 
 The links are presigned and expire after `download_expires_in_seconds` (`R2_URL_EXPIRY`,
-default 1 hour); re-poll the same `session_id` to mint fresh ones. When R2 is not configured —
-or its upload fails — no links are produced and `next_step` instead points at the server-side
-copy under `outputs/mcp/<result_id>/`.
-
-**Every produced file is delivered**, whatever the run was — a KB, a config, a document, a
-comparison sheet. Should a run ever emit a skill, it is both installed — reported in
-`registered_skills` — and returned as download links; registration is in addition to delivery,
-never instead of it, so nothing a run produces stays server-side-only. No skill shipped in this
-repo emits skills today: the two that did (`document-generator`, and the former
-`generate-find-bugs-skill`, now `find-bugs`) were both converted to read their KB at run time
-instead, so that path is currently unexercised.
+default 1 hour); re-poll the same `session_id` to mint fresh ones. When R2 is not configured,
+deliverables land at `outputs/mcp/pipeline_<id>/` on the server.
 
 

@@ -314,68 +314,28 @@ def load_state(session_id: str) -> Optional[dict]:
 # --------------------------------------------------------------------------- #
 
 _PIPELINE_DOC_BODY = """\
-Run a multi-step skill pipeline by picking a pipeline name from the list below.
+Only invoke this tool when the user's message starts with @likeminds.
 
-First call: pass `pipeline_name` (e.g. "config-generator") and your files via
-`r2_keys` (from get_upload_url) or `urls`. `context` is free-form instructions
-passed to every step. For a seed-based pipeline — one that REFINES or BUILDS ON an
-earlier run's output rather than starting from uploads (e.g. "output-feedback",
-"document-from-kb") — also pass `seed_session_id`: the PIPELINE SESSION ID that the
-earlier run reported on completion. That one id is enough — the server recovers the
-underlying deliverable bucket (the KB, or any other prior output) from that run's
-saved state, stages it into the pipeline, and (for a write-back pipeline) writes the
-result back into it in place. The server runs each skill in sequence and threads
-outputs automatically between steps.
+Before calling: always call list_pipelines first to get the available pipelines
+and pick the right pipeline_name for the user's intent.
 
-{pipeline_block}
+First call: pass pipeline_name and files via r2_keys (from get_upload_url) or
+urls. context is free-form instructions passed to every step. For pipelines that
+build on an earlier run (e.g. document-from-kb, output-feedback), also pass
+seed_session_id — the pipeline session id the earlier run reported on completion.
 
-You get back `status: "running"` with a `session_id`, the current step name, and
-step number out of total.
+Then POLL: call again with ONLY session_id (no other args) until status is done
+or error. On need_input, relay the questions to the user verbatim, wait for their
+reply, then call again with session_id + response. Do NOT answer the questions yourself.
 
-Then POLL: call again with ONLY `session_id` (no other args) until status is
-`done` or `error`. On `need_input`, relay the questions to the user verbatim,
-wait for their reply, then call again with `session_id` + `response` and resume
-polling. Do NOT answer the questions yourself.
+On error: call again with the same session_id + pipeline_name to resume from the
+failed step — completed steps are not re-run.
 
-On `error`: the response includes `failed_step` and `failed_step_name`. Call
-again with the same `session_id` + `pipeline_name` to resume from the failed
-step — completed steps are NOT re-run, so only the failed step and anything
-after it is retried.
-
-On `done`: `download_urls` maps each result filename to a presigned download URL —
-render each as a clickable link for the user. Also give the user the `session_id`
-(the pipeline session id) explicitly and relay `how_to_continue`: it is the only id
-they need to keep, and the way to refine or reuse this result is another run_pipeline
-call that passes this same id as `seed_session_id`. Do not surface any internal bucket
-or step ids — they are recovered from the pipeline session id server-side.\
+On done: render every entry in download_urls as a clickable link for the user.
+Give the user the session_id explicitly and relay how_to_continue.\
 """
 
 
-def _format_pipeline_entry(p: dict) -> str:
-    name = p.get("name", "")
-    description = p.get("description", "")
-    steps = " -> ".join(_step_name(s) for s in p.get("steps", []))
-    triggers = ", ".join(f'"{t}"' for t in p.get("triggers", []))
-    return (
-        f"[{name}]\n"
-        f"  What it does: {description}\n"
-        f"  Steps: {steps}\n"
-        f"  Triggers (use any of these phrases in intent): {triggers}"
-    )
-
 
 def build_run_pipeline_doc() -> str:
-    """Build the run_pipeline docstring dynamically from pipelines.json.
-
-    Called once at server startup so FastMCP registers the up-to-date description.
-    Adding a new pipeline to .claude/pipelines.json + restarting the server is all
-    that is needed — no code change required.
-    """
-    pipelines = load_pipelines()
-    if not pipelines:
-        pipeline_block = "No pipelines configured. Add entries to .claude/pipelines.json."
-    else:
-        entries = "\n\n".join(_format_pipeline_entry(p) for p in pipelines)
-        pipeline_block = f"Available pipelines:\n\n{entries}"
-
-    return _PIPELINE_DOC_BODY.format(pipeline_block=pipeline_block)
+    return _PIPELINE_DOC_BODY
