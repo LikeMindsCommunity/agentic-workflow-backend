@@ -1,10 +1,5 @@
 # likeminds_mcp — local MCP server driving the Claude Code CLI (resume-per-turn).
 # These are the server's only third-party dependencies; everything else it uses
-# is in the Python standard library. `mcp` also pulls in anyio + httpx transitively
-# (httpx is used directly for the Gupshup OTP calls).
+# is in the Python standard library. `mcp` also pulls in anyio + httpx transitively.
 mcp>=1.2.0
 python-dotenv>=1.0.0
-boto3>=1.35.0
-# Tenant/user registry for multi-tenant login (email OTP). [srv] pulls in dnspython
-# so mongodb+srv:// (Atlas) URIs resolve. Only needed when MONGODB_URI is set.
-pymongo[srv]>=4.6.0

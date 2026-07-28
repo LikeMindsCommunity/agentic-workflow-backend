@@ -31,7 +31,7 @@ class Session:
     id: str                   # durable id: names outputs/mcp/<id>/ + the poll handle
     cc_id: str                # Claude Code session id for --session-id/--resume (fresh per run)
     skill: str                # the skill this session is running
-    result_id: str            # deliverable id → output bucket (local + R2). Standalone: "<skill>_<durable-id>"; pipeline step: "pipeline_<pid>/<NN>_<skill>" (nested under the pipeline folder)
+    result_id: str            # deliverable id → output bucket under outputs/mcp/. Standalone: "<skill>_<durable-id>"; pipeline step: "pipeline_<pid>/<NN>_<skill>" (nested under the pipeline folder)
     sandbox: Path             # <project>/.sessions/<cc_id>
     inputs_dir: Path          # <sandbox>/inputs
     output_dir: Path          # <sandbox>/output/<result_id>  (deliverable harvested from here)
@@ -39,12 +39,8 @@ class Session:
     # for the life of the run, never persisted; None => fall back to the server's own
     # .env creds. The engine injects it into the spawned CLI environment per turn.
     api_key: str | None = None
-    # The caller's tenant (from the login-token header), or None for anonymous. Owns
-    # this session: enforced on poll/continue, and names where a generated skill is
-    # registered (only a tenant may install a private custom skill).
-    tenant: str | None = None
     # Wall-clock bounds of THIS run (a continuation is a new record, so these describe
-    # the continuing run, not the whole lineage). Reported in the Slack run feed.
+    # the continuing run, not the whole lineage).
     started_at: float = 0.0
     finished_at: float = 0.0
     # Job state, polled by the client across short calls:
@@ -52,7 +48,6 @@ class Session:
     progress: str = ""        # human-readable "what it's doing now", shown on poll
     nudges: int = 0           # how many no-signal turns we've nudged past
     questions: list = field(default_factory=list)
-    r2_keys: list = field(default_factory=list)  # accumulated R2 input keys to delete on done/error
     result: dict | None = None        # {result_id, summary} once done
     error: str | None = None
     finished: bool = False            # the driving task has returned

@@ -33,27 +33,22 @@ agentic-workflow-backend/
 │   │   └── playbooks/                #   api-integration, document-from-template, nodeflow, fallback
 │   └── settings.json                 # Claude Code settings
 ├── likeminds_mcp/                    # local MCP server that exposes every skill over HTTP
-│   ├── server.py                     #   FastMCP HTTP server + 4 tools + background driver
+│   ├── server.py                     #   FastMCP HTTP server + 2 tools + background driver
 │   ├── engine.py                     #   runs one `claude -p` turn, parses the signal markers
 │   ├── harness.py                    #   skill-agnostic I/O envelope (appended to the system prompt)
 │   ├── sessions.py                   #   in-process session records + sandbox/transcript purge
 │   ├── registry.py                   #   indexes .claude/skills so any skill is runnable
-│   ├── storage.py                    #   Cloudflare R2 integration: upload inputs, deliver outputs
-│   ├── web.py                        #   browser login page (/login) + its OTP endpoints
-│   ├── oauth.py                      #   OAuth 2.1 authorization server (Mongo-backed token store)
-│   ├── otp.py                        #   Gupshup hosted email OTP (send + verify)
-│   ├── db.py                         #   Mongo user/tenant registry + tenant resolution
-│   ├── slack.py                      #   Slack feed: registrations + skill-run completions
-│   ├── config.py                     #   paths, host/port, model, markers, safety bounds, R2 config
+│   ├── pipeline.py                   #   multi-step skill chains + resumable pipeline state
+│   ├── config.py                     #   paths, host/port, model, markers, safety bounds
 │   ├── __main__.py                   #   `python -m likeminds_mcp` entrypoint
 
 ├── inputs/                           # drop client artifacts here (gitignored)
 ├── outputs/                          # deliverables (gitignored)
 │   ├── {client}/                     #   per client: kb/, approval_sheet.md, comparisons/
-│   └── mcp/<result_id>/              #   local copy of deliverables from MCP skill runs
+│   └── mcp/<result_id>/              #   deliverables from MCP skill runs
 ├── .mcp.json                         # registers the likeminds server for the Claude Code CLI
-├── .env / .env.example               # CLAUDE_TOKEN + R2 creds and other env (.env is gitignored)
-├── requirements.txt                  # MCP server deps: mcp + python-dotenv + boto3
+├── .env / .env.example               # CLAUDE_TOKEN and other env (.env is gitignored)
+├── requirements.txt                  # MCP server deps: mcp + python-dotenv
 └── README.md                         # this file
 ```
 
@@ -77,7 +72,7 @@ The skills run inside **Claude Code**, so a working `claude` CLI must be on your
 
 1. **Directly in Claude Code** — open `claude` in this repo and describe the task;
   the trigger phrases in each skill activate the right one.
-2. **Through the MCP server** — start `likeminds_mcp` and call `run_skill` from any
+2. **Through the MCP server** — start `likeminds_mcp` and call `run_pipeline` from any
   connected Claude client.
 
 Drop a client's artifacts into a folder under `inputs/`; deliverables land under
@@ -312,7 +307,7 @@ so nothing is parked in memory while a human answers.
 
 ```bash
 python3 -m venv venv
-venv/bin/pip install -r requirements.txt      # mcp + python-dotenv + boto3
+venv/bin/pip install -r requirements.txt      # mcp + python-dotenv
 ```
 
 The server drives the **Claude Code CLI** as a subprocess, so a working `claude` must be
@@ -369,15 +364,36 @@ The header defaults to `x-api-key` (override with `LIKEMINDS_MCP_KEY_HEADER`; an
 fallback; with no header key the server uses its own creds — a `.env` `ANTHROPIC_API_KEY`
 if set, else the subscription.
 Note: a raw API key only reaches 1M-context Opus if the account has that access; otherwise
-set `CLAUDE_AGENT_MODEL` to a model it can serve (e.g. `sonnet`). This header path is a
-Claude Code convenience; claude.ai and the Claude Desktop connector UI accept only OAuth or
-authless servers, so use OAuth there.
+set `CLAUDE_AGENT_MODEL` to a model it can serve (e.g. `sonnet`). The header is optional —
+with none sent, the server falls back to the `.env` credential above.
 
 **3. Run the server** from a plain terminal (it loads `.env` automatically):
 
 ```bash
 venv/bin/python -m likeminds_mcp      # serves http://127.0.0.1:8787/mcp
 ```
+
+### Or run it in Docker
+
+The image bundles the `claude` CLI and the headless-render toolchain (Chromium, poppler,
+fonts, `python-docx`) the document skills need, so this is the quicker path if you would
+rather not install those yourself:
+
+```bash
+docker compose up --build -d          # serves http://127.0.0.1:8787/mcp
+```
+
+`.env` is read for the Claude credential; `./inputs` and `./outputs` are bind-mounted
+into the container.
+
+**One caveat worth knowing up front:** `input_paths` is resolved **inside** the
+container, so a host path like `/Users/me/brief.pdf` means nothing to it. Copy artifacts
+into `./inputs` and pass them as `/app/inputs/brief.pdf`. Deliverables come back to
+`./outputs` on the host. Running the server directly on the host avoids this translation
+entirely — that is the simpler option when you already have the `claude` CLI.
+
+The container runs as uid 1000. If your host user is not uid 1000 (`id -u`), `chown` the
+two mounted directories to 1000 or the run cannot write its output.
 
 ### Connect from Claude Code (CLI)
 
@@ -443,8 +459,11 @@ call `run_pipeline` with the right pipeline for your intent.
 | Tool             | What it does |
 | ---------------- | ------------ |
 | `list_pipelines` | Returns all available pipelines with names, descriptions, steps, and trigger phrases. Always called before `run_pipeline` to pick the right pipeline. |
-| `run_pipeline`   | Runs a named pipeline (sequence of skills). Returns `running` / `need_input` / `done`; poll with `session_id`. On `done`, `download_urls` has presigned R2 URLs for every output file. |
-| `get_upload_url` | Get a presigned PUT URL to upload a file directly to R2. Returns `{upload_url, r2_key}`. PUT file bytes to `upload_url`, then pass `r2_key` to `run_pipeline` via `r2_keys`. |
+| `run_pipeline`   | Runs a named pipeline (sequence of skills). Returns `running` / `need_input` / `done`; poll with `session_id`. On `done`, `output_dir` is the folder holding every output file. |
+
+**Passing files.** The server runs on your own machine, so files move by path — nothing is
+uploaded anywhere. Use `input_paths` (absolute paths to files *or* folders; the only way to
+send binaries like PDF/DOCX), `artifacts` (inline `[{name, content}]` text), or `urls`.
 
 ### Pipeline flows
 
@@ -456,9 +475,9 @@ call `run_pipeline` with the right pipeline for your intent.
 @likeminds onboard this client from these artifacts
 
 list_pipelines()
-run_pipeline(pipeline_name="build-kb", r2_keys=[...], context="...")
+run_pipeline(pipeline_name="build-kb", input_paths=[...], context="...")
   └── 00_kb-builder
-        reads uploaded reference files
+        reads the reference files
         builds KB
         saves to outputs/mcp/pipeline_<id>/00_kb-builder/
 → done: KB files + session_id
@@ -472,7 +491,7 @@ run_pipeline(pipeline_name="build-kb", r2_keys=[...], context="...")
 @likeminds generate a document end to end
 
 list_pipelines()
-run_pipeline(pipeline_name="document-agent", r2_keys=[...], context="...")
+run_pipeline(pipeline_name="document-agent", input_paths=[...], context="...")
   └── 00_kb-builder   → builds KB from reference files
   └── 01_document-generator → reads KB, generates PDF or DOCX
 → done: document + session_id
@@ -489,10 +508,10 @@ Use when the KB was already built by an earlier run. Pass that run's `session_id
 
 list_pipelines()
 run_pipeline(pipeline_name="document-from-kb", seed_session_id="<prior-session-id>",
-             r2_keys=[MOM/brief], context="...")
+             input_paths=[MOM/brief], context="...")
   └── 00_document-generator
         reads KB from seed (in place, no copy)
-        reads new MOM/brief from uploads
+        reads the new MOM/brief
         generates document
 → done: document + session_id
 ```
@@ -505,7 +524,7 @@ run_pipeline(pipeline_name="document-from-kb", seed_session_id="<prior-session-i
 @likeminds build configuration file
 
 list_pipelines()
-run_pipeline(pipeline_name="config-generator", r2_keys=[...], context="...")
+run_pipeline(pipeline_name="config-generator", input_paths=[...], context="...")
   └── 00_kb-builder   → builds KB from reference files
   └── 01_config-agent → reads KB, generates config (JSON/XML/YAML/NodeFlow)
 → done: config file + session_id
@@ -519,10 +538,10 @@ run_pipeline(pipeline_name="config-generator", r2_keys=[...], context="...")
 
 list_pipelines()
 run_pipeline(pipeline_name="config-from-kb", seed_session_id="<prior-session-id>",
-             r2_keys=[brief], context="...")
+             input_paths=[brief], context="...")
   └── 00_config-agent
         reads KB from seed (in place, no copy)
-        reads new brief from uploads
+        reads the new brief
         generates config
 → done: config file + session_id
 ```
@@ -556,7 +575,7 @@ run_pipeline(pipeline_name="output-feedback", seed_session_id="<prior-session-id
 
 ```
 # First call — start a pipeline
-run_pipeline(pipeline_name, context?, r2_keys?, urls?, seed_session_id?) →
+run_pipeline(pipeline_name, context?, input_paths?, artifacts?, urls?, seed_session_id?) →
   {status:"running", session_id, current_step, total_steps, step_name, progress}
 
 # Poll — ONLY session_id, no other args
@@ -565,22 +584,22 @@ run_pipeline(session_id) →
   {status:"need_input", session_id, questions[], next_step}   # relay questions verbatim
 
 # Answer a need_input
-run_pipeline(session_id, response, r2_keys?) →
+run_pipeline(session_id, response, input_paths?) →
   {status:"running", …}   # resume polling
 
 # Done
-→ {status:"done", session_id, download_urls:{filename: presigned_url, …},
-   how_to_continue, download_expires_in_seconds}
+→ {status:"done", session_id, result_id, output_dir,
+   summary:{files:[…]}, how_to_continue}
 
 # Resume a failed pipeline from the failed step
 run_pipeline(session_id, pipeline_name) →
   resumes from failed_step, completed steps are not re-run
 ```
 
-**Receiving outputs:** On `done`, `download_urls` maps each output filename to a presigned
-R2 GET URL (valid 1 hour by default). A local copy also lands in
-`outputs/mcp/pipeline_<id>/` on the server. Save the `session_id` — pass it as
-`seed_session_id` on a future `run_pipeline` call to build on this run's output.
+**Receiving outputs:** On `done`, the deliverable is on disk at `output_dir`
+(`outputs/mcp/pipeline_<id>/<NN>_<skill>/`) and `summary.files` names every file in it.
+Save the `session_id` — pass it as `seed_session_id` on a future `run_pipeline` call to
+build on this run's output.
 
 ---
 
@@ -595,12 +614,11 @@ Claude client ──run_pipeline──▶  likeminds server  ──spawns──�
       ▲                               │  (background task)           │
       │◀──── poll / questions ────────┤                              │ reads inputs/, writes output/
       │────── answers ────────────────▶  ──resume──▶  claude -p  ◀──┘
-      │◀──── download_urls (done) ─────┘         (same session, next turn)
-                                             ▲           │
-              Cloudflare R2 ────────────────┘           │ upload_outputs → presigned GET URLs
-              (inputs PUT by client,                     ▼
-               downloaded into sandbox,     outputs/ uploaded → r2, sandbox purged
-               outputs uploaded on done)
+      │◀──── output_dir (done) ────────┘         (same session, next turn)
+                                                          │
+        input_paths / artifacts ──▶ .sessions/<uuid>/inputs/
+                                                          ▼
+                                    outputs/mcp/pipeline_<id>/, sandbox purged
 ```
 
 **Core ideas:**
@@ -619,22 +637,22 @@ races and goes missing — a marker never does.
 I/O edges (inputs dir / `<<<LM_ASK>>>` / `<<<LM_DONE>>>` / the authoritative output
 dir). The skill file itself is never edited.
 - **Deliverable harvested from disk.** On `<<<LM_DONE>>>` the server reads every output
-file byte-for-byte (so PDFs/DOCX/XLSX survive), promotes a local copy to
-`outputs/mcp/<result_id>/`, uploads each file to R2, and returns presigned GET URLs in
-the `done` snapshot. The session sandbox and its Claude Code transcript are then purged.
+file byte-for-byte (so PDFs/DOCX/XLSX survive), promotes it to
+`outputs/mcp/<result_id>/`, and returns that path plus the file list in the `done`
+snapshot. The session sandbox and its Claude Code transcript are then purged.
 
 **Modules:**
 
 
 | Module        | Responsibility                                                                                                     |
 | ------------- | ------------------------------------------------------------------------------------------------------------------ |
-| `server.py`   | FastMCP HTTP server + 3 tools (`run_pipeline`, `list_pipelines`, `get_upload_url`); background pipeline driver; output harvest/promote; auth config; long-poll. |
-| `storage.py`  | Cloudflare R2 integration: presigned PUT URLs for direct client uploads, `download_inputs` into session sandbox, `upload_outputs` after `<<<LM_DONE>>>`. |
+| `server.py`   | FastMCP HTTP server + 2 tools (`run_pipeline`, `list_pipelines`); background pipeline driver; input staging; output harvest/promote; credential config; long-poll. |
 | `engine.py`   | Runs ONE turn: builds the `claude -p` argv, spawns it, reads the stream-json, parses the signal markers.           |
 | `harness.py`  | The system-prompt append that binds a skill's I/O edges to the engine.                                             |
 | `sessions.py` | Lightweight in-process session records + sandbox/transcript purge + record GC.                                     |
 | `registry.py` | Indexes `.claude/skills/*/SKILL.md` so any skill is runnable.                                                      |
-| `config.py`   | Paths, host/port, CLI binary, model, markers, safety bounds, R2 config.                                            |
+| `pipeline.py` | Pipeline definitions from `.claude/pipelines.json`, pipeline session state, disk persistence + resume.             |
+| `config.py`   | Paths, host/port, CLI binary, model, markers, safety bounds.                                                       |
 | `__main__.py` | `python -m likeminds_mcp` entrypoint (streamable-HTTP).                                                            |
 
 
@@ -668,7 +686,7 @@ in memory so the client's final poll can read the result.
 | **Turn timeout**    | `TURN_TIMEOUT` wraps each turn; on timeout the subprocess is killed and the session `error`s + purges. Stops a hung `claude` pinning `running` forever.                                                                                                                        |
 | **Reply timeout**   | `REPLY_TIMEOUT` wraps the wait for the user's answer; an abandoned `need_input` session is closed + purged.                                                                                                                                                                    |
 | **Subprocess kill** | `run_turn`'s `finally` kills the child on any exit/cancel — no orphans.                                                                                                                                                                                                        |
-| **Record caps**     | `MAX_SESSIONS` evicts oldest FINISHED records; `MAX_UPLOADS` evicts oldest un-consumed uploads.                                                                                                                                                                                |
+| **Record caps**     | `MAX_SESSIONS` evicts oldest FINISHED session records so the in-memory store can't grow without bound; live sessions are never evicted.                                                                                                                                        |
 | **MCP isolation**   | Every turn uses `--strict-mcp-config` with the server's own empty `--mcp-config`, keeping the spawned `claude` off the project `.mcp.json` — otherwise it would connect back to *this* server (recursion) and spawn every project MCP server each turn. |
 
 
@@ -678,114 +696,28 @@ in memory so the client's final poll can read the result.
 
 ---
 
-## Accounts, login & skill privacy
+## Skills and the kill-switch
 
-By default every skill the server exposes is shared. Multi-tenant mode adds a stable
-per-user token so that **custom skills a user generates stay private to that user**,
-while the shared built-in skills stay visible to everyone.
+The server runs every Agent Skill in `.claude/skills/` — the built-ins shipped here plus
+any skill a run generated and the server installed. The folder name is the skill name;
+there are no accounts, no per-caller scoping, and no private copies, because the server
+runs on your machine and serves you.
 
-### Signing in
+**Generated skills.** If a run produces a `<skill-name>/SKILL.md` folder in its output,
+the server copies it into `.claude/skills/<skill-name>/` (rewriting the SKILL.md `name:`
+to match the folder) and appends that path to `.gitignore`. It is then runnable as a
+pipeline step by that name. Registration is a COPY — the generated files also stay in the
+run's output bucket, so you always get to inspect and keep what a run produced.
 
-1. Open `https://<your-host>/login` in a browser.
-2. Enter your work email → a one-time code is emailed (via Gupshup's hosted OTP service).
-3. Enter the code → the page returns your **access token** (stable, reusable) and a
-   ready-to-paste MCP config.
-4. Add the token to your MCP client so it is sent on every request in the `x-user-id`
-   header:
-
-   ```
-   claude mcp add --transport http --scope user likeminds https://<your-host>/mcp \
-       --header "x-user-id: <your-token>"
-   ```
-
-The token is the user's id in the Mongo registry; the code is generated, emailed, and
-verified by Gupshup, so the server never stores OTPs. This header is orthogonal to the
-BYOK `x-api-key` header: **`x-user-id` says who you are; `x-api-key` says who pays.**
-
-### What isolation you get
-
-- Pipeline steps are **scoped to the caller's token**: built-in skills plus only that
-  caller's own generated skills. Another user's custom skills are never accessible.
-- A generated skill is stored on the server as `<skill-name>__u_<token>` and
-  auto-registered **only** for the tenant that created it (its `SKILL.md` name is
-  rewritten to match, so the right tenant's copy always resolves even if two tenants
-  pick the same skill name). An anonymous caller (no / unverified token) can still run
-  built-in pipelines but generated skills stay private to their owner.
-- Isolation here is a **registry filter** — skills are co-located on disk and filtered
-  by token — which is enough to keep tenants from seeing or running each other's skills.
-
-**No database?** If `MONGODB_URI` is unset the server still runs: there is no `/login`
-page, and any `x-user-id` value is trusted opaquely as a tenant key (fine for local dev
-or a trusted network). Set Mongo + `EMAIL_GHUPSHAP_KEY` in production to require verified
-login.
-
-### Disabling a skill for everyone
-
-To hide a skill from **all** users — preventing it from being used in any pipeline — add
-its name to `disabled_skills.json` at the project root:
+**Disabling a skill.** To stop a skill being listed or run, add its name to
+`disabled_skills.json` at the project root:
 
 ```json
 { "disabled": ["some-skill", "another-skill"] }
 ```
 
-The file is read fresh on each call, so changes take effect with no restart. A disabled
-skill can be neither listed nor run by anyone (including its owner). You can also set
-`LIKEMINDS_MCP_DISABLED_SKILLS=a,b` as an env override, merged with the file.
-
-### Automatic login (OAuth 2.1) — recommended
-
-Instead of pasting a token, let the MCP client run the login for you. When
-`MCP_OAUTH_ENABLED=true`, the server is a full OAuth 2.1 authorization server and Claude
-(claude.ai, Desktop, Claude Code) does the browser handshake itself — **no token is ever
-copied by hand**:
-
-```
-1. Client calls /mcp with no token  →  401 + WWW-Authenticate (points at the metadata)
-2. Client discovers the auth server and AUTO-OPENS the browser to /authorize
-3. User verifies email via the SAME Gupshup OTP page (it doubles as the login UI)
-4. Browser redirects back to the client with a code → client swaps it for a token (PKCE)
-5. Client stores + auto-refreshes the token, sends `Authorization: Bearer` on every call
-```
-
-The user just clicks **Connect** (or, on Claude Code, runs `claude mcp add <url>` with no
-`--header`) and enters their email + code. The access token maps to the Mongo user id =
-the same tenant as the header path, so private skills carry over.
-
-The MCP SDK mounts everything except identity: `/authorize`, `/token`, `/register` (dynamic
-client registration), `/revoke`, and both `/.well-known/*` metadata documents. We supply
-only the storage + the OTP login. Requires `MONGODB_URI` and a **real, reachable**
-`PUBLIC_BASE_URL` (the OAuth issuer — use `https://…` in production; `http://localhost:8787`
-for local, never `0.0.0.0`).
-
-**`x-api-key` still works alongside OAuth.** `Authorization` now carries the OAuth token
-(identity); your own Anthropic key (billing/BYOK) rides on the separate `x-api-key` header,
-which you can still attach on Claude Code. The two never collide.
-
-When OAuth is **on**, every `/mcp` call requires a valid token (no anonymous access). When
-**off**, the server uses the header-based `x-user-id` path described above. Flip it with a
-single env var, so you can cut over when ready.
-
-| Variable | Description | Default |
-| --- | --- | --- |
-| `MCP_OAUTH_ENABLED` | Turn the OAuth authorization server + bearer enforcement on | `false` |
-| `MCP_OAUTH_ACCESS_TTL` | Access-token lifetime, seconds | `3600` |
-| `MCP_OAUTH_REFRESH_TTL` | Refresh-token lifetime, seconds | `2592000` (30d) |
-| `MCP_OAUTH_CODE_TTL` | Auth-code / pending-login lifetime, seconds | `600` |
-| `MCP_OAUTH_SCOPE` | The single scope issued/required | `mcp` |
-
-### Login / tenancy env vars
-
-| Variable                             | Description                                                                                  | Default                          |
-| ------------------------------------ | -------------------------------------------------------------------------------------------- | -------------------------------- |
-| `LIKEMINDS_MCP_USER_HEADER`          | Header the caller's login token (tenant id) is read from; scopes custom skills               | `x-user-id`                      |
-| `MONGODB_URI`                        | Mongo connection string for the user/tenant registry; enables verified login                 | unset (login off; opaque tokens) |
-| `MONGODB_DB_NAME`                    | Mongo database name                                                                          | unset                            |
-| `MONGODB_USERS_COLLECTION`           | Collection holding user rows                                                                  | `users`                          |
-| `EMAIL_GHUPSHAP_KEY`                 | Gupshup TwoFactorAuth key used to email + verify OTPs                                         | unset (login off)                |
-| `PUBLIC_BASE_URL`                    | Public origin shown in the `/login` copy-paste config (set behind a proxy)                   | derived from the request         |
-| `LIKEMINDS_MCP_TENANT_CACHE_TTL`     | Seconds to cache a token→verified lookup so polls don't hit Mongo each call                   | `300`                            |
-| `LIKEMINDS_MCP_DISABLED_SKILLS_FILE` | JSON file of skills hidden globally from list + run                                           | `disabled_skills.json`           |
-| `LIKEMINDS_MCP_DISABLED_SKILLS`      | Comma-separated skills to disable globally (merged with the file)                            | unset                            |
+The file is read fresh on each call, so changes take effect with no restart. You can also
+set `LIKEMINDS_MCP_DISABLED_SKILLS=a,b` as an env override, merged with the file.
 
 ## Configuration
 
@@ -804,79 +736,44 @@ Server env vars (put persistent ones in `.env`):
 | `LIKEMINDS_MCP_TURN_TIMEOUT`  | Per-turn timeout, seconds                                                              | `1800`                                                |
 | `LIKEMINDS_MCP_REPLY_TIMEOUT` | Wait-for-user-reply timeout, seconds                                                   | `3600`                                                |
 | `MCP_TOOL_TIMEOUT`            | Client-side tool-call timeout in ms (raise for long-running skills; set on the client) | client default                                        |
-| `R2_BUCKET`                   | Cloudflare R2 bucket name                                                              | (R2 disabled if any R2 var is missing)                |
-| `R2_ACCESS_KEY_ID`            | R2 access key                                                                          |                                                       |
-| `R2_SECRET_ACCESS_KEY`        | R2 secret key                                                                          |                                                       |
-| `R2_ENDPOINT`                 | R2 account endpoint (`https://<account_id>.r2.cloudflarestorage.com`)                 |                                                       |
-| `R2_URL_EXPIRY`               | Presigned GET URL TTL for output downloads, seconds                                    | `3600` (1 hour)                                       |
 
-**R2 is optional** — if any R2 variable is missing the server falls back to local-only mode: `get_upload_url` returns an error, and `run_pipeline` does not return `download_urls`. Deliverables are still written to `outputs/mcp/pipeline_<id>/` on the server.
+### File I/O
 
-### Slack notifications
+The server and the client share a filesystem — that is the design. Inputs arrive as
+**local paths** and outputs are **left on disk**; there is no object store and nothing
+leaves the machine except the model calls themselves.
 
-Set a Slack Incoming Webhook URL and the server posts two kinds of event into that channel:
-
-- **Registration** — a user's **first** verified login (OAuth handshake or the standalone token page). Posts the email that registered, how they connected, and their user id. Routine re-logins are not posted; they'd bury the registrations the channel exists to surface.
-- **Skill run finished** — a run reaches `done` **or** `error` — both post, since a failure is the one you most want to see. Posts the user's email, the skill, the `session_id`, start / finish timestamps and duration, and a download link for every artifact produced.
-
-Those artifact links are the same presigned R2 URLs the MCP client gets, so they expire after `R2_URL_EXPIRY` (1 hour by default) — a posted message can't re-sign itself the way a polling client can, so the message states the expiry rather than leaving a dead link looking live. Raise `R2_URL_EXPIRY` (max 7 days) if you want them to outlive the workday.
-
-Setup: Slack app → **Incoming Webhooks** → Activate → **Add New Webhook to Workspace** → pick the channel → copy the URL into `.env`.
-
-| Variable            | Description                                            | Default          |
-| ------------------- | ------------------------------------------------------ | ---------------- |
-| `SLACK_WEBHOOK_URL` | Slack Incoming Webhook (`https://hooks.slack.com/…`)   | unset (feed off) |
-
-That is the entire configuration surface — one variable on/off. The target channel is fixed when the webhook is created, which is why there's no channel setting; to post elsewhere, make another webhook.
-
-**The URL is the credential.** There's no token and no auth header, so anyone holding it can post to your channel — keep it in `.env` (gitignored) and regenerate it in the Slack app config if it ever leaks into a ticket, a chat, or a commit. It is redacted from this server's own error logs.
-
-Notifications are fire-and-forget: a revoked webhook, a Slack outage, or a deleted channel never fails a login or loses a deliverable — the failure prints one `[slack]` line to stderr. The run email comes from the Mongo user registry, so runs from anonymous/dev tokens post as `anonymous`.
-
-### Production deployment
-
-To run the server on a remote machine so any client can reach it:
-
-1. Set `LIKEMINDS_MCP_HOST=0.0.0.0` (or the specific bind IP) and `LIKEMINDS_MCP_PORT` in `.env`.
-2. Set all four `R2_*` variables. All file I/O goes through R2 — inputs are uploaded to R2 by the client before `run_pipeline` and downloaded into the session sandbox by the server; outputs are uploaded to R2 after `<<<LM_DONE>>>` and presigned GET URLs are returned to the client.
-3. Set `CLAUDE_TOKEN` (or log the CLI in on the server machine with `claude setup-token`).
-4. Start the server: `venv/bin/python -m likeminds_mcp`.
-5. Point clients at the public URL instead of `127.0.0.1:8787`:
-   - Claude Code: `claude mcp add --transport http likeminds https://<your-host>/mcp --scope user`
-   - Claude Desktop: replace `http://127.0.0.1:8787/mcp` with the public URL in `mcp-remote` args.
-
-**File input flow (remote clients):**
+**Input:**
 
 ```
-# Step 1 — upload files to R2
-get_upload_url("brief.pdf") → {upload_url, r2_key}
-curl -X PUT upload_url --data-binary @brief.pdf
+# a file, a whole folder, or both
+run_pipeline(pipeline_name="build-kb",
+             input_paths=["/abs/path/sow.pdf", "/abs/path/samples/"], context="…")
 
-# Step 2 — run the pipeline with the r2_key
-run_pipeline(pipeline_name="build-kb", r2_keys=["<r2_key>"], context="…")
+# text you already have in the conversation
+run_pipeline(pipeline_name="build-kb",
+             artifacts=[{"name":"mom.txt","content":"…"}], context="…")
 ```
 
-**Output delivery:**
+Each path is copied into that run's sandbox at `.sessions/<uuid>/inputs/` (a folder keeps
+its layout), so the skill reads a stable snapshot and the originals are never touched. The
+sandbox is deleted when the run ends.
+
+**Output:**
 
 ```
 run_pipeline(session_id) →
   {status:"done",
    session_id: "abc12345",
-   download_urls:{
-     "01-overview.md": "https://<account>.r2.cloudflarestorage.com/outputs/…?X-Amz-Expires=3600&…",
-     "02-visual-style.md": "https://…"
-   },
-   download_expires_in_seconds: 3600,
+   result_id: "pipeline_abc12345/00_kb-builder",
+   output_dir: "/path/to/repo/outputs/mcp/pipeline_abc12345/00_kb-builder",
+   summary:{files:["01-overview.md", "02-visual-style.md"]},
    how_to_continue: "To generate a document from this KB, call run_pipeline with seed_session_id='abc12345'…"}
 ```
 
-Render each `download_urls` entry as a **clickable markdown link** labelled with the filename
-so the user can download it straight from the chat. Save the `session_id` — pass it as
-`seed_session_id` on a future `run_pipeline` call to build on this run's output without
-re-uploading files.
-
-The links are presigned and expire after `download_expires_in_seconds` (`R2_URL_EXPIRY`,
-default 1 hour); re-poll the same `session_id` to mint fresh ones. When R2 is not configured,
-deliverables land at `outputs/mcp/pipeline_<id>/` on the server.
+`next_step` tells the calling client to report every file with its path and, when the user
+wants them elsewhere (their project directory, say), to copy them there too. Save the
+`session_id` — pass it as `seed_session_id` on a future `run_pipeline` call to build on this
+run's output without re-supplying the source files.
 
 

@@ -1,7 +1,7 @@
 # likeminds_mcp — MCP server that drives the Claude Code CLI (resume-per-turn).
 #
 # The image bundles the three things the server needs at runtime:
-#   1. Python + the server's deps (mcp, python-dotenv, boto3)
+#   1. Python + the server's deps (mcp, python-dotenv)
 #   2. the `claude` CLI — the server spawns `claude -p …` as a subprocess every turn
 #   3. a headless-render toolchain (Chromium, poppler, fonts, python-docx) for the
 #      document skills — they emit PDF or DOCX, chosen per document at generate time
@@ -11,12 +11,13 @@
 #
 # Build:  docker build -t likeminds-mcp .
 # Run:    docker run --rm -p 8787:8787 --env-file .env --shm-size=1g \
-#             -v mcp_outputs:/app/outputs likeminds-mcp
+#             -v "$PWD/inputs:/app/inputs" -v "$PWD/outputs:/app/outputs" likeminds-mcp
 #         (--shm-size is important — headless Chromium crashes on Docker's default 64M)
-#         (-v mcp_outputs:/app/outputs keeps generated deliverables across rebuilds:
-#          a NAMED volume survives `--rm` and every `docker build`, so re-building the
-#          image never loses outputs. Only `docker volume rm mcp_outputs` clears it.
-#          docker-compose wires the same volume up automatically — see docker-compose.yml.)
+#         (the two bind mounts are what make the local-file flow work: `input_paths` is
+#          resolved INSIDE the container, so put artifacts in ./inputs and pass them as
+#          /app/inputs/<name>; deliverables land back in ./outputs on the host. The
+#          container runs as uid 1000 — chown those directories to 1000 if your host user
+#          is not, or the run cannot write. docker-compose wires both up automatically.)
 
 FROM python:3.13-slim-bookworm
 
@@ -65,25 +66,26 @@ COPY . .
 # HOME must be writable: the claude CLI stores its session transcripts under
 # ~/.claude, and the server registers generated skills into /app/.claude/skills.
 RUN useradd -m -u 1000 appuser \
-    && mkdir -p /app/.sessions /app/outputs/mcp \
+    && mkdir -p /app/.sessions /app/inputs /app/outputs/mcp \
     && chown -R appuser:appuser /app
 USER appuser
 ENV HOME=/home/appuser
 
-# ── Persistent output volume ─────────────────────────────────────────────────────
-# Generated deliverables land in /app/outputs (RESULTS_DIR = /app/outputs/mcp).
-# Declaring it a VOLUME keeps that data OFF the container's writable layer, so it is
-# NOT thrown away when the container is removed or the image is rebuilt. Back it with a
-# named volume at run time (`-v mcp_outputs:/app/outputs`, or docker-compose's
-# `mcp_outputs`) and the deliverables persist across `docker build` runs. /app/outputs
-# is created and chowned to appuser above, so a fresh volume is seeded with the right
-# ownership on first run.
-VOLUME /app/outputs
+# ── Host-mounted I/O ─────────────────────────────────────────────────────────────
+# The server takes files by PATH and leaves deliverables on disk, so both edges are
+# meant to be bind-mounted from the host at run time:
+#   /app/inputs   — artifacts you hand to a run via `input_paths`
+#   /app/outputs  — where deliverables land (RESULTS_DIR = /app/outputs/mcp)
+# Deliberately NOT declared as VOLUMEs: an anonymous volume on /app/outputs would
+# silently swallow the deliverables when the caller forgets the -v flag, which is
+# exactly the failure this local-file design exists to avoid. Both directories are
+# created and chowned to appuser above so an unmounted run still works (its output just
+# lives in the container).
 
 # ── Runtime config ─────────────────────────────────────────────────────────────
-# Bind on all interfaces so the container is reachable. Auth (CLAUDE_TOKEN or
-# ANTHROPIC_API_KEY) and the four R2_* vars are supplied at RUN time via --env-file
-# — never baked into the image.
+# Bind on all interfaces so the container is reachable. The Claude credential
+# (CLAUDE_TOKEN or ANTHROPIC_API_KEY) is supplied at RUN time via --env-file — never
+# baked into the image.
 ENV LIKEMINDS_MCP_HOST=0.0.0.0 \
     LIKEMINDS_MCP_PORT=8787 \
     DISABLE_AUTOUPDATER=1

@@ -1,13 +1,16 @@
-# Local dev stack: the likeminds_mcp server.
+# Local stack: the likeminds_mcp server.
 #
 #   docker compose up --build -d
 #
-# All config/secrets come from .env (CLAUDE_TOKEN, R2_*, MONGODB_URI, MONGODB_DB_NAME,
-# EMAIL_GHUPSHAP_KEY, PUBLIC_BASE_URL, …). Mongo is HOSTED (Atlas) — there is no local
-# database container; MONGODB_URI just points at the cluster.
+# All config comes from .env — in practice just the Claude credential (CLAUDE_TOKEN or
+# ANTHROPIC_API_KEY). The server has no login, no database and no object storage: it
+# takes files by path and leaves deliverables on disk.
 #
-# NOTE: PUBLIC_BASE_URL must be an address clients can actually reach and must match the
-# URL they connect to exactly (it's the OAuth issuer) — never 0.0.0.0.
+# FILE PATHS ARE CONTAINER PATHS. `input_paths` is resolved inside the container, so a
+# host path like /Users/me/brief.pdf means nothing to it. Put your files in ./inputs on
+# the host and pass them as /app/inputs/<name>; deliverables come back to ./outputs.
+# Running the server directly on the host (`python -m likeminds_mcp`) avoids this
+# translation entirely and is the simpler option if you have the claude CLI installed.
 
 services:
   mcp:
@@ -20,9 +23,11 @@ services:
     # Headless Chromium (used by the document skills) crashes on Docker's default 64M SHM.
     shm_size: "1g"
     volumes:
-      # Persist deliverables across restarts. A named volume (not a host bind) keeps the
-      # non-root container user's ownership intact. Sessions stay ephemeral by design.
-      - mcp_outputs:/app/outputs
-
-volumes:
-  mcp_outputs:
+      # Host bind mounts, so the local-file flow works end to end: drop artifacts in
+      # ./inputs and read deliverables straight out of ./outputs — no `docker cp`, no
+      # named volume to inspect. Both are gitignored.
+      #
+      # The container runs as uid 1000; if your host user is not uid 1000 (check with
+      # `id -u`), chown these two directories to 1000 or the run cannot write its output.
+      - ./inputs:/app/inputs
+      - ./outputs:/app/outputs

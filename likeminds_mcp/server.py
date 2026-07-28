@@ -1,4 +1,4 @@
-"""FastMCP server: the client-facing tools `run_pipeline`, `list_pipelines`, `get_upload_url`.
+"""FastMCP server: the client-facing tools `run_pipeline` and `list_pipelines`.
 
 Execution model — background asyncio task + long-poll (avoids the client's MCP
 idle timeout). A pipeline turn can run for minutes, far longer than the client's
@@ -11,14 +11,16 @@ States: running -> need_input <-> running -> ... -> done | error
   - running     : a turn is executing; keep polling.
   - need_input  : a skill asked; relay the questions, then call again with
                   session_id + response.
-  - done        : finished; EVERY produced artifact uploaded to R2 with presigned
-                  download URLs.
+  - done        : finished; EVERY produced artifact written to
+                  outputs/mcp/<result_id>/ — including a compiled skill and its KB,
+                  which are also installed server-side.
   - error       : the run failed.
 
-File input flow (remote clients):
-  1. call get_upload_url(filename) -> {upload_url, r2_key}
-  2. HTTP PUT file bytes to upload_url directly (server memory never touched)
-  3. pass r2_key(s) to run_pipeline via r2_keys — server downloads into inputs dir
+File input flow (the server runs on the caller's own machine, so files move by path):
+  - `input_paths` — absolute local paths; the server copies them into the session
+                    inputs dir. This is the path for binaries (PDF/DOCX/images).
+  - `artifacts` / `files` — inline [{name, content}] text, written into the same dir
+                    for clients that have no filesystem to point at.
 
 Everything runs on the server's single event loop — the background driver is an
 asyncio.Task, not a thread — so there are no cross-loop objects and nothing is
@@ -37,10 +39,10 @@ from typing import Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, db, engine, oauth, pipeline, registry, sessions, slack, storage
+from . import config, engine, pipeline, registry, sessions
 
 # Load .env when this module is imported directly. The `python -m likeminds_mcp`
-# entrypoint also loads it before importing config, so R2 / other computed constants
+# entrypoint also loads it before importing config, so the computed constants
 # in config.py resolve from the environment regardless of how the server is started.
 load_dotenv()
 
@@ -84,41 +86,17 @@ _configure_auth()
 # argument, looked up in the in-process SESSIONS dict) — wholly independent of the
 # transport session. json_response also drops the long-lived SSE stream (whose drops
 # were the original point of failure) in favour of a plain JSON reply per POST.
-# OAuth 2.1 (optional, MCP_OAUTH_ENABLED): when on, the SDK mounts /authorize, /token,
-# /register, /revoke, both .well-known metadata docs, and bearer-validates every /mcp
-# request; we supply the storage/identity half (oauth.provider), and the same Gupshup OTP
-# page becomes the /authorize login UI. Requires Mongo + a public URL (the issuer). When
-# off, the server keeps the header-based identity path (USER_ID_HEADER) unchanged.
-_auth_provider = None
-_auth_settings = None
-if config.MCP_OAUTH_ENABLED:
-    if not (config.USE_MONGO and config.PUBLIC_BASE_URL):
-        raise RuntimeError(
-            "MCP_OAUTH_ENABLED requires MONGODB_URI + MONGODB_DB_NAME and PUBLIC_BASE_URL."
-        )
-    from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
-
-    _auth_provider = oauth.provider
-    _auth_settings = AuthSettings(
-        issuer_url=config.PUBLIC_BASE_URL,
-        resource_server_url=f"{config.PUBLIC_BASE_URL}/mcp",
-        client_registration_options=ClientRegistrationOptions(
-            enabled=True,
-            valid_scopes=[config.OAUTH_SCOPE],
-            default_scopes=[config.OAUTH_SCOPE],
-        ),
-        revocation_options=RevocationOptions(enabled=True),
-        required_scopes=[config.OAUTH_SCOPE],
-    )
-
+#
+# The server is UNAUTHENTICATED: it runs on the operator's own machine, bound to
+# loopback by default, and every skill it can run is already on that disk. There is no
+# login, no identity, and no per-caller scoping — reaching the port IS the authorization.
+# Bind it to 0.0.0.0 only behind something that does the access control for you.
 mcp = FastMCP(
     "likeminds",
     host=config.HOST,
     port=config.PORT,
     stateless_http=True,
     json_response=True,
-    auth_server_provider=_auth_provider,
-    auth=_auth_settings,
 )
 
 # How long a single poll call waits for the job state to change before
@@ -126,31 +104,29 @@ mcp = FastMCP(
 POLL_WAIT = 4
 
 # The artifacts are the point of the run, so the done snapshot has to hand them over
-# rather than describe them. Clients differ in what they can do with a URL, so this
-# asks for the one thing every client can render (a link) and, where the client has
-# a filesystem, the download too. EVERY entry gets a link — a compiled skill, its
-# assets, and each KB file are all artifacts the user is entitled to, not internals.
+# rather than describe them. The server runs on the user's own machine, so every file
+# is already sitting on their disk under `output_dir` — the job is to say exactly where,
+# and to put a copy wherever they actually want it. EVERY entry counts — a compiled
+# skill, its assets, and each KB file are all artifacts the user is entitled to, not
+# internals.
 DELIVERY_TEXT = (
-    "The artifacts are ready — deliver them, don't just mention them. For EVERY entry in "
-    "`download_urls` — every file, without exception — put a clickable markdown link in "
-    "your reply labelled with the filename, e.g. [SOW.pdf](https://…), so the user can "
-    "download it straight from the chat. When there are many files, group them under short "
-    "headings (deliverable / skill / knowledge base) but do not drop, sample, or summarise "
-    "any of them away; a file the user cannot click is a file they did not receive. If you "
-    "can write files locally (Claude Code / CLI clients), also fetch each URL, save it into "
-    "the user's working directory, and tell them the path. Never paste a bare presigned URL "
-    "as plain text, never replace an artifact with a summary of it, and never tell the user "
-    "to go find it on the server. Say that the links expire in "
-    "`download_expires_in_seconds` and that they should re-run to get fresh ones after that."
+    "The artifacts are ready on this machine — deliver them, don't just mention them. They "
+    "are in the directory given by `output_dir`, one file per entry in `summary.files`. "
+    "List EVERY file, without exception, with its full path so the user can open it; when "
+    "there are many, group them under short headings (deliverable / skill / knowledge base) "
+    "but do not drop, sample, or summarise any of them away. If the user asked for the "
+    "output somewhere specific — or you are working in their project directory — copy the "
+    "files there as well and tell them the new paths. Never replace an artifact with a "
+    "summary of it, and never leave the user to go hunting for where it landed."
 )
 
 PIPELINE_RELAY_TEXT = (
     "Show these question(s) to the user verbatim and wait for their reply. They may answer, or "
     "reply 'done' to stop and finish with whatever is complete. Then call run_pipeline again with "
     "ONLY this session_id and their `response` — do NOT pass pipeline_name (that would restart the "
-    "pipeline instead of delivering the answer). To attach a file with the answer: call "
-    "get_upload_url first, PUT the file to the returned upload_url, then pass the r2_key in "
-    "`r2_keys` on the same run_pipeline call. Do NOT answer the question yourself."
+    "pipeline instead of delivering the answer). To attach a file with the answer: pass its "
+    "absolute local path in `input_paths` on the same run_pipeline call. Do NOT answer the "
+    "question yourself."
 )
 PIPELINE_POLL_TEXT = (
     "Still working. Tell the user the current `progress`, then call run_pipeline again with ONLY "
@@ -195,9 +171,8 @@ def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
     return written
 
 
-def _register_skills(harvested: list[tuple[str, bytes]], tenant: Optional[str]) -> list[str]:
-    """Auto-register any generated skills found in the harvested output — PRIVATELY to
-    `tenant`.
+def _register_skills(harvested: list[tuple[str, bytes]]) -> list[str]:
+    """Auto-register any generated skills found in the harvested output.
 
     A generated skill is a directory containing a SKILL.md. Two shapes are handled:
       - nested: `<skill-name>/SKILL.md` (+ any sibling asset files under that folder) —
@@ -205,18 +180,15 @@ def _register_skills(harvested: list[tuple[str, bytes]], tenant: Optional[str]) 
       - root:   a `SKILL.md` at the harvest root means the WHOLE harvest is one skill;
                 the name comes from its frontmatter `name:` field.
     Each skill's FULL folder (SKILL.md plus all its assets, at any depth) is copied into
-    .claude/skills/<clean>__u_<tenant>/ so ONLY that tenant sees it on the next call, and
-    the folder is gitignored. The copied SKILL.md's `name:` frontmatter is rewritten to
-    the owner-suffixed folder name so the spawned CLI resolves exactly this tenant's copy
-    (several tenants may share the same clean name). Only the CLEAN names are returned.
+    .claude/skills/<name>/, next to the built-ins, and the folder is gitignored. The
+    copied SKILL.md's `name:` frontmatter is rewritten to match its folder so the spawned
+    CLI resolves it by that exact name.
 
-    Registration requires a tenant: an anonymous run must NOT install a skill (a global
-    install would leak it to every caller), so with tenant=None nothing is registered.
-    Either way the caller still receives the skill files — registration installs a COPY
-    and never consumes the harvest, so what the run produced is always delivered."""
-    if not tenant:
-        return []
-    roots: dict[str, str] = {}   # path-prefix under the harvest -> CLEAN skill name
+    There is one user — the operator running this server — so a registered skill is
+    simply installed, with no owner suffix and no visibility filter. Registration
+    installs a COPY and never consumes the harvest, so what the run produced is still
+    delivered in the output bucket either way."""
+    roots: dict[str, str] = {}   # path-prefix under the harvest -> skill name
     for rel, content in harvested:
         if Path(rel).name != "SKILL.md":
             continue
@@ -233,21 +205,20 @@ def _register_skills(harvested: list[tuple[str, bytes]], tenant: Optional[str]) 
 
     registered: list[str] = []
     for prefix, clean in roots.items():
-        folder = registry.owned_folder(clean, tenant)
-        dest_root = config.SKILLS_DIR / folder
+        dest_root = config.SKILLS_DIR / clean
         for rel, content in harvested:
             if not rel.startswith(prefix):
                 continue
             sub = rel[len(prefix):]
             out = dest_root / sub
             out.parent.mkdir(parents=True, exist_ok=True)
-            if sub == "SKILL.md":  # the skill's own manifest: force the owner-suffixed name
+            if sub == "SKILL.md":  # the skill's own manifest: keep `name:` == folder name
                 content = registry.rewrite_frontmatter_name(
-                    content.decode("utf-8", "replace"), folder
+                    content.decode("utf-8", "replace"), clean
                 ).encode("utf-8")
             out.write_bytes(content)
         registered.append(clean)
-        _gitignore_generated_skill(folder)
+        _gitignore_generated_skill(clean)
     return registered
 
 
@@ -262,39 +233,6 @@ def _gitignore_generated_skill(skill_name: str) -> None:
                 f.write(f"\n# generated skill (auto-registered by likeminds-mcp)\n{entry}\n")
     except Exception:  # noqa: BLE001 — gitignore update is best-effort
         pass
-
-
-# ----------------------------------------------------------------------------- #
-# Slack run feed
-# ----------------------------------------------------------------------------- #
-
-async def _notify_run(sess: sessions.Session) -> None:
-    """Post the terminal state of a run to the Slack channel: who ran it, the skill, the
-    session id, start/finish, and a download link per artifact. Reads everything off the
-    finished session, so it works identically for a `done` and for any error path."""
-    result = sess.result or {}
-    files = (result.get("summary") or {}).get("files") or []
-    registered = result.get("registered_skills") or []
-    # The driver signed these seconds ago, so they need no re-signing here. "_error" is
-    # its R2-upload-failed sentinel — a key, not a link: nothing reached the bucket, so
-    # there is no URL to offer and the message names the files instead.
-    urls = result.get("download_urls") or {}
-    if "_error" in urls:
-        urls = {}
-    await slack.notify_skill_run(
-        status=sess.status,
-        skill=sess.skill,
-        session_id=sess.id,
-        result_id=sess.result_id,
-        email=await db.get_email(sess.tenant),
-        tenant=sess.tenant,
-        started_at=sess.started_at,
-        finished_at=sess.finished_at,
-        files=files,
-        download_urls=urls,
-        registered_skills=registered,
-        error=sess.error,
-    )
 
 
 # ----------------------------------------------------------------------------- #
@@ -354,39 +292,26 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 sess.progress = "Reading your answer…"
                 continue
 
-            # emit: harvest the deliverable, promote it locally, upload to R2, register any
-            # generated skills, then purge. Promoted to outputs/mcp/<result_id>/ and (when R2
-            # is configured) uploaded for download; it survives the purge so the session can
-            # be continued later under the same session_id.
+            # emit: harvest the deliverable, promote it locally, register any generated
+            # skills, then purge. Promoted to outputs/mcp/<result_id>/, which survives the
+            # purge so the session can be continued later under the same session_id.
             harvested = _harvest(sess.output_dir, sess.sandbox)
             names = _promote(sess.result_id, harvested)
-            if config.USE_R2 and sess.r2_keys:
-                storage.delete_inputs(sess.r2_keys)
 
             # Auto-register any generated skills. No skill shipped in this repo emits one
             # today — document-generator and find-bugs both read their KB at run time now —
             # so this path is currently unexercised, but it stays for caller-authored skills.
-            # Registration installs a private, tenant-scoped COPY under .claude/skills;
-            # it does not consume the harvest. Everything the run produced — a compiled
-            # SKILL.md, its assets, a KB, a document — is still the caller's artifact and
-            # is uploaded for download. The caller is the tenant who ran the job, so
-            # handing them their own files back is not a leak, and a registered skill the
+            # Registration installs a COPY under .claude/skills; it does not consume the
+            # harvest. Everything the run produced — a compiled SKILL.md, its assets, a KB,
+            # a document — stays in the promoted bucket too, because a registered skill the
             # user cannot inspect or keep a copy of is a black box.
-            registered = _register_skills(harvested, sess.tenant)
-            deliverable = list(harvested)
-
-            download_urls: dict = {}
-            if config.USE_R2 and deliverable:
-                try:
-                    download_urls = storage.upload_outputs(sess.result_id, deliverable)
-                except Exception as e:  # noqa: BLE001 — R2 failure must not lose the result
-                    download_urls = {"_error": f"R2 upload failed: {e}"}
+            registered = _register_skills(harvested)
             sessions.purge(sess)
             sess.result = {
                 "result_id": sess.result_id,
+                "output_dir": str(config.RESULTS_DIR / sess.result_id),
                 "summary": {"files": names},
                 **({"registered_skills": registered} if registered else {}),
-                **({"download_urls": download_urls} if download_urls else {}),
             }
             sess.status = "done"
             return
@@ -396,18 +321,10 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
     except Exception as e:  # noqa: BLE001 — surface as a job error, never crash the loop
         sess.status = "error"
         sess.error = f"{type(e).__name__}: {e}"
-        if config.USE_R2 and sess.r2_keys:
-            storage.delete_inputs(sess.r2_keys)
         sessions.purge(sess)  # cleanup on the error path too
     finally:
         sess.finished = True
         sess.finished_at = time.time()
-        # One notification hook for every terminal path (emit, timeout, nudge cap, or a
-        # raised exception) — they all land here. Cancellation (server shutdown) leaves
-        # the status non-terminal, so an interrupted run is not announced as an outcome.
-        # Fire-and-forget: the client's poll must not wait on Slack.
-        if sess.status in ("done", "error"):
-            slack.fire(_notify_run(sess))
 
 
 def _deliver_reply(sess: sessions.Session, msg: str) -> None:
@@ -416,6 +333,27 @@ def _deliver_reply(sess: sessions.Session, msg: str) -> None:
     sess.status = "running"
     if sess.reply_event is not None:
         sess.reply_event.set()
+
+
+# ----------------------------------------------------------------------------- #
+# Inputs plumbing
+# ----------------------------------------------------------------------------- #
+
+def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
+    """Copy local files (incl. binaries) into a step's inputs dir. Works because the
+    server and the client share a filesystem — this server is meant to run on the same
+    machine as the client. A directory is copied whole, keeping its layout, so a caller
+    can hand over a folder of artifacts in one argument. Returns the names staged."""
+    copied: list[str] = []
+    for p in paths or []:
+        src = Path(str(p)).expanduser()
+        if src.is_file():
+            shutil.copy2(src, inputs_dir / src.name)
+            copied.append(src.name)
+        elif src.is_dir():
+            shutil.copytree(src, inputs_dir / src.name, dirs_exist_ok=True)
+            copied.append(src.name + "/")
+    return copied
 
 
 # ----------------------------------------------------------------------------- #
@@ -429,9 +367,8 @@ def _client_api_key(ctx: Optional[Context]) -> Optional[str]:
     streamable-HTTP transport `ctx.request_context.request` is the Starlette request;
     under stdio (or if the context is unavailable) there is no request, so this
     returns None and the server falls back to its own .env creds. Read ONLY from
-    config.API_KEY_HEADER (default `x-api-key`) — the `Authorization` header is reserved
-    for the OAuth bearer token, so BYOK and OAuth ride on the request together without
-    colliding. A `Bearer ` prefix on the x-api-key value itself is tolerated."""
+    config.API_KEY_HEADER (default `x-api-key`); a `Bearer ` prefix on that header's
+    value is tolerated."""
     if ctx is None:
         return None
     try:
@@ -443,71 +380,6 @@ def _client_api_key(ctx: Optional[Context]) -> Optional[str]:
     if val.lower().startswith("bearer "):
         val = val[len("bearer "):].strip()
     return val or None
-
-
-def _tenant_token(ctx: Optional[Context]) -> Optional[str]:
-    """The caller's raw login token from the request header (config.USER_ID_HEADER), or
-    None. Read fresh per request under the streamable-HTTP transport, exactly like the
-    BYOK key; resolved to a tenant via db.resolve_tenant. Never stored. Only used when
-    OAuth is OFF — with OAuth on, identity comes from the bearer token instead."""
-    if ctx is None:
-        return None
-    try:
-        request = ctx.request_context.request
-        val = request.headers.get(config.USER_ID_HEADER) if request is not None else None
-    except Exception:  # noqa: BLE001 — no request context (e.g. stdio) => no token
-        return None
-    return (val or "").strip() or None
-
-
-def _authed_user_id() -> Optional[str]:
-    """The verified user id from the OAuth bearer token, when OAuth is enabled and the
-    request carried a valid token (the SDK's bearer middleware has already validated it).
-    None when OAuth is off or there is no auth context (e.g. a public route)."""
-    try:
-        from mcp.server.auth.middleware.auth_context import get_access_token
-        at = get_access_token()
-    except Exception:  # noqa: BLE001 — no auth context
-        return None
-    return getattr(at, "user_id", None) if at is not None else None
-
-
-async def _resolve_tenant(ctx: Optional[Context]) -> Optional[str]:
-    """The caller's tenant. With OAuth ON, it's the bearer token's verified user id (the
-    middleware guarantees a valid token reached here). With OAuth OFF, it's the
-    USER_ID_HEADER token, validated against Mongo when configured. Both normalize through
-    db._tenant_key so a user keeps the SAME tenant across the header and OAuth paths."""
-    uid = _authed_user_id()
-    if uid:
-        return db._tenant_key(uid)
-    return await db.resolve_tenant(_tenant_token(ctx))
-
-
-# ----------------------------------------------------------------------------- #
-# Tools
-# ----------------------------------------------------------------------------- #
-
-@mcp.tool()
-async def get_upload_url(filename: str) -> dict:
-    """Get a presigned URL to upload a file directly to R2 storage.
-
-    Call this BEFORE run_pipeline when you have a file to pass as input.
-    Steps:
-      1. Call get_upload_url(filename) -> {upload_url, r2_key}
-      2. HTTP PUT the raw file bytes to upload_url (no auth header needed)
-      3. Pass r2_key to run_pipeline via the `r2_keys` parameter
-
-    This uploads directly from the client to R2 — the server never holds
-    the file bytes in memory. The upload URL is valid for 5 minutes.
-    """
-    if not config.USE_R2:
-        return {"error": "R2 is not configured on this server."}
-    upload_url, r2_key = storage.presigned_put_url(filename)
-    return {
-        "upload_url": upload_url,
-        "r2_key": r2_key,
-        "instructions": "HTTP PUT your file bytes to upload_url, then pass r2_key to run_pipeline via r2_keys.",
-    }
 
 
 # ----------------------------------------------------------------------------- #
@@ -655,7 +527,8 @@ def _kb_reference_for_step(
 
 async def _drive_pipeline(
     psess: pipeline.PipelineSession,
-    r2_keys: Optional[list],
+    input_paths: Optional[list],
+    artifacts: Optional[list],
     urls: Optional[list],
     context: Optional[str],
 ) -> None:
@@ -688,12 +561,11 @@ async def _drive_pipeline(
 
             psess.progress = f"Step {i + 1}/{len(psess.steps)}: {step_name}"
 
-            # Resolve the skill entry in the caller's tenant scope
-            entry = registry.resolve_skill(step_name, psess.tenant)
+            entry = registry.resolve_skill(step_name)
             if entry is None:
                 raise RuntimeError(
                     f"Step {i + 1} skill '{step_name}' not found. "
-                    f"Available: {', '.join(s['name'] for s in registry.list_skills(psess.tenant))}"
+                    f"Available: {', '.join(s['name'] for s in registry.list_skills())}"
                 )
 
             # Create a session for this step. WRITEBACK (the final step promotes INTO the
@@ -720,7 +592,6 @@ async def _drive_pipeline(
             )
             sess = sessions.new_session(entry["name"], result_id=step_result_id)
             sess.api_key = psess.api_key
-            sess.tenant = psess.tenant
             psess.current_skill_sess = sess
 
             # Decide whether the upstream KB is REFERENCED (kb=<canonical path>, read in
@@ -730,17 +601,17 @@ async def _drive_pipeline(
             # way.
             reference_kb, stage_prior, stage_seed = _kb_reference_for_step(psess, i)
 
-            # Write inputs. Step 0 gets the caller's uploaded files (into inputs/, or into
+            # Write inputs. Step 0 gets the caller's own files (into inputs/, or into
             # inputs/generated/ in a seeded pipeline so the artifact under critique stays
             # separate). A later step gets the prior step's output copied in UNLESS that output
             # is the KB we chose to pass by reference. The seed is copied in only when it is
             # NOT being referenced (i.e. the writeback pipeline).
             if i == 0:
-                if r2_keys and config.USE_R2:
-                    sess.r2_keys.extend(r2_keys)
-                    upload_dest = sess.inputs_dir / "generated" if psess.seed_result_id else sess.inputs_dir
-                    upload_dest.mkdir(parents=True, exist_ok=True)
-                    storage.download_inputs(r2_keys, upload_dest)
+                if input_paths or artifacts:
+                    dest = sess.inputs_dir / "generated" if psess.seed_result_id else sess.inputs_dir
+                    dest.mkdir(parents=True, exist_ok=True)
+                    _copy_input_paths(dest, input_paths)
+                    engine._write_artifacts(dest, artifacts)
             elif stage_prior:
                 prior_result_id = psess.step_result_ids.get(str(i - 1), "")
                 _stage_bucket(config.RESULTS_DIR / prior_result_id, sess.inputs_dir)
@@ -869,28 +740,18 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
         }
     if psess.status == "done":
         result = psess.result or {}
-        urls = result.get("download_urls") or {}
-        has_links = bool(urls) and "_error" not in urls
-        if has_links and config.USE_R2:
-            try:
-                last_result_id = result.get("result_id", "")
-                result = {**result, "download_urls": storage.output_urls(last_result_id, list(urls))}
-            except Exception:  # noqa: BLE001
-                pass
-        delivery = DELIVERY_TEXT if has_links else "No download links produced."
         return {
             "status": "done",
             "pipeline": psess.pipeline_name,
             "steps_completed": len(psess.steps),
             **result,
-            **({"download_expires_in_seconds": config.R2_URL_EXPIRY} if has_links else {}),
             # The pipeline session id is the one handle the user keeps; it comes AFTER **result so a
             # step's own result dict can never shadow it. No step/bucket ids are exposed — they are
             # recovered from this id server-side when a continuation seeds from it.
             "session_id": psess.id,
             "how_to_continue": _pipeline_continue_text(psess),
             "next_step": (
-                "Pipeline complete. " + delivery
+                "Pipeline complete. " + DELIVERY_TEXT
                 + " Then give the user the pipeline session_id and relay how_to_continue so they "
                 "know how to refine or reuse this result — all continuation is via run_pipeline."
             ),
@@ -928,7 +789,8 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
 async def run_pipeline(
     pipeline_name: Optional[str] = None,
     context: Optional[str] = None,
-    r2_keys: Optional[list] = None,
+    input_paths: Optional[list] = None,
+    artifacts: Optional[list] = None,
     urls: Optional[list] = None,
     seed_session_id: Optional[str] = None,
     session_id: Optional[str] = None,
@@ -936,7 +798,6 @@ async def run_pipeline(
     ctx: Optional[Context] = None,
 ) -> dict:
     client_key = _client_api_key(ctx)
-    tenant = await _resolve_tenant(ctx)
 
     # POLL or ANSWER on an existing pipeline session
     if session_id and not pipeline_name:
@@ -967,13 +828,13 @@ async def run_pipeline(
         if psess.status in ("done", "error"):
             return _pipeline_snapshot(psess)
 
-        has_answer = bool((response and response.strip()) or r2_keys)
+        has_answer = bool((response and response.strip()) or input_paths or artifacts)
         if has_answer and psess.status == "need_input":
             psess.pending_reply = response or ""
             skill_sess = psess.current_skill_sess
             if skill_sess is not None:
-                if r2_keys and config.USE_R2:
-                    storage.download_inputs(r2_keys, skill_sess.inputs_dir)
+                _copy_input_paths(skill_sess.inputs_dir, input_paths)
+                engine._write_artifacts(skill_sess.inputs_dir, artifacts)
             psess.reply_event.set()
 
         await _wait_for_change_pipeline(psess)
@@ -984,10 +845,15 @@ async def run_pipeline(
         state = pipeline.load_state(session_id)
         if state is None:
             return {"status": "error", "message": f"No saved pipeline state for session_id '{session_id}'."}
-        new_inputs = {"r2_keys": r2_keys, "urls": urls, "context": context}
-        psess = pipeline.restore_pipeline_session(session_id, state, client_key, tenant, new_inputs)
+        new_inputs = {"input_paths": input_paths, "urls": urls, "context": context}
+        psess = pipeline.restore_pipeline_session(session_id, state, client_key, new_inputs)
+        # Drive from the MERGED inputs, not just this call's. A local path stays valid, so
+        # it is persisted in state — which only helps if a resume that re-runs step 0
+        # restages the original files alongside anything new the caller just added.
+        merged = psess.original_inputs
         psess.task = asyncio.create_task(
-            _drive_pipeline(psess, r2_keys, urls, context)
+            _drive_pipeline(psess, merged.get("input_paths"), artifacts,
+                            merged.get("urls"), merged.get("context"))
         )
         await _wait_for_change_pipeline(psess)
         return _pipeline_snapshot(psess)
@@ -1028,7 +894,7 @@ async def run_pipeline(
         )}
 
     original_inputs = {
-        "r2_keys": r2_keys or [],
+        "input_paths": input_paths or [],
         "urls": urls or [],
         "context": context,
         "seed_session_id": seed_session_id,
@@ -1043,14 +909,14 @@ async def run_pipeline(
         base_state = pipeline.load_state(seed_pid)
         psess = pipeline.new_appended_session(
             seed_pid, base_state, matched, seed_result_id,
-            client_key, tenant, original_inputs,
+            client_key, original_inputs,
         )
     else:
         psess = pipeline.new_pipeline_session(
-            matched, client_key, tenant, original_inputs, seed_result_id=seed_result_id
+            matched, client_key, original_inputs, seed_result_id=seed_result_id
         )
     psess.task = asyncio.create_task(
-        _drive_pipeline(psess, r2_keys, urls, context)
+        _drive_pipeline(psess, input_paths, artifacts, urls, context)
     )
     await _wait_for_change_pipeline(psess)
     return _pipeline_snapshot(psess)
@@ -1070,12 +936,3 @@ async def list_pipelines(ctx: Optional[Context] = None) -> dict:
     triggers to decide which one to run."""
     pipelines = pipeline.load_pipelines()
     return {"pipelines": pipelines}
-
-
-# ----------------------------------------------------------------------------- #
-# Browser-facing login (email OTP) — mounted on the same ASGI app as /mcp.
-# Imported here, after `mcp` exists, so the routes attach to this instance.
-# ----------------------------------------------------------------------------- #
-from . import web  # noqa: E402
-
-web.register(mcp)
