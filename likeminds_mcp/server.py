@@ -339,21 +339,58 @@ def _deliver_reply(sess: sessions.Session, msg: str) -> None:
 # Inputs plumbing
 # ----------------------------------------------------------------------------- #
 
-def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
-    """Copy local files (incl. binaries) into a step's inputs dir. Works because the
-    server and the client share a filesystem — this server is meant to run on the same
-    machine as the client. A directory is copied whole, keeping its layout, so a caller
-    can hand over a folder of artifacts in one argument. Returns the names staged."""
-    copied: list[str] = []
+def _copy_input_paths(
+    inputs_dir: Path, paths: list | str | None
+) -> tuple[list[str], list[str]]:
+    """Copy local files (incl. binaries) into a step's inputs dir, returning
+    (staged, unresolved).
+
+    Paths are resolved on the SERVER's filesystem, which is only the caller's filesystem
+    when the server runs as a local process. Under Docker it is the CONTAINER's — a host
+    path like /Users/me/brief.pdf does not exist there, and only the bind-mounted
+    /app/inputs does. That mismatch is the single most likely reason a path fails to
+    resolve, which is why every unresolved path is RETURNED rather than skipped: staging
+    nothing used to look exactly like staging everything, so a run would proceed to ask
+    the model for files that were never delivered.
+
+    A directory is copied whole, keeping its layout, so a caller can hand over a folder
+    of artifacts in one argument. A bare string is accepted as a single path: the MCP
+    schema for this parameter is untyped, so a client may legitimately send one, and
+    iterating it would otherwise walk it character by character and stage nothing."""
+    if isinstance(paths, str):
+        paths = [paths]
+    staged: list[str] = []
+    unresolved: list[str] = []
     for p in paths or []:
         src = Path(str(p)).expanduser()
         if src.is_file():
             shutil.copy2(src, inputs_dir / src.name)
-            copied.append(src.name)
+            staged.append(src.name)
         elif src.is_dir():
             shutil.copytree(src, inputs_dir / src.name, dirs_exist_ok=True)
-            copied.append(src.name + "/")
-    return copied
+            staged.append(src.name + "/")
+        else:
+            unresolved.append(str(p))
+    return staged, unresolved
+
+
+def _unresolved_note(unresolved: list[str]) -> dict:
+    """The response fragment that makes a path the server could not see impossible to
+    miss. Empty when everything resolved, so it never adds noise to a healthy call."""
+    if not unresolved:
+        return {}
+    return {
+        "unresolved_input_paths": unresolved,
+        "input_warning": (
+            f"{len(unresolved)} path(s) in `input_paths` do not exist on the SERVER and "
+            "were NOT staged — the run has not received them. Paths are resolved by the "
+            "server process, not by you: if this server runs in Docker, a host path is "
+            "meaningless to it and you must copy the file into the bind-mounted inputs "
+            "directory and pass its container path (e.g. /app/inputs/<name>). Fix the "
+            "path and send it again on the same session_id; do not tell the user the "
+            "file was delivered."
+        ),
+    }
 
 
 # ----------------------------------------------------------------------------- #
@@ -610,8 +647,13 @@ async def _drive_pipeline(
                 if input_paths or artifacts:
                     dest = sess.inputs_dir / "generated" if psess.seed_result_id else sess.inputs_dir
                     dest.mkdir(parents=True, exist_ok=True)
-                    _copy_input_paths(dest, input_paths)
+                    _, unresolved = _copy_input_paths(dest, input_paths)
                     engine._write_artifacts(dest, artifacts)
+                    # Record it on the session so the first poll reports it. A path the
+                    # server cannot see means the step is running WITHOUT a file the
+                    # caller believes it has — worth surfacing before the model spends a
+                    # turn discovering the directory is empty.
+                    psess.unresolved_input_paths = unresolved
             elif stage_prior:
                 prior_result_id = psess.step_result_ids.get(str(i - 1), "")
                 _stage_bucket(config.RESULTS_DIR / prior_result_id, sess.inputs_dir)
@@ -699,6 +741,19 @@ async def _wait_for_change_pipeline(
         await asyncio.sleep(0.5)
 
 
+async def _wait_for_answer_pickup(
+    psess: pipeline.PipelineSession, seconds: int = POLL_WAIT
+) -> None:
+    """Wait for the driver to consume a just-delivered reply, i.e. for the status to
+    leave 'need_input'. The driver's monitor loop ticks every 0.5s, so this is normally
+    sub-second; the bound stops a stuck driver from hanging the caller's request. The
+    inverse of _wait_for_change_pipeline, which waits for the run to STOP."""
+    loop = asyncio.get_running_loop()
+    deadline = loop.time() + seconds
+    while psess.status == "need_input" and loop.time() < deadline:
+        await asyncio.sleep(0.25)
+
+
 def _seed_pipeline_names() -> list[str]:
     """Names of the seed-based (requires_seed) pipelines — the ones a finished run can be
     continued INTO. Read live from pipelines.json so this never drifts from the config."""
@@ -726,7 +781,13 @@ def _pipeline_continue_text(psess: pipeline.PipelineSession) -> str:
 
 
 def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
-    """Serialise a PipelineSession into the response dict the client receives."""
+    """Serialise a PipelineSession into the response dict the client receives.
+
+    An unresolved input path rides on EVERY status, not just `running`: the whole point
+    is that it cannot be missed, and the states where it matters most are the ones where
+    the caller is about to act on a wrong belief — `need_input` (the model is asking for
+    a file it was never given) and `done` (a deliverable built without it)."""
+    warn = _unresolved_note(list(psess.unresolved_input_paths or []))
     if psess.status == "need_input":
         return {
             "status": "need_input",
@@ -736,6 +797,7 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
             "total_steps": len(psess.steps),
             "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
             "questions": psess.questions,
+            **warn,
             "next_step": PIPELINE_RELAY_TEXT,
         }
     if psess.status == "done":
@@ -749,6 +811,7 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
             # step's own result dict can never shadow it. No step/bucket ids are exposed — they are
             # recovered from this id server-side when a continuation seeds from it.
             "session_id": psess.id,
+            **warn,
             "how_to_continue": _pipeline_continue_text(psess),
             "next_step": (
                 "Pipeline complete. " + DELIVERY_TEXT
@@ -772,6 +835,7 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
             "failed_step_name": psess.steps[failed] if 0 <= failed < len(psess.steps) else None,
             "steps_completed": failed if failed >= 0 else psess.current_step,
             "message": (psess.error or "unknown error") + resume_hint,
+            **warn,
         }
     # running
     return {
@@ -782,6 +846,7 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
         "total_steps": len(psess.steps),
         "step_name": psess.steps[psess.current_step] if psess.current_step < len(psess.steps) else "",
         "progress": psess.progress or "starting…",
+        **warn,
         "next_step": PIPELINE_POLL_TEXT,
     }
 
@@ -829,16 +894,22 @@ async def run_pipeline(
             return _pipeline_snapshot(psess)
 
         has_answer = bool((response and response.strip()) or input_paths or artifacts)
+        unresolved: list[str] = []
         if has_answer and psess.status == "need_input":
             psess.pending_reply = response or ""
             skill_sess = psess.current_skill_sess
             if skill_sess is not None:
-                _copy_input_paths(skill_sess.inputs_dir, input_paths)
+                _, unresolved = _copy_input_paths(skill_sess.inputs_dir, input_paths)
                 engine._write_artifacts(skill_sess.inputs_dir, artifacts)
             psess.reply_event.set()
+            # The driver flips the pipeline off need_input only when it wakes on that
+            # event, so snapshotting right now would re-serve the question just answered
+            # — making a delivered reply look ignored, and inviting the caller to send it
+            # again. Give the driver its moment to pick the reply up first.
+            await _wait_for_answer_pickup(psess)
 
         await _wait_for_change_pipeline(psess)
-        return _pipeline_snapshot(psess)
+        return {**_pipeline_snapshot(psess), **_unresolved_note(unresolved)}
 
     # RESUME: session_id + pipeline_name → restart from the failed step
     if session_id and pipeline_name:

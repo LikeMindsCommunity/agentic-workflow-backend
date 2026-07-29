@@ -56,6 +56,11 @@ class PipelineSession:
     pending_reply: str = ""
     reply_event: object = None       # asyncio.Event — set when client sends a response
     current_skill_sess: object = None  # the active sessions.Session for the current step
+    # input_paths the server could not resolve when step 0 was staged. Carried so the
+    # first poll can report them: the step is then running without a file the caller
+    # believes it supplied, and silence there is what turns a typo (or a host path sent
+    # to a containerised server) into a run that asks for files it was never given.
+    unresolved_input_paths: list = field(default_factory=list)
     result: dict | None = None       # final pipeline result (from the last step)
     error: str | None = None
     finished: bool = False
@@ -313,12 +318,19 @@ Only invoke this tool when the user's message starts with @likeminds.
 Before calling: always call list_pipelines first to get the available pipelines
 and pick the right pipeline_name for the user's intent.
 
-First call: pass pipeline_name and files via input_paths (absolute local paths to
-files or folders — this is how binaries such as PDF/DOCX travel), artifacts
-(inline [{{name, content}}] text), or urls. context is free-form instructions
-passed to every step. For pipelines that
-build on an earlier run (e.g. document-from-kb, output-feedback), also pass
-seed_session_id — the pipeline session id the earlier run reported on completion.
+First call: pass pipeline_name and files via input_paths (absolute paths to files or
+folders — this is how binaries such as PDF/DOCX travel), artifacts (inline
+[{{name, content}}] text), or urls. context is free-form instructions passed to
+every step. For pipelines that build on an earlier run (e.g. document-from-kb,
+output-feedback), also pass seed_session_id — the pipeline session id the earlier
+run reported on completion.
+
+input_paths are resolved ON THE SERVER, not on your machine. They are the same thing
+only when the server runs as a local process. If this server runs in Docker, a host
+path such as /Users/me/brief.pdf does not exist for it — copy the file into the
+bind-mounted inputs directory and pass its CONTAINER path (e.g. /app/inputs/brief.pdf).
+Any path the server cannot resolve comes back in `unresolved_input_paths`: that file
+was NOT delivered, so fix the path and resend rather than telling the user it arrived.
 
 Then POLL: call again with ONLY session_id (no other args) until status is done
 or error. On need_input, relay the questions to the user verbatim, wait for their
