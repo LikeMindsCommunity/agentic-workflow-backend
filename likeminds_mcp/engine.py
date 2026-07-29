@@ -48,30 +48,6 @@ NUDGE = (
 _STDOUT_LIMIT = 16 * 1024 * 1024
 
 
-def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
-    """Persist inline {name, content} text artifacts into the inputs dir.
-    Returns the names of the files written. Binary content does not travel inline —
-    it reaches the run as a local path via `input_paths`."""
-    written: list[str] = []
-    for art in artifacts or []:
-        if not isinstance(art, dict):
-            continue
-        name, content = art.get("name"), art.get("content")
-        if not name or content is None:
-            continue
-        # A declared binary encoding would land as its own literal encoded text;
-        # skip it rather than write a corrupt file.
-        if art.get("encoding") not in (None, "", "utf-8", "text"):
-            continue
-        dest = inputs_dir / Path(name).name  # flatten; no path traversal
-        try:
-            dest.write_text(str(content), encoding="utf-8")
-        except Exception:  # noqa: BLE001 — skip an unwritable artifact
-            continue
-        written.append(dest.name)
-    return written
-
-
 def build_first_message(
     skill: str,
     sess: Session,

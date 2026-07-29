@@ -67,6 +67,6 @@ DISABLED_SKILLS_ENV = os.environ.get("LIKEMINDS_MCP_DISABLED_SKILLS", "")
 
 # Safety bounds (override the timeouts via env). These stop a hung or abandoned
 # session from leaking a subprocess / task / sandbox indefinitely.
-TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800000"))    # s; abort one hung turn
-REPLY_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_REPLY_TIMEOUT", "3600000"))  # s; close an unanswered session
+TURN_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_TURN_TIMEOUT", "1800"))    # s; abort one hung turn (default 30 min)
+REPLY_TIMEOUT = int(os.environ.get("LIKEMINDS_MCP_REPLY_TIMEOUT", "3600"))  # s; close an unanswered session (default 1 h)
 MAX_SESSIONS = 500   # evict oldest FINISHED session records beyond this

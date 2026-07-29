@@ -139,5 +139,3 @@ def resolve_skill(name: str) -> dict | None:
     return _index().get(name) if name else None
 
 
-def skill_exists(name: str) -> bool:
-    return resolve_skill(name) is not None
