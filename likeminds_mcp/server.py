@@ -16,9 +16,13 @@ States: running -> need_input <-> running -> ... -> done | error
                   which are also installed server-side.
   - error       : the run failed.
 
-File input flow (the server runs on the caller's own machine, so files move by path):
-  - `input_paths` — absolute local paths; the server copies them into the session
-                    inputs dir. This is the path for binaries (PDF/DOCX/images).
+File input flow (files move by path, resolved against the SERVER's filesystem):
+  - `input_paths` — absolute paths; the server copies them into the session inputs
+                    dir. This is the path for binaries (PDF/DOCX/images). Resolution
+                    is server-side: run on the host they are already valid, and under
+                    Docker they are rebased onto the read-only host mount (see
+                    config.HOST_MOUNT_SOURCE / _resolve_input_path). A path that
+                    resolves to nothing is an error, never a silent skip.
   - `artifacts` / `files` — inline [{name, content}] text, written into the same dir
                     for clients that have no filesystem to point at.
 
@@ -339,14 +343,95 @@ def _deliver_reply(sess: sessions.Session, msg: str) -> None:
 # Inputs plumbing
 # ----------------------------------------------------------------------------- #
 
+class InputPathError(RuntimeError):
+    """One or more `input_paths` could not be resolved on the server's filesystem.
+
+    Raised rather than skipping the path, because a skipped input is INVISIBLE: the step
+    starts with an empty inputs dir, and the skill spends a whole turn asking the caller
+    for files the caller believes it already sent. Failing at the point of staging turns
+    that into an immediate, actionable error."""
+
+
+def _resolve_input_path(raw: str) -> Optional[Path]:
+    """Map one caller-supplied path onto something that exists on THIS filesystem.
+
+    Two tries: the path exactly as given (a server running on the host, where the
+    caller's paths are already valid), then the same path rebased onto the read-only
+    host mount (a server in Docker, where they are not). Returns None when neither
+    lands, which the caller turns into a loud error rather than a silent skip.
+
+    Nothing is guessed. A path that resolves to a real file is used; anything else is
+    reported with the path the caller actually gave, so the fix is obvious."""
+    p = Path(raw).expanduser()
+    if p.exists():
+        return p
+
+    # BOTH halves are required: an empty target would make the join below a RELATIVE
+    # path, which .exists() would then resolve against the process cwd (/app) and could
+    # match an unrelated file. Absent either, there is no mount to rebase onto.
+    if config.HOST_MOUNT_SOURCE and config.HOST_MOUNT_TARGET:
+        try:
+            rel = p.relative_to(config.HOST_MOUNT_SOURCE)
+        except ValueError:
+            return None
+        mapped = Path(config.HOST_MOUNT_TARGET) / rel
+        if mapped.exists():
+            return mapped
+    return None
+
+
+def _missing_paths_help(missing: list[str]) -> str:
+    """The message a caller sees when input_paths don't resolve. It has to say what to
+    DO — the same text reaches the model driving the pipeline, which can then fix the
+    call itself instead of relaying a bare 'file not found' to the user."""
+    listed = "\n".join(f"  - {m}" for m in missing)
+    msg = (
+        f"{len(missing)} input_path(s) could not be found on the server's filesystem:\n"
+        f"{listed}\n\n"
+    )
+    if config.IN_CONTAINER and config.HOST_MOUNT_SOURCE and config.HOST_MOUNT_TARGET:
+        msg += (
+            f"This server runs in Docker. Host paths under {config.HOST_MOUNT_SOURCE} are "
+            f"readable (mounted read-only at {config.HOST_MOUNT_TARGET}); anything outside it "
+            "is invisible to the container, as is a path that simply does not exist.\n"
+            "Check the path is correct, or widen LIKEMINDS_HOST_MOUNT to a directory that "
+            "contains it and restart the server (see docker-compose.yml)."
+        )
+    elif config.IN_CONTAINER:
+        msg += (
+            "This server runs in Docker and resolves input_paths inside the CONTAINER, so a "
+            "host path (/Users/…, /home/…, C:\\…) is not visible to it. No host directory is "
+            "currently mounted: set LIKEMINDS_HOST_MOUNT to the host directory holding these "
+            "files and restart the server (see docker-compose.yml)."
+        )
+    else:
+        msg += "Check that each path is absolute, exists, and is readable by the server process."
+    return msg
+
+
 def _copy_input_paths(inputs_dir: Path, paths: list | None) -> list[str]:
-    """Copy local files (incl. binaries) into a step's inputs dir. Works because the
-    server and the client share a filesystem — this server is meant to run on the same
-    machine as the client. A directory is copied whole, keeping its layout, so a caller
-    can hand over a folder of artifacts in one argument. Returns the names staged."""
-    copied: list[str] = []
+    """Copy local files (incl. binaries) into a step's inputs dir. A directory is copied
+    whole, keeping its layout, so a caller can hand over a folder of artifacts in one
+    argument. Returns the names staged.
+
+    Raises InputPathError listing every path that could not be resolved (see
+    _resolve_input_path for how a host path is mapped onto container storage). Every path
+    is resolved BEFORE anything is copied, so one bad entry cannot leave the inputs dir
+    half-staged — on the reply path the session stays open and the caller retries the
+    whole call, which would otherwise stack a partial copy on top of a partial copy."""
+    resolved: list[Path] = []
+    missing: list[str] = []
     for p in paths or []:
-        src = Path(str(p)).expanduser()
+        src = _resolve_input_path(str(p))
+        if src is None:
+            missing.append(str(p))
+        else:
+            resolved.append(src)
+    if missing:
+        raise InputPathError(_missing_paths_help(missing))
+
+    copied: list[str] = []
+    for src in resolved:
         if src.is_file():
             shutil.copy2(src, inputs_dir / src.name)
             copied.append(src.name)
@@ -830,11 +915,26 @@ async def run_pipeline(
 
         has_answer = bool((response and response.strip()) or input_paths or artifacts)
         if has_answer and psess.status == "need_input":
-            psess.pending_reply = response or ""
             skill_sess = psess.current_skill_sess
             if skill_sess is not None:
-                _copy_input_paths(skill_sess.inputs_dir, input_paths)
+                # Stage the attachments BEFORE releasing the reply. If a path does not
+                # resolve, the reply is NOT consumed — the session stays in need_input so
+                # the caller can correct the paths and answer again, rather than the skill
+                # resuming against files that never arrived.
+                try:
+                    _copy_input_paths(skill_sess.inputs_dir, input_paths)
+                except InputPathError as e:
+                    snapshot = _pipeline_snapshot(psess)
+                    snapshot["error"] = str(e)
+                    snapshot["next_step"] = (
+                        "The file(s) you attached could not be read — see `error`. The question "
+                        "above is still open and the session is still waiting. Fix the paths and "
+                        "call run_pipeline again with the same session_id, the same response, and "
+                        "corrected input_paths. Do not restart the pipeline."
+                    )
+                    return snapshot
                 engine._write_artifacts(skill_sess.inputs_dir, artifacts)
+            psess.pending_reply = response or ""
             psess.reply_event.set()
 
         await _wait_for_change_pipeline(psess)

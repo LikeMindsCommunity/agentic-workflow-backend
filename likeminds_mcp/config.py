@@ -15,6 +15,32 @@ SKILLS_DIR = PROJECT_ROOT / ".claude" / "skills"       # multi-file Agent Skills
 SESSIONS_DIR = PROJECT_ROOT / ".sessions"   # per-session sandboxes (gitignored)
 RESULTS_DIR = PROJECT_ROOT / "outputs" / "mcp"   # promoted deliverables (under gitignored outputs/)
 
+# ─── Host-path resolution ────────────────────────────────────────────────────
+# `input_paths` is resolved against the SERVER's filesystem. Under Docker that is the
+# CONTAINER's filesystem, where a caller's host path (/Users/…, C:\…) simply does not
+# exist — so a caller pasting a perfectly valid local path gets an empty inputs dir.
+#
+# HOST_MOUNT_SOURCE is the host directory bind-mounted read-only at HOST_MOUNT_TARGET
+# (default /host). A path under it is rewritten onto the mount, so ANY host path the
+# caller can name works with no copying and no translation. docker-compose.yml defaults
+# it to the host's $HOME, which is broad on purpose: everything under it is readable by a
+# CLI running with --permission-mode bypassPermissions, including ~/.ssh and other
+# projects' secrets. Set LIKEMINDS_HOST_MOUNT to something narrower to shrink that
+# surface — at the cost of paths outside it no longer resolving.
+#
+# Empty HOST_MOUNT_SOURCE disables the rewrite entirely; a server run directly on the
+# host never needs it, because there the caller's paths resolve natively.
+# Whatever still fails to resolve is reported as an error, never skipped.
+# IN_CONTAINER and HOST_MOUNT_TARGET are declared in the Dockerfile (both are properties
+# of the image, fixed at build time); HOST_MOUNT_SOURCE comes from docker-compose.yml,
+# which alone knows the host-side path. Nothing is defaulted here — outside the image all
+# three are empty, which is correct for a server run directly on the host, where the
+# caller's paths need no rewriting. .strip() because a stray space in a hand-edited .env
+# would otherwise make every rebase silently miss.
+IN_CONTAINER = os.environ.get("LIKEMINDS_IN_CONTAINER", "").strip() == "1"
+HOST_MOUNT_SOURCE = os.environ.get("LIKEMINDS_HOST_MOUNT", "").strip()
+HOST_MOUNT_TARGET = os.environ.get("LIKEMINDS_HOST_MOUNT_AT", "").strip()
+
 # How the spawned Claude signals a pause (ask the user) or a finish (deliverable
 # done): it writes one of these markers on its own line in its reply, and the engine
 # watches the turn's streamed text for them. Deliberately NOT an MCP tool — a stdio

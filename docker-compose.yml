@@ -6,11 +6,13 @@
 # ANTHROPIC_API_KEY). The server has no login, no database and no object storage: it
 # takes files by path and leaves deliverables on disk.
 #
-# FILE PATHS ARE CONTAINER PATHS. `input_paths` is resolved inside the container, so a
-# host path like /Users/me/brief.pdf means nothing to it. Put your files in ./inputs on
-# the host and pass them as /app/inputs/<name>; deliverables come back to ./outputs.
-# Running the server directly on the host (`python -m likeminds_mcp`) avoids this
-# translation entirely and is the simpler option if you have the claude CLI installed.
+# PASS ORDINARY HOST PATHS. `input_paths` is resolved inside the container, so your home
+# directory is bind-mounted read-only at /host and the server rebases anything under it —
+# /Users/me/brief.pdf just works, no copying and no /app/… rewriting. A path outside that
+# mount is reported as an error rather than silently ignored; see the volumes section to
+# narrow or widen what is exposed. Deliverables come back to ./outputs.
+# Running the server directly on the host (`python -m likeminds_mcp`) skips the mount
+# entirely and is the simpler option if you have the claude CLI installed.
 
 services:
   mcp:
@@ -18,6 +20,12 @@ services:
     container_name: likeminds-mcp
     restart: unless-stopped
     env_file: .env
+    environment:
+      # The HOST-side path that /host below is mounted from. The server needs to be TOLD
+      # this — from inside the container it cannot know what the host's $HOME was — and it
+      # uses it to rewrite an incoming host path into the matching /host path. Must stay in
+      # sync with the `- …:/host:ro` volume; both read the same variable so they can't drift.
+      - LIKEMINDS_HOST_MOUNT=${LIKEMINDS_HOST_MOUNT:-${HOME}}
     ports:
       - "8787:8787"
     # Headless Chromium (used by the document skills) crashes on Docker's default 64M SHM.
@@ -29,5 +37,20 @@ services:
       #
       # The container runs as uid 1000; if your host user is not uid 1000 (check with
       # `id -u`), chown these two directories to 1000 or the run cannot write its output.
+      # (Docker Desktop on macOS/Windows maps ownership for you; this bites on Linux.)
       - ./inputs:/app/inputs
       - ./outputs:/app/outputs
+      # `input_paths` resolves inside the container, so a caller's host path would
+      # otherwise be invisible. Your home directory is mounted READ-ONLY at /host and the
+      # server rewrites paths under it, so any path you can name on the host just works —
+      # no copying into ./inputs, no translating to /app/inputs.
+      #
+      # ⚠ This is deliberately broad. Everything under $HOME becomes readable by a CLI
+      # running with --permission-mode bypassPermissions: ~/.ssh, ~/.aws, cloud-CLI
+      # tokens, every other project's .env. Whatever it reads can surface in a
+      # deliverable. Narrow it by setting LIKEMINDS_HOST_MOUNT in .env to the smallest
+      # directory that holds your source material, e.g.
+      #     LIKEMINDS_HOST_MOUNT=/Users/you/Downloads
+      # Read-only is enforced by the :ro flag here, so the container cannot write back
+      # through this mount — but it can read all of it.
+      - ${LIKEMINDS_HOST_MOUNT:-${HOME}}:/host:ro
