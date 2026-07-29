@@ -9,7 +9,7 @@ from pathlib import Path
 from dotenv import load_dotenv
 
 # Load .env before any package module runs so env vars are set when
-# config.py evaluates USE_R2 and other computed constants at import time.
+# config.py evaluates its computed constants at import time.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
 from .config import CLAUDE_BIN, HOST, MODEL, PORT

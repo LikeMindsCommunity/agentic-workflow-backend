@@ -37,9 +37,8 @@ class PipelineSession:
     failed_step: int                 # index of the step that failed, or -1
     step_result_ids: dict[str, str]  # str(step_index) → result_id of the completed step
     step_registered_skills: dict[str, list[str]]  # str(step_index) → registered skill names
-    original_inputs: dict[str, Any]  # {r2_keys, urls, context} from first call
+    original_inputs: dict[str, Any]  # {input_paths, urls, context} from first call
     api_key: str | None
-    tenant: str | None
     step_args: dict[str, dict] = field(default_factory=dict)  # str(step_index) → per-step args, e.g. {"target": "kb"}
     seed_result_id: str | None = None  # existing outputs/mcp bucket staged (read-only) into every step
     seed_writeback: bool = False     # True → the final step writes back INTO seed_result_id in place (refine, e.g. output-feedback); False → the seed is staged read-only and the final step writes a FRESH bucket (generate-from-seed, e.g. document-from-kb / config-from-kb)
@@ -104,7 +103,6 @@ def _parse_steps(raw_steps: list) -> tuple[list[str], dict[str, dict]]:
 def new_pipeline_session(
     pipeline: dict,
     api_key: str | None,
-    tenant: str | None,
     original_inputs: dict,
     seed_result_id: str | None = None,
 ) -> "PipelineSession":
@@ -133,7 +131,6 @@ def new_pipeline_session(
         step_registered_skills={},
         original_inputs=original_inputs,
         api_key=api_key,
-        tenant=tenant,
         reply_event=asyncio.Event(),
         started_at=time.time(),
     )
@@ -147,7 +144,6 @@ def new_appended_session(
     new_pipeline: dict,
     kb_bucket: str | None,
     api_key: str | None,
-    tenant: str | None,
     original_inputs: dict,
 ) -> "PipelineSession":
     """Create a run that CONTINUES an existing pipeline `pipeline_id` in place, rather than
@@ -179,7 +175,6 @@ def new_appended_session(
         step_registered_skills={},
         original_inputs=original_inputs,
         api_key=api_key,
-        tenant=tenant,
         reply_event=asyncio.Event(),
         started_at=time.time(),
     )
@@ -191,7 +186,6 @@ def restore_pipeline_session(
     session_id: str,
     state: dict,
     api_key: str | None,
-    tenant: str | None,
     new_inputs: dict,
 ) -> "PipelineSession":
     """Restore a PipelineSession from persisted state for resume.
@@ -203,9 +197,11 @@ def restore_pipeline_session(
     import time
     stored_inputs = state.get("original_inputs", {})
     merged_inputs = {**stored_inputs}
-    # Caller may supply new r2_keys / urls on resume (e.g. a corrected file)
-    if new_inputs.get("r2_keys"):
-        merged_inputs["r2_keys"] = (merged_inputs.get("r2_keys") or []) + new_inputs["r2_keys"]
+    # Caller may supply new input_paths / urls on resume (e.g. a corrected file)
+    if new_inputs.get("input_paths"):
+        merged_inputs["input_paths"] = (
+            (merged_inputs.get("input_paths") or []) + new_inputs["input_paths"]
+        )
     if new_inputs.get("urls"):
         merged_inputs["urls"] = (merged_inputs.get("urls") or []) + new_inputs["urls"]
     if new_inputs.get("context"):
@@ -224,7 +220,6 @@ def restore_pipeline_session(
         step_registered_skills=state.get("step_registered_skills", {}),
         original_inputs=merged_inputs,
         api_key=api_key,
-        tenant=tenant,
         reply_event=asyncio.Event(),
         started_at=time.time(),
     )
@@ -290,10 +285,9 @@ def save_state(psess: "PipelineSession") -> None:
         "failed_step": failed_step,
         "step_result_ids": step_result_ids,
         "step_registered_skills": step_registered_skills,
-        "original_inputs": {
-            k: v for k, v in psess.original_inputs.items()
-            if k != "r2_keys"  # don't persist R2 keys — they expire
-        },
+        # input_paths ARE persisted: unlike a presigned upload key, a local path stays
+        # valid, so a resume days later can restage exactly the same files.
+        "original_inputs": dict(psess.original_inputs),
     }
     path.write_text(json.dumps(state, indent=2), encoding="utf-8")
 
@@ -319,8 +313,10 @@ Only invoke this tool when the user's message starts with @likeminds.
 Before calling: always call list_pipelines first to get the available pipelines
 and pick the right pipeline_name for the user's intent.
 
-First call: pass pipeline_name and files via r2_keys (from get_upload_url) or
-urls. context is free-form instructions passed to every step. For pipelines that
+First call: pass pipeline_name and files via input_paths (absolute local paths to
+files or folders — this is how binaries such as PDF/DOCX travel), artifacts
+(inline [{{name, content}}] text), or urls. context is free-form instructions
+passed to every step. For pipelines that
 build on an earlier run (e.g. document-from-kb, output-feedback), also pass
 seed_session_id — the pipeline session id the earlier run reported on completion.
 
@@ -331,8 +327,9 @@ reply, then call again with session_id + response. Do NOT answer the questions y
 On error: call again with the same session_id + pipeline_name to resume from the
 failed step — completed steps are not re-run.
 
-On done: render every entry in download_urls as a clickable link for the user.
-Give the user the session_id explicitly and relay how_to_continue.\
+On done: output_dir is the directory holding the deliverable and summary.files
+names every file in it — report each one with its path, and copy them where the
+user wants them. Give the user the session_id explicitly and relay how_to_continue.\
 """
 
 
