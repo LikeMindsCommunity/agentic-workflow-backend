@@ -51,7 +51,10 @@ _STDOUT_LIMIT = 16 * 1024 * 1024
 def _write_artifacts(inputs_dir: Path, artifacts: list | None) -> list[str]:
     """Persist inline {name, content} text artifacts into the inputs dir.
     Returns the names of the files written. Binary content does not travel inline —
-    it reaches the run as a local path via `input_paths`."""
+    it reaches the run as a local path via `input_paths`.
+
+    Called from server.py (the run_pipeline `artifacts` parameter), not from this
+    module — the underscore marks it package-internal, not unused."""
     written: list[str] = []
     for art in artifacts or []:
         if not isinstance(art, dict):
