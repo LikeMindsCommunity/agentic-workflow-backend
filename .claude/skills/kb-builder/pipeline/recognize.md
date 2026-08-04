@@ -17,6 +17,9 @@ Check `outputs/{client}/kb/` (or the `output=` override).
 
 ## Step 2 — Decide the archetype (first run only)
 
+**If the operator gave a `url=` (a live site to map), the archetype is settled: `web-flow`.** The material is a running system, which is what that playbook covers, so there is nothing to match — carry `web-flow` forward and note that `map-site.md` will run after scope. If artifacts were *also* supplied, still match them normally (Steps 1–6 below); a run can legitimately fire `web-flow` plus another archetype, and web-flow proxies like HAR captures, browser test suites, or click-path runbooks reinforce it rather than competing with it.
+
+
 1. **List every playbook.** Walk `playbooks/*.md`. Partition into `specific` (no `fallback:` flag, or `false`) and `fallback` (`fallback: true`). Read each one's front matter and `## Artifact description` / recognition block. The library should hold exactly one fallback; if more, pick the first and warn the operator.
 
 2. **Test specific playbooks against the artifacts.** Each playbook's recognition-signals block lists structural signals — file shape, archetype-defining pairings, how identifiers reference each other. Vendor-specific fingerprints (exact constants, exact field names, vendor brand) are deliberately *not* match conditions; they're observations the scope and build phases capture during analysis. For each specific playbook decide: **fits** / **does not fit** / **uncertain**.
