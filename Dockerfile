@@ -29,7 +29,8 @@ ENV DEBIAN_FRONTEND=noninteractive \
     PIP_NO_CACHE_DIR=1
 
 # ── System packages ────────────────────────────────────────────────────────────
-#   chromium        primary PDF renderer (skills invoke `google-chrome --headless`)
+#   chromium        primary PDF renderer (skills invoke `google-chrome --headless`), and
+#                   the browser the Playwright MCP driver steers for the web-flow skills
 #   poppler-utils   pdftoppm — renders sample/output PDFs to images for the diff pass
 #   fonts-*         real fonts in rendered PDFs (crosextra-carlito == Calibri metrics)
 #   cairo/pango/…   native libs for the WeasyPrint fallback renderer
@@ -45,12 +46,23 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && ln -sf /usr/bin/chromium /usr/local/bin/chromium-browser \
     && rm -rf /var/lib/apt/lists/*
 
-# ── Node 20 + the Claude Code CLI ──────────────────────────────────────────────
+# ── Node 20 + the Claude Code CLI + the Playwright MCP browser driver ──────────
 # A global npm install puts `claude` on PATH for every user (required since the
 # server runs as non-root and shells out to it).
+#
+# @playwright/mcp is the browser driver the web-flow skills need (kb-builder mapping a
+# live site, browser-agent driving one). Installed at BUILD time so a run never fetches it
+# over npx — which would be slow every turn and impossible without egress. It is attached
+# to those skills only, by the engine's narrow MCP carve-out; every other skill still
+# spawns with no MCP servers at all.
+#
+# PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD stops the `playwright` dependency's postinstall from
+# pulling ~400MB of its own browser builds: we point it at the chromium installed above
+# via --executable-path instead, so the image ships one browser rather than two.
+ENV PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD=1
 RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
-    && npm install -g @anthropic-ai/claude-code \
+    && npm install -g @anthropic-ai/claude-code @playwright/mcp@0.0.78 \
     && npm cache clean --force \
     && rm -rf /var/lib/apt/lists/*
 

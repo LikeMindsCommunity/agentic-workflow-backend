@@ -21,9 +21,25 @@ Runs in the main conversation, so pausing to ask for a credential, an OTP, or pe
 
 ## Browser driver
 
-Use whatever browser automation tooling the session exposes (this project ships a Playwright MCP; a Claude browser surface may also be present). You need: navigate, read the page's structure/accessibility tree, read visible text, click, fill, select, screenshot, and read the URL. Prefer reading the **accessibility tree or structured page representation** over raw HTML dumps — it surfaces roles and accessible names, which is where the durable locators live.
+Use whatever browser automation tooling the session exposes (this project ships a Playwright MCP driver; a conversation's own browser surface may also be present). You need: navigate, read the page's **accessibility tree**, read visible text, click, type, select/fill form controls, screenshot, and read the current URL.
+
+**The accessibility tree is the locator source; prefer it over raw HTML.** It gives roles and accessible names directly — the top of the durability ladder — whereas an HTML dump buries them under build-generated classes and wrapper elements. Where the tool hands back its own element references, treat those as a **read-time convenience, not a locator**: they are valid for that page state only. Record the durable role/name/test-id the reference resolves to, never the reference itself.
+
+**If the tools offer no explicit wait-for-condition, poll — never sleep.** Re-read the page (or the specific text) until the cue holds or a sensible attempt cap is reached. A fixed sleep is flaky when the site is slow and wasteful when it is fast, and it is the single most common reason a recorded flow behaves differently on the next run.
 
 If no browser tooling is available in the session, **stop and say so**. Never simulate a mapping run from general knowledge of how such sites usually work: a fabricated selector is indistinguishable from a real one in the KB and fails only later, on a live click.
+
+### The browser is unattended — assume it always, never branch on it
+
+Your browser runs **headless inside the server's container**, while the operator is at the other end of a text conversation. They cannot see the screen and cannot touch it. Do not reason about whether someone might be watching, and do not ask which kind of surface you have: assuming a handover is possible is the one mistake here that produces an instruction **nobody can carry out**, stranding the run at a wall while the operator waits for a browser that was never theirs. Assuming it is never possible costs nothing.
+
+Three things follow, and they shape the whole phase:
+
+- **Screenshot at every pause and give a path the operator can actually open.** A browser they cannot see is only usable if what it saw lands somewhere reachable — a screenshot is how they "look at" a blocker, so never describe a screen in prose and leave it at that when you could show it. **Only paths under `outputs/` exist for them.** The browser driver writes its captures there already, so cite the path it returns, **relative to the project root** (drop any leading `/app/`). Never cite a `work/` or sandbox path: those live inside the server, are discarded when the run ends, and hand the operator a file they cannot open — which is worse than no screenshot, because it reads like evidence was provided.
+- **You sign in, not them.** Take the credential values from the SOW and type them yourself. When the SOW lacks one, **ask the operator for the value in chat** — the email, the password, the one-time code — and type that. A missing credential is a question, never a request for them to take over the browser, and never a reason to stall. Use what they send and never repeat it: no echo, no restating to confirm, and nothing written into a log, screenshot, the corpus or the KB.
+- **A gate that truly needs a person at the browser cannot be cleared here at all** — a CAPTCHA, a bot check, a device-trust prompt, an SSO consent screen. Say so plainly, record it as a gate, and mark the journeys behind it as needing a human. Do not ask for a handover that cannot happen, and do not wait on one. An **OTP is different and still works**: it is a value the operator reads off their phone and pastes, so ask for it directly and type it yourself.
+
+**Where the driver can execute arbitrary JavaScript in the page, don't reach for it to get around a hard element.** Evaluating script can read anything and click anything, which makes it a fast way to produce a locator no ordinary run could ever use — the KB would record a step that only works when driven by script. Use it, if at all, to *observe* (read an attribute, confirm a frame boundary); never as the recorded way to perform an action.
 
 ## Step 0 — Settle the safety posture before the first navigation
 
@@ -49,10 +65,13 @@ Navigate to `url=` and establish the ground truth before walking any journey:
 If the journeys live behind a login:
 
 - Map the login screen **as a screen** first — field locators, the submit control, the validation strings — before typing anything.
-- Sign in with the operator's credentials. **Record the credential's NAME, never its value** (`<from secrets: NAME>`), and never let a value reach a log, a screenshot, or the KB.
+- **Enumerate every sign-in route the screen offers, and prefer the direct email/password form.** Most login screens present several: a credential form, OAuth/SSO buttons ("Continue with Google/Microsoft/Apple"), a magic link, sometimes enterprise SAML. Map the **direct credential path in full**, and record OAuth/SSO only as a documented **fallback** — which providers, what the button says, where the redirect goes — marked as requiring a human.
+
+  Take the OAuth route only when the product offers no direct one. It does not sign you into *this* product; it hands off to another company's identity system, and the run inherits that provider's consent screen, account chooser, device-trust checks and MFA, across a redirect chain no mapped locator survives. It also puts a credential that unlocks the operator's mail and calendar in play for a run that needed one product. If federated sign-in is genuinely the only option, **say so plainly and stop to ask** — the operator may be able to provision a direct account, and if not, that changes the engagement, because every future run will need a person present.
+- Sign in with the credential **values the SOW carries** — it is the single input document, holding the env values and credentials alongside the journey list, so there is no separate secrets file to look for. **If the SOW lacks one, ask the operator for it in chat and type it yourself.** Either way **record the credential's NAME, never its value** (`<from SOW: NAME>`), and never let a value reach a log, a screenshot, the observation corpus, or the KB.
 - Record the **success cue** (the redirect target, the logged-in element), where the session lives, and the **session-dropped cue** so a runner can recognise being bounced.
-- If a step-up challenge fires — MFA, an emailed or SMS code, a device-trust prompt, a CAPTCHA — **pause and ask** (see Step 5). Do not attempt to defeat it.
-- If no credentials were supplied, map everything public, then ask once whether to continue behind the wall or record the rest as unmapped.
+- If a step-up challenge fires, split it by whether the operator can help from a text channel (Step 5). **MFA / an emailed or SMS code** → ask for the code, then type it yourself. **A CAPTCHA, a bot check, or a device-trust prompt that needs a real device** → nobody can clear it from here: stop, record the gate, and mark the journeys behind it as requiring a human. Never attempt to defeat any of them.
+- If no credentials were supplied, map everything public, then ask once — naming the credential and the file to put it in — whether to continue behind the wall or record the rest as unmapped.
 
 ## Step 3 — Walk each in-scope journey
 
@@ -91,20 +110,28 @@ Where probing is not safe or not reachable, record the state as unobserved in `g
 
 ## Step 5 — Blockers: pause, ask, resume
 
-When you hit something you cannot or must not pass alone — a login wall with no credentials, MFA, an OTP sent elsewhere, a CAPTCHA, a payment step, a signup that would create a real account, an OS file picker, an undocumented screen you did not expect — **stop and ask the operator**, in one clear message:
+**The operator cannot reach your browser.** Yours is headless and isolated inside the server's container; they are at the other end of a text conversation and cannot see it, click in it, or take over and hand it back. The only thing they can do is **send you text**. So never ask them to "complete this step in the browser" — nobody can carry that out. Ask for the *information* that lets **you** do it.
+
+That splits every blocker three ways:
+
+- **Needs a value or a decision** — a login you have no credential for, which of two routes to take, an OTP, permission to submit a form, an undocumented screen. **Ask, wait, then act yourself.** Credentials belong here too: where the SOW doesn't carry one, ask the operator in chat for the email, password or code and type it. Use it and never repeat it.
+- **Needs a human at the browser** — a CAPTCHA or bot check, an OAuth/SSO consent screen, a signup that would create a real account, a bank's payment step-up, a native OS file dialog. **Nobody can do these from here**, so do not wait on them: **stop that journey and record the gate**.
+- **Needs nothing** — you simply must not pass it alone (a state-changing submit). Ask for the go-ahead as above.
+
+When you do ask, one clear message:
 
 - **where** you are (the screen and the journey step),
 - **what** is blocking,
-- **what you need** to continue — a value, a decision, or for the operator to complete the step themselves in the browser and tell you to carry on,
+- **what you need from them** — the exact value, decision, or credential name and which file to put it in,
 - **the cost of skipping** — which journey steps stay unmapped if you move past it.
 
-Then wait. When you resume, **re-establish where you are before acting** — never assume the screen is unchanged after a human touched it.
+Then wait. On resume, **re-establish where you are before acting** — not because someone touched the browser (nobody can), but because a pause can run close to an hour: the session may have expired, a supplied OTP has almost certainly gone stale, and transient UI has moved on.
 
-Every blocker you meet is also **KB content**: record what fired it, whether it fires always or only conditionally (a new device, a new session, a high-value action), and what a person must supply to clear it. This is what lets the downstream `browser-agent` prompt for exactly the right thing at exactly the right moment instead of failing.
+**A blocker nobody can pass is a finding, not a failure.** Record what fired it, on which screen, and whether it fires always or only conditionally (a new device, a new session, a high-value action). "This journey cannot run unattended because sign-in is Google-only" is one of the most useful things this whole phase produces — it tells the client exactly where the automation boundary falls, and it lets `browser-agent` warn up front instead of discovering the same wall mid-run.
 
 ## Step 6 — Write the observation corpus
 
-Write observations to the scratch/`work/` directory as you go, not in one pass at the end — a run that hits a hard blocker halfway must still leave `build.md` something real to compose from.
+Write observations to the scratch/`work/` directory as you go, not in one pass at the end — a run that hits a hard blocker halfway must still leave `build.md` something real to compose from. (`work/` is the right place for *your own* intermediate notes, which only `build.md` reads. It is the wrong place for anything the **operator** must open — that has to be under `outputs/`, per the screenshot rule above.)
 
 Per journey, record the ordered steps with **provenance on every one**:
 

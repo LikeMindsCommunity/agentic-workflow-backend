@@ -23,6 +23,7 @@ import asyncio
 import json
 import os
 import re
+import shutil
 from pathlib import Path
 
 from . import config
@@ -139,6 +140,20 @@ def build_first_message(
             "it, and if it looks like an earlier run of THIS same job, ask the caller "
             "whether to continue from it before using any of it."
         )
+    published = f"{config.RESULTS_DIR.relative_to(config.PROJECT_ROOT)}/{sess.result_id}"
+    msg += (
+        f"\n\nWHERE THE CALLER CAN SEE FILES: only paths under `outputs/` exist for the caller — "
+        f"that directory is shared out to them. Everything else you can write is INSIDE the server "
+        f"and invisible: the sandbox holding `inputs=` and `output=`, and any `work/` scratch dir, "
+        f"are discarded when the run ends. Your deliverable is published to `{published}/`, and a "
+        f"tool that writes its own files (e.g. browser screenshots) may return a path under "
+        f"`outputs/` too — those are fine to cite.\n"
+        f"So whenever you ask the caller to LOOK at something — a screenshot of the screen you are "
+        f"stuck on, a draft, a diff — the file must be under `outputs/`, and you cite it "
+        f"**relative to the project root** (`{published}/<name>`, or the returned path with any "
+        f"leading `/app/` removed). Never hand them a `work/` or sandbox path: it does not exist "
+        f"for them, and they cannot answer a question about a file they cannot open."
+    )
     if context:
         msg += f"\n\nContext / instructions from the caller:\n{context}"
     return msg
@@ -159,13 +174,72 @@ def build_reply_message(response: str | None, added_files: list[str]) -> str:
     return msg or "continue"
 
 
-def _mcp_config_json() -> str:
-    """The --mcp-config payload: an empty server set. We use NO MCP server for
-    signalling (see module docstring), so the spawned Claude runs with no MCP servers
-    at all. Combined with --strict-mcp-config so the spawned Claude never loads the
-    project .mcp.json — which would otherwise make it connect back to THIS server
-    (recursion) and spawn every project MCP server each turn."""
-    return json.dumps({"mcpServers": {}})
+# ─── Browser automation surface (web-flow skills) ────────────────────────────
+# The only skills handed a browser. Both are useless without one — kb-builder mapping a
+# live site and browser-agent driving one must navigate/click/fill and read the
+# accessibility tree — while every other skill has no business spawning a browser process.
+BROWSER_MCP_SKILLS = frozenset({"kb-builder", "browser-agent"})
+# Fetch spec for the fallback path only; the image installs this globally at build time so
+# `playwright-mcp` is normally already on PATH and nothing is fetched at run time.
+BROWSER_MCP_SPEC = "@playwright/mcp@0.0.78"
+# The Chromium the image already ships for PDF rendering. Steering it keeps one browser in
+# the image instead of two; absent when the server runs on a host, where Playwright falls
+# back to its own build.
+BROWSER_CHROMIUM = Path("/usr/bin/chromium")
+# Where the driver writes screenshots and traces. This deliberately sits under outputs/ —
+# which is bind-mounted to the host — and NOT in the sandbox: the sandbox is invisible to
+# the operator and is discarded with the run. A headless browser the operator cannot see is
+# only usable if what it saw lands somewhere they can open, and it has to land there DURING
+# the run, because the whole point is looking at a screen while the skill is paused asking
+# about it (nothing is harvested until a run finishes). Kept out of outputs/mcp/ so it can
+# never collide with a promoted deliverable.
+BROWSER_EVIDENCE_ROOT = config.PROJECT_ROOT / "outputs" / "browser"
+
+
+def _browser_mcp_server(sess: Session) -> dict | None:
+    """The stdio Playwright driver handed to web-flow skills, or None if unavailable.
+
+    Flags, all real (`playwright-mcp --help`): --headless because there is no display;
+    --no-sandbox because Chromium's sandbox needs privileges the container doesn't grant;
+    --isolated so each run starts from a clean in-memory profile and no session outlives it
+    (a mapping run must never inherit a previous run's cookies); --executable-path to reuse
+    the Chromium the image already ships instead of fetching a second browser; --output-dir
+    so screenshots and traces land where the operator can actually open them."""
+    installed = shutil.which("playwright-mcp")
+    if installed:
+        command, args = installed, []
+    elif shutil.which("npx"):
+        command, args = "npx", ["-y", BROWSER_MCP_SPEC]
+    else:
+        return None  # no driver resolvable — the skill will report the missing surface
+    evidence = BROWSER_EVIDENCE_ROOT / sess.id
+    evidence.mkdir(parents=True, exist_ok=True)
+    args = args + ["--headless", "--no-sandbox", "--isolated",
+                   "--output-dir", str(evidence)]
+    if BROWSER_CHROMIUM.exists():
+        args += ["--executable-path", str(BROWSER_CHROMIUM)]
+    return {"command": command, "args": args}
+
+
+def _mcp_config_json(sess: Session) -> str:
+    """The --mcp-config payload: an empty server set for almost every skill. We use NO MCP
+    server for signalling (see module docstring), so the spawned Claude normally runs with
+    no MCP servers at all. Combined with --strict-mcp-config so the spawned Claude never
+    loads the project .mcp.json — which would otherwise make it connect back to THIS server
+    (recursion) and spawn every project MCP server each turn.
+
+    The one exception is the browser carve-out: the web-flow skills (BROWSER_MCP_SKILLS)
+    cannot function without a browser driver, so for those we name exactly ONE server here.
+    That is still OUR config, not the project's — .mcp.json remains unread and the recursion
+    property holds. Note the driver may still be connecting when the turn starts (the same
+    race that rules MCP out for signalling); the skills treat an absent browser surface as a
+    reason to stop and say so, which is the correct outcome rather than a fabricated map."""
+    servers: dict = {}
+    if sess.skill in BROWSER_MCP_SKILLS:
+        server = _browser_mcp_server(sess)
+        if server:
+            servers["playwright"] = server
+    return json.dumps({"mcpServers": servers})
 
 
 def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
@@ -178,7 +252,7 @@ def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--append-system-prompt", HARNESS,
-        "--mcp-config", _mcp_config_json(),
+        "--mcp-config", _mcp_config_json(sess),
         "--strict-mcp-config",
     ]
     if config.MODEL:

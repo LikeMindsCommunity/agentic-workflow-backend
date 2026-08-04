@@ -56,6 +56,12 @@ A mixed engagement fires more than one playbook: partial API docs *plus* a UI th
 
 - **Entry and session.** The landing URL; whether login is required; the login page's field locators; the credentials **by name only**; the exact success cue; where the session lives (cookie, storage) and how long it lasts; the cue that the session has dropped (usually a bounce to login); and how to sign out. Also note *remember-me* behaviour and concurrent-session limits, which quietly break repeat runs.
 
+- **Every sign-in method the page offers, ranked — and direct credentials outrank federated identity.** A login screen usually presents several routes: an email/password (or username/password) form, one or more OAuth/SSO buttons ("Continue with Google/Microsoft/Apple/GitHub"), a magic-link-by-email option, and sometimes SAML for enterprise tenants. **Record them all, and mark the direct email/password form as the preferred route whenever it exists.**
+
+  The reason is not stylistic. An OAuth button does not log you into *this* product — it hands the session off to **a different company's identity system**, and everything downstream becomes that provider's problem: its own consent screen, its own account chooser when several are signed in, its own device-trust and risk checks, its own MFA, and a redirect chain across origins that a mapped locator cannot survive. It also widens the blast radius enormously, since the credential in play now unlocks the operator's mail, calendar and everything else that identity secures — for a run that only needed to log into one product. A magic link is weakly better than OAuth but still off-platform: it parks the flow in an inbox the automation may not be able to reach.
+
+  So capture the direct-credential path in full detail, and capture the OAuth/SSO path as a **documented fallback** — which providers are offered, what the button says, and where the redirect goes — flagged as needing a human. When the product offers *only* federated sign-in, say so explicitly and record which provider, because that fact reshapes the whole engagement: the client must either provision a direct account or accept that every run needs someone present.
+
 - **Deep-linkability — capture this deliberately.** For every screen, establish whether it can be reached by URL directly or only by clicking through. A stable deep link collapses four fragile clicks into one navigation, and is the single largest robustness win available in this archetype. Record the URL pattern, and note when a deep link only works with a warm session.
 
 - **The screen catalog.** Per screen: URL pattern, what it is for, which role/permission reaches it, its landmarks, and the states it can be in (populated, empty, loading, error, read-only, over-quota).
@@ -94,7 +100,8 @@ A mixed engagement fires more than one playbook: partial API docs *plus* a UI th
 A phrasing bank, not a checklist. Ask only what the SOW and the site do not already answer, and only what would change the KB.
 
 - **BLOCKING** — "Which journeys from the SOW should I map? I'll map exactly these and mark everything else out of scope."
-- **BLOCKING** — "The `{journey}` flow requires signing in. Do you have an account I should use, or should I stop at the login wall and document everything behind it as unmapped?"
+- **BLOCKING** — "The `{journey}` flow requires signing in and the SOW doesn't carry a credential for `{account}`. Send me the email and password and I'll sign in myself — I'll also need the one-time code once it arrives. If you'd rather not, I'll stop at the login wall and document everything behind it as unmapped."
+- **BLOCKING** — "`{product}` only offers `Continue with {provider}` — there's no email/password route. I can't complete a provider consent flow, and nobody can do it at my browser since it runs headless on the server. Can a direct-credential account be provisioned? If not, this product needs a human present for every run, and I'll record that as the automation boundary."
 - **BLOCKING** — "Completing `{journey}` means actually {submitting the order / sending the message / deleting the record} on a live site. May I execute it to map what follows, and with what test data? If not, I'll document the form and mark everything past the submit as inferred."
 - **BLOCKING** — "Sign-in sent a one-time code to `{destination}`. Please paste it, or tell me to stop here and record MFA as a run-time intervention."
 - **IMPORTANT** — "Is there a staging or sandbox origin? Without one, mapping and every future run target production."
@@ -112,7 +119,7 @@ Each is a "do not X because Y" the runtime can enforce on its own KB output.
 2. Never record a positional index (`:nth-child`) as an element's only locator — a new row, an ad slot, or a reordered list silently retargets the click onto the wrong thing.
 3. Never record a URL containing a real identifier — parameterize it, or the KB encodes one account's records as the product's structure.
 4. Never record real customer data, PII, or account contents seen while mapping — capture the shape, redact the instance.
-5. Never record a credential value; record its name only, matching the `<from secrets: NAME>` convention the downstream design uses.
+5. Never record a credential value; record its name only, matching the `<from SOW: NAME>` convention the downstream runner uses. The SOW carries the values, which makes it secret-bearing — never copy it into the KB or quote it back.
 6. Never treat "the control exists" as "the action succeeded" — without a recorded success cue the runner cannot tell a submit from a silent validation failure.
 7. Never record a fixed sleep as a wait — record the observable condition, or the flow is flaky by construction.
 8. Never let one role's view stand for every role's — an owner account hides the permission-denied path the runner will hit.
@@ -139,7 +146,7 @@ Reference only — size the file list to the journeys actually in scope. The jou
 - `cues.md` — verbatim success, failure, validation, and empty-state strings, plus which cues are transient.
 - `waits-and-timing.md` — per-action wait conditions, long-running operations, and how completion is signalled.
 - `state-changing-actions.md` — the mutation inventory with reversibility, destructive flags, and double-submission risk.
-- `interventions.md` — every human gate: what fires it, when, and what a person must supply to clear it.
+- `interventions.md` — every human gate: what fires it, when, and — the distinction downstream actually turns on — **whether a remote operator can clear it from a text channel at all**. A gate that resolves to a value someone can type into a chat message (an email, a password, an OTP, a missing input) is a pause the automation survives, because the agent supplies it to the page itself. A gate that needs a person *at the browser* (a CAPTCHA, an OAuth consent screen, a bank's 3-D Secure step, a native OS dialog) cannot be cleared by an unattended runner at all, and must be recorded as a hard automation boundary rather than a prompt. Blurring the two produces a KB that promises journeys the runner will stall on forever.
 - `conventions.md` — URL and id patterns, pagination style, modal and dialog patterns, date formats, new-tab behaviour, anti-automation posture.
 - `gaps.md` — what was not mapped and why, so nothing downstream mistakes silence for coverage.
 
