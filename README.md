@@ -231,3 +231,9 @@ run_pipeline(pipeline_name="build-kb", r2_keys=["<r2_key>"], context="...")
 ```
 
 On `done`, `download_urls` maps each output filename to a presigned R2 GET URL (valid for `R2_URL_EXPIRY` seconds). Re-poll the same `session_id` to get fresh links after they expire.
+
+---
+
+## License
+
+Licensed under the Apache License, Version 2.0. See [LICENSE](LICENSE) for details.
