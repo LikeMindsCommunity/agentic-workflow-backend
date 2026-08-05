@@ -48,7 +48,9 @@ A mixed engagement fires more than one playbook: partial API docs *plus* a UI th
 
 5. **Mutation gap.** Some journeys simply cannot be observed to their end without changing state — you cannot see the confirmation screen without submitting the order. So every fact in the KB carries a provenance: **observed** (seen directly), **inferred** (read off a form's affordances without firing it), or **unmapped** (never reached). Inference is legitimate and often correct; presenting it as observation is not.
 
-6. **Human-gate gap.** MFA prompts, emailed or SMS one-time codes, CAPTCHAs, identity re-verification, payment authorization, native OS file pickers, third-party SSO redirects, and "we noticed unusual activity" lockouts. These are **not obstacles to route around** — they are first-class, documentable features of the flow. The whole downstream design depends on the KB naming each one, where it fires, whether it fires always or conditionally, and what a human must supply to clear it.
+6. **Human-gate gap.** MFA prompts, emailed or SMS one-time codes, CAPTCHAs, identity re-verification, payment authorization, native OS file pickers, third-party SSO redirects, and "we noticed unusual activity" lockouts. These are **not obstacles to route around** — they are first-class, documentable features of the flow. The whole downstream design depends on the KB naming each one, where it fires, whether it fires always or conditionally, and what a human must supply to clear it. At mapping time a gate is also a **question**: whether to supply what clears it, work around it, or accept it as a boundary is the operator's decision, and the KB records the decision *they* made — never one the analyst made for them.
+
+The bar this all adds up to: **a later agent, holding only the KB, must be able to execute every in-scope journey** — each screen it crosses named with a URL pattern, each element it acts on carrying a durable locator and a fallback, each action a wait condition and a verbatim cue, each human gate recorded with what clears it. Map to that bar and no further. The skip-entirely categories at the end of this playbook are not economies of effort but signal protection: cosmetic and off-journey material buries the facts the runner depends on.
 
 ## What to look for when analyzing
 
@@ -95,9 +97,11 @@ A mixed engagement fires more than one playbook: partial API docs *plus* a UI th
 - **Any existing automation** — codegen scripts, test suites, HAR captures, internal click-path runbooks. These often name the exact `data-testid`s the product's own engineers rely on, which is the best locator source that exists.
 - **Whether automated access is permitted.** Terms of service, rate limits, and whether the client owns or merely uses the site.
 
+None of these has to arrive before mapping starts, and its absence never bounds the mapping by default: each becomes a question **at the moment it is needed** — a credential at the login wall, the mutation posture at the first submit, the journey list before the first walk. The analyst can and should prompt the operator at any point of the mapping for any credential or input the exploration requires. What is never allowed is resolving one of these silently: a wall the operator never heard about is not a scope decision, it is a mapping defect.
+
 ## Questions to ask the operator
 
-A phrasing bank, not a checklist. Ask only what the SOW and the site do not already answer, and only what would change the KB.
+A phrasing bank, not a checklist. Ask only what the SOW and the site do not already answer, and only what would change the KB — but ask **at any point of the journey**: before the first navigation, mid-walk, or standing at a wall. Two asks are duties, not options: any credential or input the mapping needs (ask for the value in chat and type it yourself), and any decision to leave something unexplored (present it and let the operator decide — never conclude on your own that a journey stops here, and ask too when you are unsure whether a section is worth mapping at all).
 
 - **BLOCKING** — "Which journeys from the SOW should I map? I'll map exactly these and mark everything else out of scope."
 - **BLOCKING** — "The `{journey}` flow requires signing in and the SOW doesn't carry a credential for `{account}`. Send me the email and password and I'll sign in myself — I'll also need the one-time code once it arrives. If you'd rather not, I'll stop at the login wall and document everything behind it as unmapped."
@@ -130,6 +134,7 @@ Each is a "do not X because Y" the runtime can enforce on its own KB output.
 13. Never use locale-dependent visible text as a primary locator on a multi-locale site — the runner may sign in to a different language than you mapped.
 14. Never quietly skip a human gate because it "only appeared once" — a conditional MFA challenge that fires on a new device fires on every fresh runner.
 15. Never present a partially-mapped journey as complete — an unmarked gap becomes a runner improvising on a live site, which is the exact failure this architecture exists to prevent.
+16. Never abandon a journey — or settle for the public surface of a gated site — without the operator's explicit say-so. "Stuck" is a question to ask, not a scope decision to make; a gap the operator never sanctioned is a defect, not a boundary.
 
 ## Typical KB shapes that have worked
 

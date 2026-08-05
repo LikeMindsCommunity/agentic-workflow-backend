@@ -8,7 +8,7 @@ Unattended browser automation meets things it cannot pass alone. Some are securi
 
 So there is exactly one thing the operator can do: **send you text.** Everything else has to be done by you, in your browser, using what they send.
 
-That makes "please do this part yourself in the browser and tell me when you're done" an instruction **nobody can carry out**. Never write it. When you need something, ask for the *information* that lets **you** do it — and when no information could (a CAPTCHA, an OAuth consent screen), that is not a pause at all: it is a **hard stop and a finding**, because there is no one to hand it to.
+That makes "please do this part yourself in the browser and tell me when you're done" an instruction **nobody can carry out**. Never write it. When you need something, ask for the *information* that lets **you** do it — and when no information could (a CAPTCHA, an OAuth consent screen), that is not a pause at all: it is a **hard stop and a finding**, because there is no one to hand it to. The finding still ends with a question, though: the operator, not you, decides whether the run skips that journey, resolves the gate another way, or stops.
 
 **Never offer the operator the browser.** Not as an option, not as a preference, not as "if you can reach this session". There is no shared-session arrangement, no attach mode, no way for them to click. Presenting one as a choice sends them off to look for something that does not exist and strands the run while they try.
 
@@ -17,7 +17,7 @@ Every blocker therefore falls into one of just two buckets:
 | Bucket | Who acts | How it resolves |
 |---|---|---|
 | **A — resolvable by text** | Operator sends it, **you** act | Ask in chat, wait, then perform the action yourself. Covers workflow values, decisions, **and credentials** — email, password, OTP, anything the sign-in needs |
-| **B — needs a human at the browser** | **Nobody can** | Stop and record it as an automation blocker. Do not wait for the impossible |
+| **B — needs a human at the browser** | **Nobody can** | Stop at the gate and record it — then **ask the operator what happens next**: skip the journey, resolve it another way, or abort. Do not wait for the impossible, and do not decide alone |
 
 **Credentials are bucket A.** The SOW normally carries them, but when it doesn't, **ask the operator for the value in chat and type it yourself.** Do not send them looking for a secrets file, and do not treat a missing password as a dead end — it is a question. The operator is the account holder deciding to hand you their own credential for their own automation; asking plainly is the working path, and refusing to ask just deadlocks a run that one message would have unblocked.
 
@@ -51,12 +51,12 @@ Ask for one blocker at a time as you hit it. A speculative list of everything th
 | **Unexpected screen** | A | Screenshot it, describe exactly what is on it, and ask how to proceed | Never click an unknown button to find out what it does |
 | **KB gap** (locators dead, cue absent) | A | Report it as a concrete re-map request. You may offer to re-target by the KB's *described* element (role + accessible name), with them confirming the match from your description | Never silently re-derive a selector from the page and carry on |
 | **Missing credential** (email, password, API key) | A | The SOW normally carries it; when it doesn't, **ask the operator for the value in chat** — name which credential and which field it fills — then type it yourself | Never ask them to sign in for you; never guess or try a default; never echo the value back, log it, or write it into any artifact |
-| **CAPTCHA / bot check / "unusual activity"** | **C** | **Stop.** Record what fired it, on which screen, and under what conditions. Report the journey as not automatable unattended | **Never** attempt to solve, script around, or evade one. Never rotate identity or retry to shake it off |
-| **OAuth / SSO is the only route** | **C** | **Stop.** The provider's consent screen, account chooser and device checks cannot be driven from here, and there is no one at the browser to complete them. Record it as a human-only sign-in gate | Never enter identity-provider credentials; never accept a consent or scope-grant screen |
-| **Signup / account creation** | **C** | **Stop.** Creating an account binds the client to terms and creates a real identity — not a decision you make, and not one you can take on their behalf from here | Never create an account, accept terms, or agree to a privacy policy |
-| **Payment authorization** (3-D Secure, bank redirect) | **C** | **Stop.** The step-up leg happens on the bank's domain and needs the cardholder | Never enter card or bank details; never confirm a payment |
-| **Native OS dialog** (file picker, print, permission prompt) | **C** unless scriptable | Use the driver's own upload/download/dialog affordance if one exists — that is bucket A. If the flow needs a true OS dialog, **stop**: there is no desktop here | Never accept a download the SOW didn't ask for; never execute a downloaded file |
-| **Rate limit / lockout / maintenance** | **C** | **Stop** and report where the run reached. Suggest resuming later | Never hammer, never rotate identity, never work around the limit |
+| **CAPTCHA / bot check / "unusual activity"** | **B** | **Stop.** Record what fired it, on which screen, and under what conditions. Report the journey as not automatable unattended | **Never** attempt to solve, script around, or evade one. Never rotate identity or retry to shake it off |
+| **OAuth / SSO is the only route** | **B** | **Stop.** The provider's consent screen, account chooser and device checks cannot be driven from here, and there is no one at the browser to complete them. Record it as a human-only sign-in gate | Never enter identity-provider credentials; never accept a consent or scope-grant screen |
+| **Signup / account creation** | **B** | **Stop.** Creating an account binds the client to terms and creates a real identity — not a decision you make, and not one you can take on their behalf from here | Never create an account, accept terms, or agree to a privacy policy |
+| **Payment authorization** (3-D Secure, bank redirect) | **B** | **Stop.** The step-up leg happens on the bank's domain and needs the cardholder | Never enter card or bank details; never confirm a payment |
+| **Native OS dialog** (file picker, print, permission prompt) | **B** unless scriptable | Use the driver's own upload/download/dialog affordance if one exists — that is bucket A. If the flow needs a true OS dialog, **stop**: there is no desktop here | Never accept a download the SOW didn't ask for; never execute a downloaded file |
+| **Rate limit / lockout / maintenance** | **B** | **Stop** and report where the run reached. Suggest resuming later | Never hammer, never rotate identity, never work around the limit |
 
 ## Resuming after a pause
 
@@ -74,4 +74,4 @@ So before acting on the answer:
 
 Log every intervention as a first-class event: which class and bucket, at which step, what was asked, what came back (**redacted** — never the credential value, never the OTP), and what happened next. A run that paused twice and finished is a successful run with two interventions, and the record should read that way.
 
-**Bucket C blockers are the most valuable thing this skill discovers.** Each one is a precise statement of where the automation boundary actually falls on this product — worth reporting prominently, and worth sending back to `kb-builder` so the KB predicts the gate up front instead of the next run discovering it mid-flow.
+**Bucket B blockers are the most valuable thing this skill discovers.** Each one is a precise statement of where the automation boundary actually falls on this product — worth reporting prominently, and worth sending back to `kb-builder` so the KB predicts the gate up front instead of the next run discovering it mid-flow.

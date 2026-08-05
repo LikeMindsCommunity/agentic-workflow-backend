@@ -27,6 +27,7 @@ If there is no prompt, note that scope must come from the artifacts plus a focus
 - For each journey, note the **role** it needs and any **precondition** (an existing record to act on, a populated list).
 - Mark journeys the SOW implies but does not state — an unstated sign-in is still a journey that must be mapped.
 - Everything not on this list is **out of scope for mapping**. This is the phase's most important output: an unbounded site walk has no completion condition, and the journey list is what supplies one.
+- The list is a boundary, not a blindfold. When the live site later surfaces something whose relevance to a journey is genuinely unclear — an approval queue a submit might route through, a settings page that could gate a field — `map-site.md` asks the operator rather than silently exploring or silently skipping. Scope changes mid-walk are made **with** the operator, never inferred.
 
 Take one quick reconnaissance look at the entry URL if it helps you name the journeys sensibly, but do not start walking them — that is `map-site.md`, after the scope is locked. If the SOW is missing or names no concrete tasks, **ask for the journey list before browsing anything**; it is the one input this phase cannot default.
 

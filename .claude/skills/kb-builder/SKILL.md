@@ -109,6 +109,8 @@ Current playbooks: `nodeflow`, `document-from-template`, `api-integration`, `web
 
 12. **On a URL run, mark provenance on every journey step — observed, inferred, or unmapped.** This is load-bearing, not bookkeeping: it is what tells `browser-agent` which steps are trustworthy and which need a human watching the first live run. An unmarked gap becomes an agent improvising on someone's production account, which is the exact failure this architecture exists to prevent. Never present an inferred step as observed, and never let a partially-walked journey read as complete.
 
+13. **On a URL run, exploration ends only where the operator says it ends.** Prompt the operator for any credential, value, or decision the mapping needs, at any point of the walk — a missing credential is asked for at the wall, never recorded as a boundary unasked. Never mark a journey, screen, or section unmapped, and never settle for a gated site's public surface, on your own authority: present every wall, gate, and scope doubt to the operator and record **their** decision in the gaps file. And hold the finished KB to one test — a downstream agent holding only the KB can execute the in-scope journeys end to end. Everything short of that bar is either mapped, asked about, or operator-sanctioned as a gap; nothing falls short silently.
+
 ## Folder layout
 
 ```

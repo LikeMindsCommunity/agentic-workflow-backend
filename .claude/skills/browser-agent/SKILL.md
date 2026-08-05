@@ -77,7 +77,7 @@ This is the skill's defining behaviour, so it gets a real protocol rather than a
 
 **You and the operator are not looking at the same browser.** Yours is headless and isolated inside the server's container; they are at the other end of a text conversation and cannot see it, click in it, or take it over. The only thing they can do is **send you text** — so every intervention must ask for *information that lets you act*, never for them to act.
 
-Never write "complete this part yourself in the browser and tell me when you're done." Nobody can carry that out. Where no information could unblock you — a CAPTCHA, an OAuth consent screen, a bank's 3-D Secure page — that is not a pause but a **hard stop and a finding**: record precisely what the gate is and report the journey as not automatable unattended. That is a real result, not a failure.
+Never write "complete this part yourself in the browser and tell me when you're done." Nobody can carry that out. Where no information could unblock you — a CAPTCHA, an OAuth consent screen, a bank's 3-D Secure page — the *gate* is a hard stop: never attempt it and never wait for a handover. But the *run* is not yours to end silently: record precisely what the gate is, report the journey as not automatable unattended, then **ask the operator how to proceed** — skip this journey and continue, resolve the gate another way (a direct-credential account, a different route the site offers), or abort. The finding is a real result, not a failure; what happens next is their call, not yours.
 
 **When you pause, say four things in one message:**
 
@@ -89,6 +89,8 @@ Never write "complete this part yourself in the browser and tell me when you're 
 Then **stop and wait**. The only realistic options are: send the value, add the missing credential to the SOW and re-supply it, skip this journey, or abort the run.
 
 **On resume, re-establish reality before acting.** Nobody touched the browser while you waited — the risk is **elapsed time**, not interference. A pause can run close to an hour, which outlives many sessions: expect to be bounced to login, expect a supplied OTP to have expired (ask for a fresh one rather than burning a retry on a dead code), and expect transient UI to have moved on. Re-read the URL and screen, confirm the step's precondition, and only then continue.
+
+**Never call `browser_close` (or close the last tab).** The browser deliberately outlives your turn — it is what keeps the live page, its cookies, and any in-flight login waiting for you across a pause. Closing it throws that away and cannot be undone from chat. Leave teardown to the server; it happens automatically when the run ends.
 
 **Credentials are just another thing you ask for.** They come from the SOW where it carries them, and **from the operator in chat where it doesn't** — email, password, OTP alike. **You type them; they never touch the browser.** What is not negotiable is what happens next: use the value, never repeat it. Never echo it back, restate it to confirm, log it, screenshot it, or write it into any artifact. See the credentials note under Inputs.
 
@@ -172,6 +174,7 @@ A **completed live run** of the SOW's workflow against the site, plus its **run 
 ## Never do this
 - **Never invent a page, URL, selector, field, or cue.** A gap in the KB is reported and sent back for a re-map, never filled by guessing from the screen.
 - **Never solve, bypass, or evade a CAPTCHA, bot check, or rate limit.** Hand it to the operator.
+- **Never abandon a journey or end the run without asking.** A hard gate stops the gate, not the conversation — the operator decides whether to skip, re-route, or abort, and the run record shows their decision.
 - **Never take a state-changing action without the gate**, or a destructive one without the concrete-target re-confirm — and never re-submit blindly after an ambiguous result; read state first.
 - **Never chain off an unverified action**, and never proceed with a blank or guessed capture.
 - **Never mishandle a credential.** Values come from the SOW, or from the operator in chat when the SOW lacks one — and once you have one, it is **never echoed back, restated, logged, screenshotted, or written into any artifact**. **Never reproduce the SOW itself** either; it carries secrets, so it is not something to quote, paste, or copy into the run record.

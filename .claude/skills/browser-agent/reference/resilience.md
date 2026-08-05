@@ -26,13 +26,15 @@ Never substitute a selector you derived by reading the page. It will often be ri
 | Spinner or skeleton still showing | **Transient** | Wait for it to clear; never act over a loading state |
 | Bounced to login | **Recoverable once** | Re-authenticate per the KB, resume. **Recurs → stop** (a login loop means something is wrong) |
 | Locator dead, fallback works | **Recoverable** | Continue, and log it as a re-map signal |
-| Both locators dead | **Terminal for the step** | Stop, report the KB gap |
-| Success cue never appears | **Terminal for the step** | The action did **not** succeed. Do not chain off it |
-| Failure cue appears | **Terminal for the step** | Read it verbatim into the report — the site is telling you why |
-| Required capture absent | **Terminal for the run** | Stop. Never continue with a blank or an inferred value |
+| Both locators dead | **Terminal for the step** | Stop and ask — report the KB gap; the operator decides: confirm a re-target, skip, or abort |
+| Success cue never appears | **Terminal for the step** | The action did **not** succeed. Do not chain off it — report and ask before moving on |
+| Failure cue appears | **Terminal for the step** | Read it verbatim into the report — the site is telling you why — then ask how to proceed |
+| Required capture absent | **Terminal for the run** | Stop and ask. Never continue with a blank or an inferred value |
 | Screen contradicts the KB | **Terminal** | Stop and ask — do not explore to work out where you are |
 
 **Retries are for transport and timing only.** Retrying a click whose *cue* never appeared is not a retry — it is doing the action twice, and on a mutating step that double-creates.
+
+**Terminal never means silent.** A terminal verdict ends the *step*, not the conversation: report what happened and ask the operator whether to skip the journey, resolve it another way, or abort. Ending the run without that exchange is abandoning it, and that decision belongs to the operator.
 
 ## Waiting
 

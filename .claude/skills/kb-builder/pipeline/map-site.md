@@ -37,9 +37,18 @@ Three things follow, and they shape the whole phase:
 
 - **Screenshot at every pause and give a path the operator can actually open.** A browser they cannot see is only usable if what it saw lands somewhere reachable — a screenshot is how they "look at" a blocker, so never describe a screen in prose and leave it at that when you could show it. **Only paths under `outputs/` exist for them.** The browser driver writes its captures there already, so cite the path it returns, **relative to the project root** (drop any leading `/app/`). Never cite a `work/` or sandbox path: those live inside the server, are discarded when the run ends, and hand the operator a file they cannot open — which is worse than no screenshot, because it reads like evidence was provided.
 - **You sign in, not them.** Take the credential values from the SOW and type them yourself. When the SOW lacks one, **ask the operator for the value in chat** — the email, the password, the one-time code — and type that. A missing credential is a question, never a request for them to take over the browser, and never a reason to stall. Use what they send and never repeat it: no echo, no restating to confirm, and nothing written into a log, screenshot, the corpus or the KB.
-- **A gate that truly needs a person at the browser cannot be cleared here at all** — a CAPTCHA, a bot check, a device-trust prompt, an SSO consent screen. Say so plainly, record it as a gate, and mark the journeys behind it as needing a human. Do not ask for a handover that cannot happen, and do not wait on one. An **OTP is different and still works**: it is a value the operator reads off their phone and pastes, so ask for it directly and type it yourself.
+- **A gate that truly needs a person at the browser cannot be cleared here at all** — a CAPTCHA, a bot check, a device-trust prompt, an SSO consent screen. Never attempt one, never ask for a handover that cannot happen, and never wait on one. But the gate ends only the *action*, not the conversation: report it plainly, lay out the realistic ways past it (a direct-credential account, a TOTP seed, an alternate route the screen offers), and **ask the operator which to take — or whether to leave the journeys behind it unmapped. That decision is theirs, never yours.** An **OTP is different and still works**: it is a value the operator reads off their phone and pastes, so ask for it directly and type it yourself.
 
 **Where the driver can execute arbitrary JavaScript in the page, don't reach for it to get around a hard element.** Evaluating script can read anything and click anything, which makes it a fast way to produce a locator no ordinary run could ever use — the KB would record a step that only works when driven by script. Use it, if at all, to *observe* (read an attribute, confirm a frame boundary); never as the recorded way to perform an action.
+
+## Asking is the default; abandoning is the operator's call
+
+These four rules govern the whole phase and outrank any impulse to be self-sufficient:
+
+- **You can and should prompt the operator at any point of the mapping** — for a credential, a value, a decision, a go-ahead, or a scope call. An ask costs one pause; a silent assumption costs a defective KB. There is no stage of the walk where asking is out of bounds.
+- **Never abandon a journey, a screen, or the run on your own authority.** Every wall — a login you hold no credential for, a step-up challenge, a hard gate, a screen that doesn't match, a section of uncertain relevance — gets a question **before** it becomes a gap. `gaps` records the operator's decision ("operator chose to skip X because Y"), never a decision you made alone. A gap the operator never heard about is a mapping defect, not a scope choice.
+- **Unsure whether a section matters to a journey? Ask** — don't silently skip it and don't silently wander into it. The corollary holds too: sections plainly on no in-scope journey (marketing, blog, help, legal, cosmetic chrome) are distractions — stay off them without needing to ask.
+- **Silence is not a decision.** A run that arrived with no credential, or with instructions that simply never mention signing in, has *not* decided that everything behind the wall is out of scope. The operator decides that at the wall, when you ask.
 
 ## Step 0 — Settle the safety posture before the first navigation
 
@@ -71,11 +80,13 @@ If the journeys live behind a login:
 - Sign in with the credential **values the SOW carries** — it is the single input document, holding the env values and credentials alongside the journey list, so there is no separate secrets file to look for. **If the SOW lacks one, ask the operator for it in chat and type it yourself.** Either way **record the credential's NAME, never its value** (`<from SOW: NAME>`), and never let a value reach a log, a screenshot, the observation corpus, or the KB.
 - Record the **success cue** (the redirect target, the logged-in element), where the session lives, and the **session-dropped cue** so a runner can recognise being bounced.
 - If a step-up challenge fires, split it by whether the operator can help from a text channel (Step 5). **MFA / an emailed or SMS code** → ask for the code, then type it yourself. **A CAPTCHA, a bot check, or a device-trust prompt that needs a real device** → nobody can clear it from here: stop, record the gate, and mark the journeys behind it as requiring a human. Never attempt to defeat any of them.
-- If no credentials were supplied, map everything public, then ask once — naming the credential and the file to put it in — whether to continue behind the wall or record the rest as unmapped.
+- If no credentials were supplied, don't treat that as a decision — it usually means nobody has been asked yet. Map the login screen and anything public, then **stop at the wall and ask**: name each credential the in-scope journeys need and ask for the values in chat (you type them yourself). Only two exits exist from that wall — the operator sends the credentials and you continue behind it, or the operator explicitly chooses to stop and you record everything behind it as unmapped **by their decision**. The run never quietly ends at a login screen.
 
 ## Step 3 — Walk each in-scope journey
 
 Take the journeys in the order the scope locked. For each, walk it end to end, recording as you go rather than reconstructing afterwards from memory.
+
+Stay on the journey's spine: the screens it crosses and their immediate surroundings. A control no in-scope journey touches is a distraction, however interesting the widget — and when you genuinely cannot tell whether something matters to a journey, ask the operator rather than deciding either way alone.
 
 **Per screen you land on**, record:
 
@@ -115,7 +126,7 @@ Where probing is not safe or not reachable, record the state as unobserved in `g
 That splits every blocker three ways:
 
 - **Needs a value or a decision** — a login you have no credential for, which of two routes to take, an OTP, permission to submit a form, an undocumented screen. **Ask, wait, then act yourself.** Credentials belong here too: where the SOW doesn't carry one, ask the operator in chat for the email, password or code and type it. Use it and never repeat it.
-- **Needs a human at the browser** — a CAPTCHA or bot check, an OAuth/SSO consent screen, a signup that would create a real account, a bank's payment step-up, a native OS file dialog. **Nobody can do these from here**, so do not wait on them: **stop that journey and record the gate**.
+- **Needs a human at the browser** — a CAPTCHA or bot check, an OAuth/SSO consent screen, a signup that would create a real account, a bank's payment step-up, a native OS file dialog. **Nobody can do these from here**, so never attempt them and never wait for a handover — but do not walk away from the journey on your own either: record the gate, present the realistic options (provision a direct-credential account, supply a TOTP seed, take an alternate route the screen offers, or leave the journey unmapped), and **let the operator choose**. The gate goes in the corpus either way; what happens to the journey is their call.
 - **Needs nothing** — you simply must not pass it alone (a state-changing submit). Ask for the go-ahead as above.
 
 When you do ask, one clear message:
@@ -127,7 +138,7 @@ When you do ask, one clear message:
 
 Then wait. On resume, **re-establish where you are before acting** — not because someone touched the browser (nobody can), but because a pause can run close to an hour: the session may have expired, a supplied OTP has almost certainly gone stale, and transient UI has moved on.
 
-**A blocker nobody can pass is a finding, not a failure.** Record what fired it, on which screen, and whether it fires always or only conditionally (a new device, a new session, a high-value action). "This journey cannot run unattended because sign-in is Google-only" is one of the most useful things this whole phase produces — it tells the client exactly where the automation boundary falls, and it lets `browser-agent` warn up front instead of discovering the same wall mid-run.
+**A blocker nobody can pass is a finding, not a failure.** Record what fired it, on which screen, and whether it fires always or only conditionally (a new device, a new session, a high-value action). "This journey cannot run unattended because sign-in is Google-only" is one of the most useful things this whole phase produces — it tells the client exactly where the automation boundary falls, and it lets `browser-agent` warn up front instead of discovering the same wall mid-run. But it becomes a finding only after the operator has seen it and made the call — a journey abandoned without that exchange is not a finding, it is a mapping defect.
 
 ## Step 6 — Write the observation corpus
 
@@ -145,7 +156,9 @@ Also record, once per site: origins and environment tells, the session model, th
 
 ## Step 7 — Hand off to build
 
-Summarise for the operator before `build.md` runs: which journeys mapped fully, which partially and where they stopped, which blockers need a human at run time, and anything the site does that will make automation fragile. Then hand the corpus to `build.md`, which composes the KB from it under the `web-flow` playbook's guidance.
+First run the **runner test** against every in-scope journey: could a later agent, holding only the KB this corpus will become, execute the journey unaided — every screen named with its URL pattern, every acted-on element carrying a primary locator and a fallback, every action a wait condition and a verbatim success cue, every human gate recorded with what clears it? Whatever fails the test takes one of exactly three exits: map it now, ask the operator about it now, or record it in `gaps` with the operator's explicit sanction. There is no fourth exit where a hole ships silently.
+
+Then summarise for the operator before `build.md` runs: which journeys mapped fully, which partially and where they stopped, which blockers need a human at run time, and anything the site does that will make automation fragile. Then hand the corpus to `build.md`, which composes the KB from it under the `web-flow` playbook's guidance.
 
 ## Don't
 
@@ -156,5 +169,7 @@ Summarise for the operator before `build.md` runs: which journeys mapped fully, 
 - **Don't record a fixed sleep as a wait.** Record the observable condition.
 - **Don't attempt to solve, bypass or evade a CAPTCHA, bot check, or rate limit.** Record it and surface it.
 - **Don't crawl beyond the locked scope.** The journeys plus their immediate surroundings; a full sitemap is cost without value.
+- **Don't abandon a journey, a screen, or the run on your own authority.** Every wall gets a question before it becomes a gap; `gaps` records the operator's decision, never yours.
+- **Don't silently include or exclude a section you're unsure about.** Relevance in doubt is a question for the operator — in both directions.
 - **Don't dump raw page HTML into the corpus.** Record the judged, durable locators and cues — a DOM dump is noise that rots immediately and buries the facts that matter.
 - **Don't present an inferred or unmapped step as observed.** Silence about a gap becomes a runner improvising on a live site.

@@ -23,7 +23,6 @@ import asyncio
 import json
 import os
 import re
-import shutil
 from pathlib import Path
 
 from . import config
@@ -179,49 +178,9 @@ def build_reply_message(response: str | None, added_files: list[str]) -> str:
 # live site and browser-agent driving one must navigate/click/fill and read the
 # accessibility tree — while every other skill has no business spawning a browser process.
 BROWSER_MCP_SKILLS = frozenset({"kb-builder", "browser-agent"})
-# Fetch spec for the fallback path only; the image installs this globally at build time so
-# `playwright-mcp` is normally already on PATH and nothing is fetched at run time.
-BROWSER_MCP_SPEC = "@playwright/mcp@0.0.78"
-# The Chromium the image already ships for PDF rendering. Steering it keeps one browser in
-# the image instead of two; absent when the server runs on a host, where Playwright falls
-# back to its own build.
-BROWSER_CHROMIUM = Path("/usr/bin/chromium")
-# Where the driver writes screenshots and traces. This deliberately sits under outputs/ —
-# which is bind-mounted to the host — and NOT in the sandbox: the sandbox is invisible to
-# the operator and is discarded with the run. A headless browser the operator cannot see is
-# only usable if what it saw lands somewhere they can open, and it has to land there DURING
-# the run, because the whole point is looking at a screen while the skill is paused asking
-# about it (nothing is harvested until a run finishes). Kept out of outputs/mcp/ so it can
-# never collide with a promoted deliverable.
-BROWSER_EVIDENCE_ROOT = config.PROJECT_ROOT / "outputs" / "browser"
 
 
-def _browser_mcp_server(sess: Session) -> dict | None:
-    """The stdio Playwright driver handed to web-flow skills, or None if unavailable.
-
-    Flags, all real (`playwright-mcp --help`): --headless because there is no display;
-    --no-sandbox because Chromium's sandbox needs privileges the container doesn't grant;
-    --isolated so each run starts from a clean in-memory profile and no session outlives it
-    (a mapping run must never inherit a previous run's cookies); --executable-path to reuse
-    the Chromium the image already ships instead of fetching a second browser; --output-dir
-    so screenshots and traces land where the operator can actually open them."""
-    installed = shutil.which("playwright-mcp")
-    if installed:
-        command, args = installed, []
-    elif shutil.which("npx"):
-        command, args = "npx", ["-y", BROWSER_MCP_SPEC]
-    else:
-        return None  # no driver resolvable — the skill will report the missing surface
-    evidence = BROWSER_EVIDENCE_ROOT / sess.id
-    evidence.mkdir(parents=True, exist_ok=True)
-    args = args + ["--headless", "--no-sandbox", "--isolated",
-                   "--output-dir", str(evidence)]
-    if BROWSER_CHROMIUM.exists():
-        args += ["--executable-path", str(BROWSER_CHROMIUM)]
-    return {"command": command, "args": args}
-
-
-def _mcp_config_json(sess: Session) -> str:
+async def _mcp_config_json(sess: Session) -> str:
     """The --mcp-config payload: an empty server set for almost every skill. We use NO MCP
     server for signalling (see module docstring), so the spawned Claude normally runs with
     no MCP servers at all. Combined with --strict-mcp-config so the spawned Claude never
@@ -231,28 +190,39 @@ def _mcp_config_json(sess: Session) -> str:
     The one exception is the browser carve-out: the web-flow skills (BROWSER_MCP_SKILLS)
     cannot function without a browser driver, so for those we name exactly ONE server here.
     That is still OUR config, not the project's — .mcp.json remains unread and the recursion
-    property holds. Note the driver may still be connecting when the turn starts (the same
-    race that rules MCP out for signalling); the skills treat an absent browser surface as a
-    reason to stop and say so, which is the correct outcome rather than a fabricated map."""
+    property holds.
+
+    What the turn is handed is a DISPOSABLE stdio playwright-mcp that attaches over CDP to
+    a long-lived Chromium the server owns per session (browser.py). The driver dies with
+    the turn; the browser does not — so a pause→ask→resume lands the next turn in the SAME
+    live browser, tabs and in-flight logins intact. Without that split, asking the operator
+    for an OTP killed the browser, the resume re-ran the login, and the site issued a fresh
+    code that invalidated the one just sent. An absent browser surface still yields no
+    server here, which the skills report as a missing surface rather than fabricating."""
     servers: dict = {}
     if sess.skill in BROWSER_MCP_SKILLS:
-        server = _browser_mcp_server(sess)
-        if server:
-            servers["playwright"] = server
+        from . import browser  # lazy: keeps engine importable where no browser is used
+        entry = await browser.ensure(sess)
+        if entry:
+            servers["playwright"] = entry
     return json.dumps({"mcpServers": servers})
 
 
-def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
+async def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
     """Full argv for one turn. Permission mode bypasses prompts so any tool the skill
     needs runs; no tool allowlist is imposed. --strict-mcp-config + our own
-    --mcp-config keep the spawned Claude off the project's MCP servers."""
+    --mcp-config keep the spawned Claude off the project's MCP servers.
+
+    Async because resolving the browser config may have to START this session's
+    Chromium and wait for its CDP port — on the first browser turn only; later turns
+    probe and reuse it."""
     argv = [
         config.CLAUDE_BIN, "-p", message,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--append-system-prompt", HARNESS,
-        "--mcp-config", _mcp_config_json(sess),
+        "--mcp-config", await _mcp_config_json(sess),
         "--strict-mcp-config",
     ]
     if config.MODEL:
@@ -347,7 +317,7 @@ async def run_turn(sess: Session, message: str, resume: bool) -> dict | None:
     then nudges + resumes). Raises RuntimeError on a hard subprocess failure (nonzero
     exit with no marker), which the caller surfaces as an error.
     """
-    argv = _build_argv(sess, message, resume)
+    argv = await _build_argv(sess, message, resume)
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(config.PROJECT_ROOT),
