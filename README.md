@@ -16,8 +16,7 @@ Claude client  →  @likeminds message
          Runs a pipeline of Agent Skills
          (each skill = one Claude Code turn)
                        ↓
-          Outputs land in outputs/ locally
-          (or R2 presigned URLs if configured)
+          Outputs land in outputs/ on disk
 ```
 
 The server drives **Claude Code CLI** as a subprocess. Each pipeline is a sequence of skills defined in `.claude/pipelines.json`. Skills are Claude Code Agent Skills - plain markdown instruction files in `.claude/skills/`. The engine is skill-agnostic: the same server runs any skill you drop in, whether built-in or custom.
@@ -160,25 +159,15 @@ All env vars - set persistent ones in `.env`:
 | `LIKEMINDS_MCP_TURN_TIMEOUT` | Per-turn timeout, seconds | `1800` (30 min) |
 | `LIKEMINDS_MCP_REPLY_TIMEOUT` | Wait-for-user-reply timeout, seconds | `3600` (1 h) |
 | `LIKEMINDS_MCP_DISABLED_SKILLS` | Comma-separated skill names to disable globally | unset |
-| `R2_BUCKET` | Cloudflare R2 bucket name (remote deployments only) | R2 disabled if unset |
-| `R2_ACCESS_KEY_ID` | R2 access key | |
-| `R2_SECRET_ACCESS_KEY` | R2 secret key | |
-| `R2_ENDPOINT` | R2 endpoint URL | |
-| `R2_URL_EXPIRY` | Presigned GET URL TTL for downloads, seconds | `3600` (1 h) |
 
 ---
 
 ## Production Deployment
 
-To expose the server to remote clients, bind it to `0.0.0.0` and set up Cloudflare R2 for file transfers:
+To expose the server to remote clients, bind it to `0.0.0.0` in `.env`:
 
 ```bash
-# .env
 LIKEMINDS_MCP_HOST=0.0.0.0
-R2_BUCKET=your-bucket
-R2_ACCESS_KEY_ID=...
-R2_SECRET_ACCESS_KEY=...
-R2_ENDPOINT=https://<account_id>.r2.cloudflarestorage.com
 ```
 
 Start with Python or Docker:
@@ -197,22 +186,7 @@ Point clients at the public URL:
 claude mcp add --transport http --scope user likeminds https://<your-host>/mcp
 ```
 
-**Remote file input flow:** Upload files to R2 first, then pass the keys to `run_pipeline`:
-
-```bash
-# 1. Get a presigned upload URL
-get_upload_url("brief.pdf") → {upload_url, r2_key}
-
-# 2. Upload
-curl -X PUT <upload_url> --data-binary @brief.pdf
-
-# 3. Run the pipeline
-run_pipeline(pipeline_name="build-kb", r2_keys=["<r2_key>"], context="...")
-```
-
-On `done`, `download_urls` maps each output filename to a presigned R2 GET URL. Re-poll with the same `session_id` for fresh links after they expire.
-
-**R2 is optional for local use.** Without it, `get_upload_url` is unavailable and deliverables land in `outputs/mcp/pipeline_<id>/` on disk.
+Deliverables land in `outputs/` on the server.
 
 ---
 
