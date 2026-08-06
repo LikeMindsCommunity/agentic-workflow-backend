@@ -8,7 +8,7 @@ fallback: false
 
 Analysis advice and lessons learned for clients whose subject is **a live web application that must be driven through its UI** — because the tasks they want automated have **no API surface** to call. The "artifact" here is unusual: it is not a folder of files but **the running site itself**, reached at a URL and observed by a browser.
 
-The downstream chain is fixed: the KB this produces is read by **`api-agent`**, which detects the *web-flow* shape and designs a browser-mode **LLD/ED**; that document is then executed by **`runner-agent`** as live UI actions. So the KB's audience is not a human reader — it is a designer that must resolve every page, action, locator and cue into a runbook, and a runner that must then click exactly those things on a live site with no ability to improvise.
+The primary consumer is **`browser-agent`**, which reads the KB directly and executes a SOW's workflow live in the browser — there is no intermediate design document on that path; the run plan is resolved in-session and recorded in the run dir. A second, separate path exists for design-then-run engagements: **`api-agent`** can read a web-flow KB, detect the shape, and produce a browser-mode LLD/ED that **`runner-agent`** later executes. Either way the KB's audience is never a human reader — it is an executor that must resolve every page, action, locator and cue and then click exactly those things on a live site with no ability to improvise. ("The runner" below means whichever agent is executing.)
 
 The consuming skill uses this playbook as guidance while mapping; the KB that gets generated is Claude's composition for *this* product, not a copy of this file.
 

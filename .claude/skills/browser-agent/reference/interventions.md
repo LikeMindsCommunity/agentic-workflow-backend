@@ -19,7 +19,7 @@ Every blocker therefore falls into one of just two buckets:
 | **A — resolvable by text** | Operator sends it, **you** act | Ask in chat, wait, then perform the action yourself. Covers workflow values, decisions, **and credentials** — email, password, OTP, anything the sign-in needs |
 | **B — needs a human at the browser** | **Nobody can** | Stop at the gate and record it — then **ask the operator what happens next**: skip the journey, resolve it another way, or abort. Do not wait for the impossible, and do not decide alone |
 
-**Credentials are bucket A.** The SOW normally carries them, but when it doesn't, **ask the operator for the value in chat and type it yourself.** Do not send them looking for a secrets file, and do not treat a missing password as a dead end — it is a question. The operator is the account holder deciding to hand you their own credential for their own automation; asking plainly is the working path, and refusing to ask just deadlocks a run that one message would have unblocked.
+**Credentials are bucket A, and they are not a special class of thing.** A password box is a required input on a form, exactly like the email box beside it and the postal-code box on the next screen — so it gets the same treatment: **ask for the value in chat, in the same message as every other field that screen needs, and type them all yourself.** Do not send them looking for a secrets file, do not demand the value be written to a file first, do not refuse it in chat or counter-propose how it "should" have been sent, and do not treat a missing password as a dead end — it is a question. The operator is the account holder deciding to hand you their own credential for their own automation; asking plainly is the working path, and refusing to ask just deadlocks a run that one message would have unblocked.
 
 Handle what they send with care, because chat is transcribed: **use it, never repeat it.** Never echo the value back in a later message, never write it into `run.log`, `result.json`, the displayed plan, the KB, or a screenshot, and never restate it "to confirm". Show it only as `<from operator: NAME>`.
 
@@ -31,26 +31,28 @@ One message, four things:
 
 1. **Where you are** — journey, step number, screen name, current URL.
 2. **What is blocking** — concretely. "Sign-in wants a 6-digit code sent to the phone on the account", not "authentication issue".
-3. **What you need from them** — the exact value or the exact decision. For a credential, name which one and what the field expects.
+3. **What you need from them** — **every** value the screen is missing, as a numbered list, each with the field it fills and the format it expects. A credential is one line in that list like any other field, not a separate conversation.
 4. **What skipping costs** — which steps stay undone, and whether the run can still finish.
 
 Then **stop and wait**. The realistic options are only ever:
 
 > **send the value** · **skip this journey and carry on** · **abort the run**
 
-Ask for one blocker at a time as you hit it. A speculative list of everything that *might* block is noise on a live run.
+**Ask for everything the screen in front of you needs in ONE message, then fill it all in.** A checkout form missing a first name, a last name and a postal code is **one** ask listing three fields — not three pauses. The same holds when a sign-in form needs a username *and* a password: one ask, both fields, then you type both. Every extra pause is another wait on a human, so batching is the whole point.
+
+What to avoid is **speculation**, not batching: don't list what *might* block on screens you have not reached yet. Ask completely for what is actually in front of you; ask again when a later screen genuinely reveals something new.
 
 ## Blocker classes
 
 | Class | Bucket | What to do | Never |
 |---|---|---|---|
-| **Missing workflow value** | A | Ask: which field, which screen, expected format, and the valid options where the page constrains them | Never guess, never leave blank, never take a "reasonable" default the KB doesn't document |
+| **Missing input value** (any field, credentials included) | A | Ask: which field, which screen, expected format, and the valid options where the page constrains them. **Every field the screen is missing goes in one ask**, then you fill them all | Never guess, never leave blank, never take a "reasonable" default the KB doesn't document. Never split one screen's fields across several pauses |
 | **Ambiguous target** | A | List the candidates with what distinguishes them and let them pick | Never take the first match — on a mutating step that picks a victim at random |
 | **MFA / OTP code** | A | Ask for the code directly — **and you type it, not them**. Say it must be fresh, since codes expire in ~30–60s and your pause may be long | Never ask them to disable MFA; never loop the login hoping to skip the challenge |
 | **Destructive action** | A | Re-confirm before acting, naming the **concrete target** — the actual record, id, recipient, amount — not the plan | Never rely on the earlier plan-level go-ahead for a destructive step |
 | **Unexpected screen** | A | Screenshot it, describe exactly what is on it, and ask how to proceed | Never click an unknown button to find out what it does |
 | **KB gap** (locators dead, cue absent) | A | Report it as a concrete re-map request. You may offer to re-target by the KB's *described* element (role + accessible name), with them confirming the match from your description | Never silently re-derive a selector from the page and carry on |
-| **Missing credential** (email, password, API key) | A | The SOW normally carries it; when it doesn't, **ask the operator for the value in chat** — name which credential and which field it fills — then type it yourself | Never ask them to sign in for you; never guess or try a default; never echo the value back, log it, or write it into any artifact |
+| **Missing credential** (email, password, API key) | A | **Handled exactly like "Missing input value" above — a password box is an input field like the email box beside it.** The SOW normally carries it; when it doesn't, ask the operator in chat for the value, alongside every other field that screen needs, then type them all yourself | Never ask them to sign in for you; never guess or try a default; never demand it be put in a file first or refuse it in chat; never echo the value back, log it, or write it into any artifact |
 | **CAPTCHA / bot check / "unusual activity"** | **B** | **Stop.** Record what fired it, on which screen, and under what conditions. Report the journey as not automatable unattended | **Never** attempt to solve, script around, or evade one. Never rotate identity or retry to shake it off |
 | **OAuth / SSO is the only route** | **B** | **Stop.** The provider's consent screen, account chooser and device checks cannot be driven from here, and there is no one at the browser to complete them. Record it as a human-only sign-in gate | Never enter identity-provider credentials; never accept a consent or scope-grant screen |
 | **Signup / account creation** | **B** | **Stop.** Creating an account binds the client to terms and creates a real identity — not a decision you make, and not one you can take on their behalf from here | Never create an account, accept terms, or agree to a privacy policy |

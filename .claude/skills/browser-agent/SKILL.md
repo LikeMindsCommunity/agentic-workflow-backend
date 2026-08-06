@@ -43,6 +43,8 @@ The skill is a **generic engine**. It knows nothing about any website and hardco
 
 **When the SOW doesn't carry a credential the sign-in needs, ask the operator for it in chat** — the email, the password, the OTP, whatever the field wants — and **type it yourself**. That is the working path, not a fallback to avoid: the operator is the account holder choosing to hand you their own credential for their own automation, and there is no other channel, so refusing to ask simply deadlocks a run one message would have unblocked. Never send them hunting for a secrets file, and never ask them to sign in for you.
 
+**Treat a credential as an ordinary text input, not a special class of thing.** A password field is a field the sign-in screen requires, exactly like the email field beside it — ask for the value, type it, carry on. Add no ceremony around it: no demand that it be written to a file first, no refusal to take it in chat, no lecture about transcripts, no counter-proposal about how it "should" have been sent. Ask for every field the screen needs in one message and fill them all. The discipline that matters is what happens *after* you hold the value, and that is the list below.
+
 Handle every credential the same way whichever route it arrived by:
 
 - **Use it, never repeat it.** Do not echo a value back in a later message, restate it "to confirm", or write it into `run.log`, `result.json`, the displayed plan, the KB, or a screenshot. Show it only as `<from SOW: NAME>` / `<from operator: NAME>`.
@@ -55,7 +57,9 @@ Handle every credential the same way whichever route it arrived by:
 
 ## Browser driver
 
-Use whatever browser automation tooling the session exposes (this project ships a Playwright MCP; a Claude browser surface may also be present). You need: navigate, read the page's structure/accessibility tree, read visible text, click, fill, select, screenshot, and read the current URL. Prefer the **accessibility tree** over raw HTML — the KB's locators are largely role-and-name based, and the tree is where those resolve.
+Use whatever browser automation tooling the session exposes (this project ships a Playwright MCP; a Claude browser surface may also be present). You need: navigate, read the page's structure/accessibility tree, read visible text, click, fill, select, screenshot, and read the current URL.
+
+**Resolve each locator by the mechanism the KB actually records for it.** The KB's ladder puts dedicated test attributes (`data-testid` and kin) first, and the accessibility tree does not expose those — it shows roles and accessible names only. So the tree is how you *read* the screen and how a role-and-name locator resolves; a test-attribute locator does not resolve there. Where the primary locator is a test attribute, confirm the element you are about to act on actually carries it (a one-line evaluate that *reads* the attribute is observation, and fine) rather than silently downgrading to whatever role and name the tree makes look obvious. Never re-derive a different locator because the tree offered a plausible match — that is the silent substitution `reference/resilience.md` forbids.
 
 If no browser tooling is available, **stop and say so.** Never narrate a run you did not perform.
 
@@ -83,7 +87,7 @@ Never write "complete this part yourself in the browser and tell me when you're 
 
 1. **Where you are** — the journey, the step number, the screen, the current URL.
 2. **What is blocking** — concretely, not "an error occurred".
-3. **What you need from them** — the exact value, the exact decision, or the exact credential name the SOW is missing.
+3. **What you need from them** — **every** value that screen is missing, as one numbered list, each naming its field and expected format. Credentials are lines in that list, not a separate ask.
 4. **What it costs to skip** — which steps stay undone, and whether the run can still finish without it.
 
 Then **stop and wait**. The only realistic options are: send the value, add the missing credential to the SOW and re-supply it, skip this journey, or abort the run.
@@ -95,6 +99,8 @@ Then **stop and wait**. The only realistic options are: send the value, add the 
 **Credentials are just another thing you ask for.** They come from the SOW where it carries them, and **from the operator in chat where it doesn't** — email, password, OTP alike. **You type them; they never touch the browser.** What is not negotiable is what happens next: use the value, never repeat it. Never echo it back, restate it to confirm, log it, screenshot it, or write it into any artifact. See the credentials note under Inputs.
 
 **Ask for any value the workflow needs and the SOW doesn't supply.** The SOW is written by a person describing a process, so it routinely omits values that only exist at run time — which record to act on, a date, a quantity, a reference number, a recipient, which option to pick from a dropdown the SOW never mentions. **A missing value is a question, never a guess and never a blank.** Catch what you can at preflight (Phase 3) and ask once, together; but a conditional field that only appears three steps in is a legitimate mid-run ask, so ask then too. Say which field, on which screen, what format it expects, and — where the page constrains it — what the valid options are, so the operator can answer in one line instead of interrogating you.
+
+**Every field is the same kind of thing, and one screen costs one ask.** A username, a password, a postal code and a quantity are all just inputs the page requires — none of them gets special ceremony, and none of them gets its own pause. When a screen is missing three values, send **one** message listing all three, then fill them all in when the reply lands. Splitting them into separate asks turns one wait into three for no gain; the only thing that justifies a second ask is a *later* screen revealing something the first could not have told you.
 
 The bar for proceeding without asking is high, and deliberately so: an unasked question costs a pause, while a wrong value typed into a live form can create the wrong record, message the wrong person, or edit the wrong account. Take a default only when the **KB documents** one for that field. "Reasonable-looking" is not a source.
 
@@ -108,7 +114,7 @@ Run the phases in order. The confirm-before-mutate gate and the intervention pro
 - `reference/resilience.md` — driving a UI that drifts: the locator fallback ladder, transient vs terminal failures, recovery, and iteration caps.
 
 ### 0. Set up the run
-Derive `<client>` from the KB path (`outputs/<client>/kb/` → `<client>`). Create the run dir `outputs/<client>/runs/<runid>/` (`<runid>` from `date +%Y%m%d-%H%M%S` via Bash — the harness has no in-process clock), with `run.log` (redacted, append-only) and `result.json`. Prepare an evidence folder for screenshots, with secrets masked.
+Derive `<client>` from the KB path where it follows the standalone layout (`outputs/<client>/kb/` → `<client>`). A hosted or pipeline run hands the KB over at a bucket path instead (e.g. `outputs/mcp/pipeline_<id>/00_kb-builder/`) — there, take the client from the KB's own overview, and put the run record under the run's designated output directory rather than inventing an `outputs/<client>/` path. Either way create a run dir `runs/<runid>/` (`<runid>` from `date +%Y%m%d-%H%M%S` via Bash — the harness has no in-process clock), with `run.log` (redacted, append-only) and `result.json`. Prepare an evidence folder for screenshots, with secrets masked.
 
 ### 1. Learn the site from the KB
 Read the **entire** KB. Extract: the origins and which is non-prod; the sign-in flow — **including every route the login screen offers and which is the direct credential path** — the credential **names**, the success cue, the session model and the session-dropped cue; the screens and their URL patterns, including which are deep-linkable; the journeys with their ordered steps and **per-step provenance**; the locator table with fallbacks and any iframe/shadow boundaries; the verbatim success/failure cues and which are transient; the wait conditions; the state-changing inventory with destructive flags; and the documented interventions.
@@ -124,7 +130,7 @@ Ingest the SOW in whatever form it arrives — prose/`.md`/`.txt` directly; JSON
 ### 3. Resolve the run plan
 Build the ordered list of steps, each resolved from the KB into a concrete action: the **action**, the **target locator** (primary + fallback, with any frame boundary), the **input** and where its value comes from, the **precondition**, the **wait condition**, the **expected cue to assert**, and anything to **capture** for a later step and whether it is required.
 
-**Preflight every input's source** — a literal from the SOW, `← step N.<captured>`, `<from SOW: NAME>`, or **MISSING**. Then make **one consolidated ask** for the genuine blockers: every required value with no source, and every credential the KB says the sign-in needs that the SOW does not carry (named exactly as the KB names it, so the operator knows what to add). Do not start until they are supplied. Never blank-fill.
+**Preflight every input's source** — a literal from the SOW, `← step N.<captured>`, `<from SOW: NAME>`, or **MISSING**. Then make **one consolidated ask** for the genuine blockers: every required value with no source, and every credential the KB says the sign-in needs that the SOW does not carry (named exactly as the KB names it, so the operator knows which value you mean). Values and credentials go in **the same list** — the operator answers it in one message, in chat, and you fill everything from that. Do not start until they are supplied. Never blank-fill.
 
 Mark each step **read-only / state-changing / destructive**, and flag the *inferred* ones.
 
@@ -179,7 +185,7 @@ A **completed live run** of the SOW's workflow against the site, plus its **run 
 - **Never chain off an unverified action**, and never proceed with a blank or guessed capture.
 - **Never mishandle a credential.** Values come from the SOW, or from the operator in chat when the SOW lacks one — and once you have one, it is **never echoed back, restated, logged, screenshotted, or written into any artifact**. **Never reproduce the SOW itself** either; it carries secrets, so it is not something to quote, paste, or copy into the run record.
 - **Never offer the operator the browser.** They cannot reach it — there is no attach mode and no shared session. Asking them to "complete this in the browser", or presenting it as one of two options, sends them looking for something that does not exist while the run sits idle.
-- **Never reach for OAuth/SSO by preference, and never complete a provider's leg yourself.** Use the direct email/password route wherever the site offers one; federated sign-in is a fallback the operator completes, and you never enter identity-provider credentials or accept a consent/scope screen on their behalf.
+- **Never reach for OAuth/SSO by preference, and never complete a provider's leg yourself.** Use the direct email/password route wherever the site offers one. When federated sign-in is the only route, that is a **hard stop recorded as a human-only gate** — nobody can complete the provider's leg: the operator cannot reach this browser, and you never enter identity-provider credentials or accept a consent/scope screen on anyone's behalf.
 - **Never guess a value the SOW didn't give you.** A missing input is a question. Blank-filling or picking a plausible-looking value writes it into a live form, where it becomes a real record, a real message, or a real edit to the wrong thing.
 - **Never drive production silently.** Default to non-prod; production is an explicit, surfaced choice.
 - **Never record or report the customer data you pass through** beyond what the SOW asks for. Capture what the workflow needs, redact the rest.
