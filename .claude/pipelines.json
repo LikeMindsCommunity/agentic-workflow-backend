@@ -80,6 +80,20 @@
       "steps": ["config-agent"]
     },
     {
+      "name": "code-from-kb",
+      "requires_seed": true,
+      "description": "Generate integration CODE (an SDK integration, a function, a handler, a glue snippet) from an EXISTING knowledge base and wire it into the CALLER'S OWN codebase. Use when the user is working in their project and wants the KB's platform integrated into it — 'add {platform} payments to this app', 'integrate the {platform} SDK here'. Point at the KB via `seed_session_id` — the pipeline session id the earlier run reported on completion. THIS PIPELINE DOES NOT WRITE TO THE USER'S PROJECT: the server has no access to it. It returns the code plus an `integration.json` manifest in `output_dir`, and PAUSES asking YOU to apply that manifest in the user's working directory and report the build/lint result. Reply with the result via `session_id` + `response`; the skill repairs against the KB and pauses again, or finishes. Before the first call, gather the target directory, language, dependency manifest, and two or three representative existing files, and describe them in `context` — pass at most a NARROW subtree via `input_paths` (a directory is copied whole, so never pass a repo root with node_modules or .venv in it).",
+      "triggers": [
+        "integrate the platform SDK into this codebase",
+        "add the integration code to my project from the KB",
+        "write the integration code here using the existing KB",
+        "wire the KB's platform into this repo",
+        "generate the SDK code from the KB and apply it here",
+        "build the integration for this project from the knowledge base"
+      ],
+      "steps": ["code-agent"]
+    },
+    {
       "name": "output-feedback",
       "requires_seed": true,
       "seed_writeback": true,

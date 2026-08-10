@@ -130,7 +130,15 @@ PIPELINE_RELAY_TEXT = (
     "ONLY this session_id and their `response` — do NOT pass pipeline_name (that would restart the "
     "pipeline instead of delivering the answer). To attach a file with the answer: pass its "
     "absolute local path in `input_paths` on the same run_pipeline call. Do NOT answer the "
-    "question yourself."
+    "question yourself.\n"
+    "EXCEPTION — if the question asks YOU to DO something local rather than asking the user "
+    "for information (apply the files in `output_dir` to this project, run a build and report "
+    "the error), then do it yourself in the user's working directory and reply with the "
+    "outcome. The server has no access to their codebase, so this is the only way the work "
+    "lands: read `output_dir`, carry out the request, then call run_pipeline again with this "
+    "session_id and the result as `response` — verbatim tool output (compiler errors, failing "
+    "tests) rather than your summary of it. Tell the user what you changed; ask them first "
+    "only if applying would overwrite existing work."
 )
 PIPELINE_POLL_TEXT = (
     "Still working. Tell the user the current `progress`, then call run_pipeline again with ONLY "
@@ -143,20 +151,22 @@ PIPELINE_POLL_TEXT = (
 # Output harvesting + deliverable promotion
 # ----------------------------------------------------------------------------- #
 
+def _collect(root: Path) -> list[tuple[str, bytes]]:
+    """Every file under `root` as (relative-name, raw bytes) — bytes so binary outputs
+    like PDF/DOCX/XLSX survive intact. Empty list if `root` holds no files."""
+    if not root.is_dir():
+        return []
+    return [
+        (str(p.relative_to(root)), p.read_bytes())
+        for p in sorted(root.rglob("*"))
+        if p.is_file()
+    ]
+
+
 def _harvest(output_dir: Path, sandbox: Path) -> list[tuple[str, bytes]]:
-    """Collect the deliverable from the sandbox as raw bytes (so binary outputs like
-    PDF/DOCX/XLSX survive intact). Reads from output_dir (sess.output_dir) first;
-    falls back to sandbox/work/ if output_dir is empty."""
-    if output_dir.is_dir():
-        files = [p for p in sorted(output_dir.rglob("*")) if p.is_file()]
-        if files:
-            return [(str(p.relative_to(output_dir)), p.read_bytes()) for p in files]
-    work = sandbox / "work"
-    if work.is_dir():
-        files = [p for p in sorted(work.rglob("*")) if p.is_file()]
-        if files:
-            return [(str(p.relative_to(work)), p.read_bytes()) for p in files]
-    return []
+    """Collect the deliverable from the sandbox. Reads from output_dir
+    (sess.output_dir) first; falls back to sandbox/work/ if output_dir is empty."""
+    return _collect(output_dir) or _collect(sandbox / "work")
 
 
 def _promote(result_id: str, harvested: list[tuple[str, bytes]]) -> list[str]:
@@ -280,6 +290,15 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
                 return
 
             if signal["kind"] == "ask":
+                # Publish whatever is already in the output dir BEFORE going idle. A pause
+                # can be a request for the caller to act on files this turn produced — apply
+                # a generated integration and report the build result, look at a draft — and
+                # until they are promoted they exist only inside the sandbox, invisible to
+                # the caller. Output dir ONLY (no work/ fallback): scratch drafts are not a
+                # deliverable, and promoting them would publish them under the run's id.
+                # _promote only mkdir+writes, never wipes, so re-promoting at done just
+                # overwrites these with the final content.
+                _promote(sess.result_id, _collect(sess.output_dir))
                 sess.questions = signal["questions"]
                 sess.status = "need_input"
                 # Nothing runs while we wait for the human — no parked subprocess. A
@@ -313,7 +332,12 @@ async def _drive(sess: sessions.Session, first_message: str) -> None:
             sessions.purge(sess)
             sess.result = {
                 "result_id": sess.result_id,
-                "output_dir": str(config.RESULTS_DIR / sess.result_id),
+                # HOST_OUTPUTS_ROOT, not RESULTS_DIR: this path is for the CALLER to open.
+                # RESULTS_DIR is /app/outputs/mcp inside the container, which does not exist
+                # on their filesystem — so a caller told to read or copy the deliverable
+                # (or to apply a generated integration) finds nothing there. Outside Docker
+                # the two are the same path, so this is a no-op on a host-run server.
+                "output_dir": str(config.HOST_OUTPUTS_ROOT / "mcp" / sess.result_id),
                 "summary": {"files": names},
                 **({"registered_skills": registered} if registered else {}),
             }
@@ -813,7 +837,12 @@ def _pipeline_continue_text(psess: pipeline.PipelineSession) -> str:
 def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
     """Serialise a PipelineSession into the response dict the client receives."""
     if psess.status == "need_input":
-        return {
+        # The paused step's published bucket, as a path the CALLER can open. A pause is
+        # often ABOUT files this step just produced — a generated integration to apply, a
+        # screenshot to look at — and _drive promotes the output dir before going idle, so
+        # by the time this snapshot is built they are really there.
+        skill_sess = psess.current_skill_sess
+        snapshot = {
             "status": "need_input",
             "session_id": psess.id,
             "pipeline": psess.pipeline_name,
@@ -823,6 +852,11 @@ def _pipeline_snapshot(psess: pipeline.PipelineSession) -> dict:
             "questions": psess.questions,
             "next_step": PIPELINE_RELAY_TEXT,
         }
+        if skill_sess is not None:
+            snapshot["output_dir"] = str(
+                config.HOST_OUTPUTS_ROOT / "mcp" / skill_sess.result_id
+            )
+        return snapshot
     if psess.status == "done":
         result = psess.result or {}
         return {
@@ -935,6 +969,17 @@ async def run_pipeline(
                     return snapshot
                 engine._write_artifacts(skill_sess.inputs_dir, artifacts)
             psess.pending_reply = response or ""
+            # Flip to "running" HERE, before waking the driver. Setting an asyncio.Event
+            # does not synchronously run its waiter — the driver task only resumes on the
+            # next loop tick — so without this the status is still "need_input" when
+            # _wait_for_change_pipeline runs below. That function only blocks while status
+            # == "running", so it would return instantly and snapshot the SAME question
+            # the caller just answered (the "echo"), forcing a redundant confirming poll.
+            # Marking running now (as _deliver_reply does for a single session) makes the
+            # long-poll wait for the driver to consume the reply and reach the next real
+            # state (a fresh question, done, or error). No lost wakeup: the driver's
+            # reply_event.wait() returns at once because the event is already set.
+            psess.status = "running"
             psess.reply_event.set()
 
         await _wait_for_change_pipeline(psess)
