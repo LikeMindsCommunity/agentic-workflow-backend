@@ -56,15 +56,33 @@ from . import config, sessions
 # so `playwright-mcp` is normally already on PATH and nothing is fetched at run time.
 BROWSER_MCP_SPEC = "@playwright/mcp@0.0.78"
 
-# Where the per-turn driver writes screenshots and traces. Deliberately under outputs/
-# — bind-mounted to the host — and NOT in the sandbox, which is invisible to the
-# operator and discarded with the run. A headless browser the operator cannot see is
-# only usable if what it saw lands somewhere they can open DURING the run, because the
-# whole point of pausing is asking about a screen they must be able to look at.
-BROWSER_EVIDENCE_ROOT = config.PROJECT_ROOT / "outputs" / "browser"
-
 # How long to wait for Chromium to open its CDP port.
 _START_TIMEOUT = float(os.environ.get("LIKEMINDS_BROWSER_START_TIMEOUT", "90"))
+
+
+def _evidence_dir(sess) -> Path:
+    """Where the per-turn driver writes screenshots and traces.
+
+    Two hard constraints decide this, and they rule out the obvious alternatives:
+
+    * It MUST be under `outputs/` — that is the only tree bind-mounted to the host, so
+      it is the only place the operator can open a file. The sandbox (`.sessions/…`) is
+      NOT mounted and is purged at run end, so a screenshot written there is invisible
+      to the operator forever — which is useless precisely when it matters most, at a
+      pause that asks them to look at a screen.
+    * It should be keyed by an id the operator actually knows and co-located with the
+      run's own deliverable, not dumped in a flat `outputs/browser/<internal-cc-id>/`
+      that shares no id with anything they were told.
+
+    So evidence lives INSIDE the run's own output bucket: `outputs/mcp/<result_id>/
+    evidence/`. For a pipeline step `result_id` is `pipeline_<pid>/<NN>_<skill>` (pid =
+    the pipeline session id the caller polls with), so the operator sees
+    `outputs/mcp/pipeline_<pid>/<NN>_<skill>/evidence/…` — same id, next to the KB.
+    `_promote()` only mkdir+writes into that bucket, never wipes it, so evidence created
+    here during the run survives the deliverable being promoted on top of it.
+    """
+    rid = getattr(sess, "result_id", None) or f"{getattr(sess, 'skill', 'run')}_{sess.id}"
+    return config.RESULTS_DIR / rid / "evidence"
 
 
 def _free_port() -> int:
@@ -146,7 +164,7 @@ async def ensure(sess) -> dict | None:
     if driver is None:
         return None
 
-    evidence = BROWSER_EVIDENCE_ROOT / sess.id
+    evidence = _evidence_dir(sess)
     evidence.mkdir(parents=True, exist_ok=True)
 
     proc = getattr(sess, "browser_proc", None)

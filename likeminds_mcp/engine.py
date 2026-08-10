@@ -139,19 +139,22 @@ def build_first_message(
             "it, and if it looks like an earlier run of THIS same job, ask the caller "
             "whether to continue from it before using any of it."
         )
-    published = f"{config.RESULTS_DIR.relative_to(config.PROJECT_ROOT)}/{sess.result_id}"
+    published_host = config.HOST_OUTPUTS_ROOT / "mcp" / sess.result_id
     msg += (
         f"\n\nWHERE THE CALLER CAN SEE FILES: only paths under `outputs/` exist for the caller — "
         f"that directory is shared out to them. Everything else you can write is INSIDE the server "
         f"and invisible: the sandbox holding `inputs=` and `output=`, and any `work/` scratch dir, "
-        f"are discarded when the run ends. Your deliverable is published to `{published}/`, and a "
-        f"tool that writes its own files (e.g. browser screenshots) may return a path under "
-        f"`outputs/` too — those are fine to cite.\n"
+        f"are discarded when the run ends. Your deliverable is published to `{published_host}/`, and "
+        f"a tool that writes its own files (e.g. browser screenshots) writes under "
+        f"`{published_host}/evidence/`.\n"
         f"So whenever you ask the caller to LOOK at something — a screenshot of the screen you are "
-        f"stuck on, a draft, a diff — the file must be under `outputs/`, and you cite it "
-        f"**relative to the project root** (`{published}/<name>`, or the returned path with any "
-        f"leading `/app/` removed). Never hand them a `work/` or sandbox path: it does not exist "
-        f"for them, and they cannot answer a question about a file they cannot open."
+        f"stuck on, a draft, a diff — the file must be under `outputs/`, and you MUST cite it as an "
+        f"ABSOLUTE path beginning `{published_host}`. Do NOT cite a project-root-relative path like "
+        f"`outputs/…`: the caller's viewer resolves that against THEIR own working directory, not the "
+        f"server's, so the preview fails — which is the whole reason to give the absolute path. "
+        f"Convert any path a tool hands back (one starting `/app/outputs/`, or a bare `outputs/…`) "
+        f"into that absolute form before citing it. Never hand them a `work/` or sandbox path: it "
+        f"does not exist for them, and they cannot answer a question about a file they cannot open."
     )
     if context:
         msg += f"\n\nContext / instructions from the caller:\n{context}"

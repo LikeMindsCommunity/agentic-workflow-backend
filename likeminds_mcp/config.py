@@ -41,6 +41,20 @@ IN_CONTAINER = os.environ.get("LIKEMINDS_IN_CONTAINER", "").strip() == "1"
 HOST_MOUNT_SOURCE = os.environ.get("LIKEMINDS_HOST_MOUNT", "").strip()
 HOST_MOUNT_TARGET = os.environ.get("LIKEMINDS_HOST_MOUNT_AT", "").strip()
 
+# The host-visible ABSOLUTE path of `outputs/`. It exists so the server can tell the
+# spawned skill a path the CALLER can actually open — a pause that says "look at this
+# screenshot" is useless if the path only resolves inside the server. Two cases:
+#   * Server on the host: PROJECT_ROOT is already the real host path, so outputs/ under
+#     it is directly openable — no env needed.
+#   * Server in Docker: PROJECT_ROOT is /app, and only docker-compose.yml knows the host
+#     side of the `./outputs:/app/outputs` bind mount, so it injects LIKEMINDS_HOST_OUTPUTS.
+# A relative path can NOT stand in here: the caller's viewer resolves it against the
+# caller's own cwd, not the server's, which is exactly why a cited `outputs/…` path fails
+# to preview. Hard-coding an absolute path is wrong too — it breaks every other checkout
+# (a second deployment dir, Docker's /app) — so it is derived, with the env override.
+_host_outputs = os.environ.get("LIKEMINDS_HOST_OUTPUTS", "").strip()
+HOST_OUTPUTS_ROOT = Path(_host_outputs) if _host_outputs else (PROJECT_ROOT / "outputs")
+
 # How the spawned Claude signals a pause (ask the user) or a finish (deliverable
 # done): it writes one of these markers on its own line in its reply, and the engine
 # watches the turn's streamed text for them. Deliberately NOT an MCP tool — a stdio
