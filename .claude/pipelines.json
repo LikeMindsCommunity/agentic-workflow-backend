@@ -80,6 +80,19 @@
       "steps": ["config-agent"]
     },
     {
+      "name": "code-integration",
+      "description": "Integrate a platform into the USER'S OWN codebase end to end, starting from that platform's documentation. Runs kb-builder to ingest the SDK/API docs the user provides (an SDK reference, integration guide, OpenAPI spec, code samples — or `urls` to the published docs) and extract the callable surface into a KB (symbols, signatures, imports, idioms, language, conventions), then code-agent to write the integration strictly from that surface. Use when no KB exists yet — 'here are the {platform} docs, add it to my app'. If the KB was already built by an earlier run, use code-from-kb instead and skip re-reading the docs. THIS PIPELINE DOES NOT WRITE TO THE USER'S PROJECT: the server has no access to it. It returns the code plus an `integration.json` manifest in `output_dir`, and PAUSES asking YOU to apply that manifest in the user's working directory and report the build/lint result. Reply with the result via `session_id` + `response`; the skill repairs against the KB and pauses again, or finishes. IMPORTANT — attach ONLY the platform's documentation via `input_paths`/`artifacts`/`urls`: those reach the FIRST step, which is kb-builder, and it would absorb anything you hand it into the knowledge base. Do NOT attach the user's own source files here; that pollutes the KB with their codebase. Describe the target project in `context` instead — the target directory, the language and version, the dependency manifest, and two or three representative existing files quoted inline — because `context` reaches every step and is the only channel that gets the project to the code step. When you want to hand over real project files rather than describe them, build the KB first (build-kb or this pipeline) and then use code-from-kb, where code-agent is the first step and receives attachments directly.",
+      "triggers": [
+        "here are the SDK docs, integrate this into my app",
+        "read this API documentation and write the integration",
+        "add this platform to my project from its docs",
+        "build the integration from these SDK references",
+        "integrate this service into my codebase, here are the docs",
+        "generate the client code from this documentation and wire it in"
+      ],
+      "steps": ["kb-builder", "code-agent"]
+    },
+    {
       "name": "code-from-kb",
       "requires_seed": true,
       "description": "Generate integration CODE (an SDK integration, a function, a handler, a glue snippet) from an EXISTING knowledge base and wire it into the CALLER'S OWN codebase. Use when the user is working in their project and wants the KB's platform integrated into it — 'add {platform} payments to this app', 'integrate the {platform} SDK here'. Point at the KB via `seed_session_id` — the pipeline session id the earlier run reported on completion. THIS PIPELINE DOES NOT WRITE TO THE USER'S PROJECT: the server has no access to it. It returns the code plus an `integration.json` manifest in `output_dir`, and PAUSES asking YOU to apply that manifest in the user's working directory and report the build/lint result. Reply with the result via `session_id` + `response`; the skill repairs against the KB and pauses again, or finishes. Before the first call, gather the target directory, language, dependency manifest, and two or three representative existing files, and describe them in `context` — pass at most a NARROW subtree via `input_paths` (a directory is copied whole, so never pass a repo root with node_modules or .venv in it).",
@@ -156,6 +169,62 @@
         "re-run the browser workflow with new values"
       ],
       "steps": ["browser-agent"]
+    },
+    {
+      "name": "design-api-lld",
+      "description": "Turn a platform's own API DOCUMENTATION into a reviewable execution plan and STOP — this pipeline calls nothing, touches no credential, and binds no environment. Runs kb-builder to ingest the API docs the user provides (an OpenAPI/Swagger spec, a Postman collection, API reference pages or PDFs, integration guides — or `urls` pointing at the published docs) and extract the contract into a KB (auth scheme, endpoints, methods, request/response schemas, status codes, pagination, rate limits, idempotency), then api-agent to resolve that KB plus the SOW into an LLD/ED — a Low-Level Design / Execution Document: an ordered, fully-specified, SELF-CONTAINED runbook a Runner later executes. Pass the API docs via `input_paths`/`artifacts`/`urls` and the SOW via `input_paths` — and ALSO describe the workflow to automate in `context`, because only the FIRST step receives the caller's attachments, so `context` is what reaches the design step. The LLD names the credentials the Runner will need BY NAME only and lists the environments without binding one. Use this when the plan should be read and approved before anything runs; use api-automation to design and run in one go. Keep the session id it reports: pass it as `seed_session_id` to api-lld-from-kb to design another workflow off the same KB, and execute the LLD with run-lld.",
+      "triggers": [
+        "design the API workflow from these docs",
+        "create the LLD from this API documentation",
+        "build the execution document but don't run it",
+        "turn this OpenAPI spec into an execution plan",
+        "plan the API integration, I want to review it first",
+        "produce the runbook from these API docs and the SOW",
+        "design the API calls, don't execute anything"
+      ],
+      "steps": ["kb-builder", "api-agent"]
+    },
+    {
+      "name": "api-automation",
+      "description": "Automate a workflow against a platform's REST API end to end — read the API docs, design the plan, then actually make the live calls. Runs kb-builder to extract the API contract from the documentation the user provides into a KB, api-agent to design the LLD/ED (the ordered execution plan), and runner-agent to EXECUTE it live as real HTTP requests: authenticating, managing the token lifecycle, chaining each response into the next request, and handling retries, rate limits, pagination and partial failure. This designs AND performs the work in one run, so use it only when the user wants the calls made now. If the plan should be reviewed first, use design-api-lld and then run-lld. This lane is for platforms that HAVE an API; when the only surface is the screen, use browser-automation instead. Pass the API docs via `input_paths`/`artifacts`/`urls` and the SOW via `input_paths` — and ALSO describe the workflow in `context`, because only the FIRST step receives the caller's attachments, so `context` is what reaches the design and execution steps. It is interactive by design and will PAUSE to ask: it picks the environment (defaulting to non-prod — prod/live is always an explicit, surfaced choice), asks in chat for each credential VALUE by the name the design lists, confirms before every state-changing call, double-confirms destructive ones against the concrete target, and stops rather than cascading on a broken chain. Because only the first step gets attachments, credentials cannot be attached as a file here — the Runner asks for them in the conversation; if you would rather keep a secret out of chat, run design-api-lld first and hand the secrets file to run-lld instead. A redacted run record (run.log + result.json) is written to the output bucket.",
+      "triggers": [
+        "automate this workflow against the API",
+        "read these API docs and run the workflow",
+        "integrate with this API and execute the SOW",
+        "call the API to do these tasks for me",
+        "build and run the API automation end to end",
+        "use the API to carry out this process",
+        "do this via the platform's API, not the browser"
+      ],
+      "steps": ["kb-builder", "api-agent", "runner-agent"]
+    },
+    {
+      "name": "api-lld-from-kb",
+      "requires_seed": true,
+      "description": "Design an LLD/ED — the ordered execution document a Runner later carries out — from an EXISTING knowledge base, WITHOUT re-ingesting the API documentation. Use when the KB was already built by an earlier run and you want another workflow planned against the same platform; this is the 'straight to design' path that skips the kb-builder phase of design-api-lld. Point at the KB via `seed_session_id` — the pipeline session id of the earlier run that built it (the one it reported on completion); the server recovers that run's KB bucket automatically and stages it read-only, so the KB is never modified. Pass the SOW via `input_paths`/`artifacts` and any per-run values in `context`; because api-agent is the FIRST step here, attachments reach it directly. NOTHING IS EXECUTED: no call is made, no credential value is read or requested, and no environment is bound — the LLD names the credentials the Runner will need by name only and lists the KB's environments as options, instructing the Runner to default to non-prod. If the KB documents an operation the SOW asks for but the docs never described, the design says so rather than inventing an endpoint. Execute the result with run-lld.",
+      "triggers": [
+        "design another workflow from the existing API KB",
+        "create a new LLD from the KB we already built",
+        "the API KB is ready, design the execution plan",
+        "plan another API workflow without re-reading the docs",
+        "skip the doc ingestion and design the runbook",
+        "produce an execution document from the existing knowledge base"
+      ],
+      "steps": ["api-agent"]
+    },
+    {
+      "name": "run-lld",
+      "description": "Execute an LLD/ED — a Low-Level Design / Execution Document an earlier design run produced — as a live run, carrying it out exactly as written. Pass the LLD ITSELF as a file via `input_paths` (plus any per-run values in `context`). Do NOT pass `seed_session_id`: the Runner reads the LLD and nothing else — never the KB, never the SOW — so it must not be handed a knowledge base. This is the second half of design-api-lld: design once, review the plan, then run it here, as many times as needed. The Runner owns what the design deliberately left open — it PICKS the environment (defaulting to the LLD's non-prod one; prod/live is always an explicit, surfaced choice) and SOURCES the credential VALUES by the exact names the LLD lists. Attach a secrets/env file via `input_paths` alongside the LLD and it reaches the skill without passing through the conversation; otherwise the Runner PAUSES and asks for each missing value by name in chat. It also honors the LLD's safety gates: it presents the whole plan first, waits for a go-ahead before the first state-changing call, re-confirms destructive steps against the concrete target, stops on a broken chain instead of chaining a blank, and stops rather than cascading on partial failure. It writes a redacted run record (run.log + result.json + per-step evidence) to the output bucket and never prints a secret. If the LLD is defective — a step pointing at the KB, or a missing mechanic — it STOPS and reports rather than improvising; fix that by re-running the design, not by patching the document. This lane executes HTTP/API plans; a browser-surface plan is not run here (this step is given no browser) — use browser-run-from-kb or browser-automation for web-UI work.",
+      "triggers": [
+        "run this LLD",
+        "execute the execution document",
+        "the plan looks good, run it",
+        "carry out the runbook we designed",
+        "execute the API workflow from this LLD",
+        "run the approved execution plan against sandbox",
+        "re-run the LLD with these values"
+      ],
+      "steps": ["runner-agent"]
     }
   ]
 }
