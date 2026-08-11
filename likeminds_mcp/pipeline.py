@@ -337,6 +337,18 @@ seed_session_id — the pipeline session id the earlier run reported on completi
 Then POLL: call again with ONLY session_id (no other args) until status is done
 or error. On need_input, relay the questions to the user verbatim, wait for their
 reply, then call again with session_id + response. Do NOT answer the questions yourself.
+The one exception is a question asking YOU to act locally rather than asking the user
+for information — apply the files in output_dir to this project, run a build and report
+the error. Do those yourself and reply with the outcome; the server cannot reach the
+user's codebase, so nothing lands otherwise.
+
+Pipelines that integrate into the USER'S OWN codebase (code-from-kb) work that way
+throughout. Before the first call, describe the target in context — directory, language,
+dependency manifest, and the conventions of two or three existing files — and pass at
+most a NARROW subtree via input_paths; a directory is copied whole, so never hand over a
+repo root holding node_modules or .venv. The run then emits the code plus an
+integration.json manifest into output_dir and pauses for you to apply it and report the
+build result, repairing and pausing again until it is clean.
 
 On error: call again with the same session_id + pipeline_name to resume from the
 failed step — completed steps are not re-run.

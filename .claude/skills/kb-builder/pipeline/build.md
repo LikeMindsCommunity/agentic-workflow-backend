@@ -6,7 +6,7 @@ Produce the KB at `outputs/{client}/kb/`: **draft from scratch** on a first run,
 
 - The **locked scope** from `scope.md` (requirement + in scope + out of scope) and the component inventory it produced.
 - The fired playbook(s) from `recognize.md` — **advice**, not a recipe to copy.
-- The artifacts.
+- The artifacts. **On a URL run these are the observation corpus `map-site.md` just wrote** — treat it exactly as you would any other source material, with one addition: it carries **provenance** (observed / inferred / unmapped) on every journey step, and that provenance must survive into the KB. It is what tells the downstream agent which steps were seen working and which are predictions, so never flatten it away while composing.
 - On an update: the existing KB (the archetype + structure are inferred from its content).
 
 ## A. Internalize the playbook's advice

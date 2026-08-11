@@ -153,6 +153,23 @@ def build_first_message(
             "it, and if it looks like an earlier run of THIS same job, ask the caller "
             "whether to continue from it before using any of it."
         )
+    published_host = config.HOST_OUTPUTS_ROOT / "mcp" / sess.result_id
+    msg += (
+        f"\n\nWHERE THE CALLER CAN SEE FILES: only paths under `outputs/` exist for the caller — "
+        f"that directory is shared out to them. Everything else you can write is INSIDE the server "
+        f"and invisible: the sandbox holding `inputs=` and `output=`, and any `work/` scratch dir, "
+        f"are discarded when the run ends. Your deliverable is published to `{published_host}/`, and "
+        f"a tool that writes its own files (e.g. browser screenshots) writes under "
+        f"`{published_host}/evidence/`.\n"
+        f"So whenever you ask the caller to LOOK at something — a screenshot of the screen you are "
+        f"stuck on, a draft, a diff — the file must be under `outputs/`, and you MUST cite it as an "
+        f"ABSOLUTE path beginning `{published_host}`. Do NOT cite a project-root-relative path like "
+        f"`outputs/…`: the caller's viewer resolves that against THEIR own working directory, not the "
+        f"server's, so the preview fails — which is the whole reason to give the absolute path. "
+        f"Convert any path a tool hands back (one starting `/app/outputs/`, or a bare `outputs/…`) "
+        f"into that absolute form before citing it. Never hand them a `work/` or sandbox path: it "
+        f"does not exist for them, and they cannot answer a question about a file they cannot open."
+    )
     if context:
         msg += f"\n\nContext / instructions from the caller:\n{context}"
     return msg
@@ -173,26 +190,56 @@ def build_reply_message(response: str | None, added_files: list[str]) -> str:
     return msg or "continue"
 
 
-def _mcp_config_json() -> str:
-    """The --mcp-config payload: an empty server set. We use NO MCP server for
-    signalling (see module docstring), so the spawned Claude runs with no MCP servers
-    at all. Combined with --strict-mcp-config so the spawned Claude never loads the
-    project .mcp.json — which would otherwise make it connect back to THIS server
-    (recursion) and spawn every project MCP server each turn."""
-    return json.dumps({"mcpServers": {}})
+# ─── Browser automation surface (web-flow skills) ────────────────────────────
+# The only skills handed a browser. Both are useless without one — kb-builder mapping a
+# live site and browser-agent driving one must navigate/click/fill and read the
+# accessibility tree — while every other skill has no business spawning a browser process.
+BROWSER_MCP_SKILLS = frozenset({"kb-builder", "browser-agent"})
 
 
-def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
+async def _mcp_config_json(sess: Session) -> str:
+    """The --mcp-config payload: an empty server set for almost every skill. We use NO MCP
+    server for signalling (see module docstring), so the spawned Claude normally runs with
+    no MCP servers at all. Combined with --strict-mcp-config so the spawned Claude never
+    loads the project .mcp.json — which would otherwise make it connect back to THIS server
+    (recursion) and spawn every project MCP server each turn.
+
+    The one exception is the browser carve-out: the web-flow skills (BROWSER_MCP_SKILLS)
+    cannot function without a browser driver, so for those we name exactly ONE server here.
+    That is still OUR config, not the project's — .mcp.json remains unread and the recursion
+    property holds.
+
+    What the turn is handed is a DISPOSABLE stdio playwright-mcp that attaches over CDP to
+    a long-lived Chromium the server owns per session (browser.py). The driver dies with
+    the turn; the browser does not — so a pause→ask→resume lands the next turn in the SAME
+    live browser, tabs and in-flight logins intact. Without that split, asking the operator
+    for an OTP killed the browser, the resume re-ran the login, and the site issued a fresh
+    code that invalidated the one just sent. An absent browser surface still yields no
+    server here, which the skills report as a missing surface rather than fabricating."""
+    servers: dict = {}
+    if sess.skill in BROWSER_MCP_SKILLS:
+        from . import browser  # lazy: keeps engine importable where no browser is used
+        entry = await browser.ensure(sess)
+        if entry:
+            servers["playwright"] = entry
+    return json.dumps({"mcpServers": servers})
+
+
+async def _build_argv(sess: Session, message: str, resume: bool) -> list[str]:
     """Full argv for one turn. Permission mode bypasses prompts so any tool the skill
     needs runs; no tool allowlist is imposed. --strict-mcp-config + our own
-    --mcp-config keep the spawned Claude off the project's MCP servers."""
+    --mcp-config keep the spawned Claude off the project's MCP servers.
+
+    Async because resolving the browser config may have to START this session's
+    Chromium and wait for its CDP port — on the first browser turn only; later turns
+    probe and reuse it."""
     argv = [
         config.CLAUDE_BIN, "-p", message,
         "--output-format", "stream-json",
         "--verbose",
         "--permission-mode", "bypassPermissions",
         "--append-system-prompt", HARNESS,
-        "--mcp-config", _mcp_config_json(),
+        "--mcp-config", await _mcp_config_json(sess),
         "--strict-mcp-config",
     ]
     if config.MODEL:
@@ -287,7 +334,7 @@ async def run_turn(sess: Session, message: str, resume: bool) -> dict | None:
     then nudges + resumes). Raises RuntimeError on a hard subprocess failure (nonzero
     exit with no marker), which the caller surfaces as an error.
     """
-    argv = _build_argv(sess, message, resume)
+    argv = await _build_argv(sess, message, resume)
     proc = await asyncio.create_subprocess_exec(
         *argv,
         cwd=str(config.PROJECT_ROOT),

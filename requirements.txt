@@ -1,5 +1,12 @@
 # likeminds_mcp — local MCP server driving the Claude Code CLI (resume-per-turn).
 # These are the server's only third-party dependencies; everything else it uses
 # is in the Python standard library. `mcp` also pulls in anyio + httpx transitively.
-mcp>=1.2.0
-python-dotenv>=1.0.0
+#
+# Both are capped below the next major. The image builds with PIP_NO_CACHE_DIR, so every
+# rebuild resolves these fresh — an uncapped range means an upstream major release breaks
+# the container on the next unrelated rebuild, with nothing in this repo having changed.
+# That is exactly how mcp 2.0.0 landed: it restructured the package and dropped
+# `mcp.server.fastmcp`, which server.py imports, so the container crash-looped on startup.
+# Raise a cap deliberately, after checking the import still resolves — never by leaving it off.
+mcp>=1.2.0,<2
+python-dotenv>=1.0.0,<2

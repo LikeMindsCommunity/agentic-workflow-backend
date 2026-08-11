@@ -26,7 +26,10 @@ leak hazards of the previous parked-client design.
 
 from __future__ import annotations
 
+import os
 import shutil
+import signal
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -69,6 +72,12 @@ class Session:
     task: object = None               # asyncio.Task driving this session
     reply_event: object = None        # asyncio.Event — set when a reply is ready
     pending_reply: str = ""           # the reply handed to the driver
+    # Browser surface (web-flow skills only): the long-lived Chromium this session owns,
+    # spoken to over CDP by a disposable per-turn playwright-mcp (see browser.py). The
+    # handles live HERE so purge can reap without importing browser.py.
+    browser_proc: object = None       # subprocess.Popen — Chromium, a process-group leader
+    browser_profile_dir: str = ""     # temp --user-data-dir, wiped on reap
+    browser_cdp: str = ""             # http://127.0.0.1:<port> — the CDP endpoint turns attach to
 
 
 def new_session(
@@ -124,9 +133,45 @@ def purge(sess: Session) -> None:
     Code's transcript for this session — the retention guarantee. Safe to call on
     ANY terminal path (done OR error). The tiny Session record is kept in the store
     so the client's terminal poll can still read status + result."""
+    reap_browser(sess)
     shutil.rmtree(sess.sandbox, ignore_errors=True)
     _purge_transcript(sess.cc_id)
     sess.api_key = None  # drop the caller's key from the retained record (hygiene)
+
+
+def reap_browser(sess: Session) -> None:
+    """Kill this session's Chromium and wipe its temp profile. Safe to call repeatedly,
+    and a no-op for the (vast) majority of sessions that never had a browser.
+
+    The kill targets the process GROUP, not the leader: Chromium forks renderer and GPU
+    helpers, and terminating the leader alone measurably orphaned ten of them in the
+    container. `start_new_session=True` at launch made the leader its own group leader,
+    so the group id IS its pid — valid for a sweep even after the leader itself exits.
+    The profile wipe is the retention guarantee for browser state: session cookies live
+    in that dir, and no later session may inherit them."""
+    proc = getattr(sess, "browser_proc", None)
+    if proc is not None:
+        try:
+            os.killpg(proc.pid, signal.SIGTERM)
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            proc.wait(timeout=10)
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)  # sweep stragglers; no-op if all gone
+        except (ProcessLookupError, PermissionError, OSError):
+            pass
+        try:
+            proc.wait(timeout=5)  # reap the leader so it can't linger as a zombie
+        except (subprocess.TimeoutExpired, OSError):
+            pass
+        sess.browser_proc = None
+    if getattr(sess, "browser_profile_dir", ""):
+        shutil.rmtree(sess.browser_profile_dir, ignore_errors=True)
+        sess.browser_profile_dir = ""
+    sess.browser_cdp = ""
 
 
 def _purge_transcript(session_id: str) -> None:

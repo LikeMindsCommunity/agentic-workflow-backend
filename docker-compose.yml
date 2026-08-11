@@ -19,6 +19,12 @@ services:
     build: .
     container_name: likeminds-mcp
     restart: unless-stopped
+    # tini as PID 1. The server is otherwise PID 1 itself, and orphaned grandchildren —
+    # Chromium's helper processes after browser.py reaps a session's browser group —
+    # reparent to PID 1 and stay zombies forever, since the server never wait()s for
+    # children it didn't spawn. (A SIGCHLD reaper in the server would race asyncio's
+    # child watcher, which collects the per-turn `claude -p` exit codes.)
+    init: true
     env_file: .env
     environment:
       # The HOST-side path that /host below is mounted from. The server needs to be TOLD
@@ -26,6 +32,13 @@ services:
       # uses it to rewrite an incoming host path into the matching /host path. Must stay in
       # sync with the `- …:/host:ro` volume; both read the same variable so they can't drift.
       - LIKEMINDS_HOST_MOUNT=${LIKEMINDS_HOST_MOUNT:-${HOME}}
+      # The HOST-side absolute path of the ./outputs bind mount below. Inside the container
+      # PROJECT_ROOT is /app, so the server cannot know where ./outputs really lives on the
+      # host — but it must, to cite screenshot/deliverable paths the caller can actually open
+      # (a project-root-relative path resolves against the caller's cwd and fails to preview).
+      # ${PWD} is the directory you run `docker compose up` from, i.e. this project dir, so
+      # ${PWD}/outputs matches the `- ./outputs:/app/outputs` mount. Override if they diverge.
+      - LIKEMINDS_HOST_OUTPUTS=${LIKEMINDS_HOST_OUTPUTS:-${PWD}/outputs}
     ports:
       - "8787:8787"
     # Headless Chromium (used by the document skills) crashes on Docker's default 64M SHM.

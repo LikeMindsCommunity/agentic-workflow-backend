@@ -80,6 +80,20 @@
       "steps": ["config-agent"]
     },
     {
+      "name": "code-from-kb",
+      "requires_seed": true,
+      "description": "Generate integration CODE (an SDK integration, a function, a handler, a glue snippet) from an EXISTING knowledge base and wire it into the CALLER'S OWN codebase. Use when the user is working in their project and wants the KB's platform integrated into it — 'add {platform} payments to this app', 'integrate the {platform} SDK here'. Point at the KB via `seed_session_id` — the pipeline session id the earlier run reported on completion. THIS PIPELINE DOES NOT WRITE TO THE USER'S PROJECT: the server has no access to it. It returns the code plus an `integration.json` manifest in `output_dir`, and PAUSES asking YOU to apply that manifest in the user's working directory and report the build/lint result. Reply with the result via `session_id` + `response`; the skill repairs against the KB and pauses again, or finishes. Before the first call, gather the target directory, language, dependency manifest, and two or three representative existing files, and describe them in `context` — pass at most a NARROW subtree via `input_paths` (a directory is copied whole, so never pass a repo root with node_modules or .venv in it).",
+      "triggers": [
+        "integrate the platform SDK into this codebase",
+        "add the integration code to my project from the KB",
+        "write the integration code here using the existing KB",
+        "wire the KB's platform into this repo",
+        "generate the SDK code from the KB and apply it here",
+        "build the integration for this project from the knowledge base"
+      ],
+      "steps": ["code-agent"]
+    },
+    {
       "name": "output-feedback",
       "requires_seed": true,
       "seed_writeback": true,
@@ -98,6 +112,50 @@
         {"skill": "diagnose-bug", "args": {"target": "kb"}},
         {"skill": "apply-fixes", "args": {"target": "kb"}}
       ]
+    },
+    {
+      "name": "map-website-kb",
+      "description": "Map a LIVE WEBSITE into a knowledge base and STOP — this pipeline runs no automation and carries out no task on the site. Use when the user gives a URL and wants the site understood and documented so it can be automated later: it runs kb-builder in site-mapping mode, which drives a real browser over the site, walks the user journeys in scope, and records the screens, URL patterns, element locators, success and failure cues, waits, and the human gates (login, MFA, CAPTCHA, payment) that stand in the way. Pass the site as `url` (or in `context`), and pass the SOW naming which journeys matter via `input_paths`/`artifacts` — the SOW only SCOPES which flows get walked; it is never absorbed into the KB, so the resulting KB stays reusable for future workflows against the same site. Mapping is read-only by default: it will pause and ask before submitting any form or changing any state, and before signing in to an account. Keep the session id it reports — pass it later as `seed_session_id` to browser-run-from-kb to actually execute a workflow. Do NOT use this when the user wants the task performed now; that is browser-automation.",
+      "triggers": [
+        "map this website",
+        "build a KB from this URL",
+        "understand this site so we can automate it",
+        "map out the user journeys on this website",
+        "create a knowledge base for this web app",
+        "document how this site works for browser automation",
+        "crawl the site and map the flows",
+        "onboard this website, don't run anything yet"
+      ],
+      "steps": ["kb-builder"]
+    },
+    {
+      "name": "browser-automation",
+      "description": "Automate a workflow on a website end to end when there is NO API available — map the site, then actually carry the task out in a live browser. Runs kb-builder in site-mapping mode to drive a real browser over the URL and build a web-flow KB (screens, locators, cues, waits, human gates), then browser-agent to execute the SOW's workflow live against that site: navigating, clicking, filling, asserting each step's success cue, and capturing results. This MAPS the site AND performs the work in one run, so use it only when the user wants the task done now. If the user only wants the site understood, use map-website-kb; if the site was already mapped by an earlier run, use browser-run-from-kb to skip re-mapping. Pass the site as `url` and the SOW via `input_paths`/`artifacts` — and ALSO describe the workflow to carry out in `context`, because only the first step receives the caller's attachments, so `context` is what reaches the execution step. It is interactive by design and will pause to ask whenever it needs a credential, an OTP or MFA code, a signup decision, a payment authorization, or a go-ahead before anything that changes state on the site; production is never targeted silently.",
+      "triggers": [
+        "automate this workflow on the website",
+        "there's no API, do it through the browser",
+        "map the site and run the tasks in the SOW",
+        "do these tasks on this website for me",
+        "build the browser automation end to end",
+        "run this SOW against the site",
+        "automate this web process from scratch"
+      ],
+      "steps": ["kb-builder", "browser-agent"]
+    },
+    {
+      "name": "browser-run-from-kb",
+      "requires_seed": true,
+      "description": "Execute a workflow LIVE in a browser from an EXISTING web-flow knowledge base, WITHOUT re-mapping the site. Use when the site was already mapped by an earlier run and you just want another workflow carried out against it — the 'straight to execution' path that skips the mapping phase of browser-automation. This is the common steady state: map a site once, then run many different SOWs against it. Point at the KB via `seed_session_id` — the pipeline session id of the earlier run that mapped the site (the one it reported on completion); the server recovers that run's KB bucket from it automatically. Pass the workflow to run via `input_paths`/`artifacts` (the SOW) and any per-run values in `context`. The SOW is the single input document and carries the environment values and credentials too, so attach it as a FILE rather than pasting it into `context` — file inputs reach the skill without going through the conversation, and its contents are never quoted back or written into the run record. The KB is staged in read-only and is never modified; the run record (what ran, what changed, what was captured, redacted) is written to a fresh output bucket. browser-agent drives the site strictly from the KB — it never invents a page or selector, never solves a CAPTCHA, and pauses to ask for credentials, one-time codes, or a go-ahead before any action that changes state. If the site has drifted since it was mapped, the run stops and reports the gap rather than improvising; re-map with map-website-kb to fix it.",
+      "triggers": [
+        "run the workflow using the KB we already built",
+        "execute this SOW against the site we mapped",
+        "the site is already mapped, just run the task",
+        "run another browser workflow from the existing KB",
+        "skip mapping and execute the browser automation",
+        "do this task on the site using the existing knowledge base",
+        "re-run the browser workflow with new values"
+      ],
+      "steps": ["browser-agent"]
     }
   ]
 }
