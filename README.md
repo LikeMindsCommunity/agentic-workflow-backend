@@ -125,10 +125,23 @@ Attach files directly to the message, or pass public URLs. Add free-text instruc
 | -------- | ------------ | --------------- |
 | `build-kb` | Extract format and product knowledge from reference files into a reusable KB | `build the KB`, `onboard this client` |
 | `document-agent` | Build KB then generate a finished document (PDF/DOCX) end to end | `generate a SOW from these reference docs` |
-| `document-from-kb` | Generate a document from an already-built KB - skips the KB step | `generate another SOW, use KB from session <id>` |
-| `config-generator` | Build KB then generate a structured config (JSON/XML/YAML) end to end | `generate a config from these reference files` |
-| `config-from-kb` | Generate a config from an already-built KB - skips the KB step | `generate another config, use KB from session <id>` |
-| `output-feedback` | Fix the KB when a generated output was wrong | `the document from session <id> was wrong, fix it` |
+| `document-from-kb` † | Generate a document from an already-built KB - skips the KB step | `generate another SOW, use KB from session <id>` |
+| `config-generator` | Build KB then generate a structured config (JSON/XML/YAML/NodeFlow) end to end | `generate a config from these reference files` |
+| `config-from-kb` † | Generate a config from an already-built KB - skips the KB step | `generate another config, use KB from session <id>` |
+| `code-integration` | Build KB from a platform's SDK/API docs then write the integration code for your project | `here are the SDK docs, integrate this into my app` |
+| `code-from-kb` † | Write integration code from an already-built KB | `wire the SDK into this repo, KB from session <id>` |
+| `map-website-kb` | Drive a real browser over a live site and map its screens, locators, and flows into a KB - nothing is executed | `map this website so we can automate it later` |
+| `browser-automation` | Map the site then carry out the SOW's workflow live in a browser | `there's no API, do these tasks on the site for me` |
+| `browser-run-from-kb` † | Run a workflow live in the browser against an already-mapped site | `run this SOW against the site we mapped` |
+| `design-api-lld` | Build KB from API docs then design an LLD (execution document) - nothing is called | `turn this OpenAPI spec into an execution plan` |
+| `api-automation` | Build KB, design the LLD, then execute it as live API calls | `read these API docs and run the workflow` |
+| `api-lld-from-kb` † | Design another LLD from an already-built API KB | `design another workflow, KB from session <id>` |
+| `run-lld` | Execute an LLD live - pass the LLD itself as a file, not a session id | `run this LLD against sandbox` |
+| `output-feedback` † | Fix the KB when a generated output was wrong | `the document from session <id> was wrong, fix it` |
+
+† Needs a `seed_session_id` - the session ID of the earlier run that built the KB. See [Session IDs](#session-ids).
+
+Code, browser, and API pipelines are interactive: they pause to ask for credentials, one-time codes, an environment choice, or a go-ahead before anything that changes state.
 
 ### Session IDs
 
@@ -140,6 +153,81 @@ Pass it as `seed_session_id` on any follow-up run to reuse the KB from that sess
 @likeminds generate a SOW for Acme Corp's mobile phase, use KB from session abc-123
 [attach: acme-mobile-brief.pdf]
 ```
+
+### Example prompts
+
+**Build a knowledge base** - `build-kb`, `map-website-kb`
+
+```
+@likeminds build the KB for Acme Corp from these reference SOWs
+[attach: acme-sow-1.pdf, acme-playbook.docx]
+
+@likeminds map https://portal.example.com into a KB - walk the journeys in this SOW, don't run anything yet
+[attach: portal-sow.pdf]
+```
+
+**Documents** - `document-agent`, `document-from-kb`
+
+```
+@likeminds generate a SOW for TechCorp - 3 month engagement, 2 engineers, cloud migration
+[attach: techcorp-brief.pdf, sample-sow-1.pdf, sample-sow-2.pdf]
+
+@likeminds generate a SOW for Acme's mobile phase, use KB from session abc-123
+[attach: acme-mobile-brief.pdf]
+```
+
+**Configs** - `config-generator`, `config-from-kb`
+
+```
+@likeminds generate a JSON config for the campaign flow from these reference configs
+[attach: sample-config-1.json, nodeflow-schema.pdf]
+
+@likeminds generate the config for the re-engagement campaign, use KB from session xyz-456
+[attach: re-engagement-brief.pdf]
+```
+
+**Integration code** - `code-integration`, `code-from-kb`
+
+```
+@likeminds here are the payments SDK docs - add checkout to my Next.js app at ~/work/storefront
+[attach: payments-sdk-guide.pdf]
+
+@likeminds wire that SDK into this repo, use KB from session def-789
+```
+
+The server has no access to your project. It returns the code plus an `integration.json` manifest saying where each file goes, and your client applies it.
+
+**Browser workflows** - `browser-automation`, `browser-run-from-kb`
+
+```
+@likeminds no API for this portal - map https://portal.example.com and run the tasks in this SOW
+[attach: portal-sow.pdf]
+
+@likeminds run this SOW against the site we mapped in session ghi-012
+[attach: weekly-upload-sow.pdf]
+```
+
+**API workflows** - `design-api-lld`, `api-automation`, `api-lld-from-kb`, `run-lld`
+
+```
+@likeminds turn this OpenAPI spec and SOW into an execution document - I want to review it before anything runs
+[attach: openapi.yaml, integration-sow.pdf]
+
+@likeminds read these API docs and run the workflow in the SOW against sandbox
+[attach: api-reference.pdf, integration-sow.pdf]
+
+@likeminds the plan looks good, run this LLD
+[attach: lld.md, sandbox.env]
+```
+
+**Fix a bad output** - `output-feedback`
+
+```
+@likeminds the SOW from session abc-123 used the wrong pricing format and missed the payment schedule - fix it for next time
+```
+
+Then generate again with the same session ID and the output reflects the fix.
+
 
 ---
 
@@ -207,6 +295,7 @@ agentic-workflow-backend/
 │   │   ├── code-agent/               #   KB + SOW → integration code
 │   │   ├── api-agent/                #   KB + SOW → LLD / execution document
 │   │   ├── runner-agent/             #   execute an LLD live
+│   │   ├── browser-agent/            #   execute a web-flow SOW live in a browser
 │   │   ├── document-generator/       #   KB + MOM → finished document (PDF or DOCX)
 │   │   ├── find-bugs/                #   generated + expected → comparison sheet
 │   │   ├── diagnose-bug/             #   bug report → fix proposal
