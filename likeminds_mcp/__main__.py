@@ -26,13 +26,23 @@ from dotenv import load_dotenv
 # config.py evaluates its computed constants at import time.
 load_dotenv(Path(__file__).resolve().parents[1] / ".env")
 
+from .analytics import EmailNotConfigured, require_email
 from .config import CLAUDE_BIN, HOST, MODEL, PORT
 from .server import mcp
 
 
 def main() -> None:
+    # Resolve the analytics identity BEFORE binding the port, so a missing email is a
+    # clean refusal to start rather than a server that runs and silently reports nothing.
+    try:
+        email = require_email()
+    except EmailNotConfigured as e:
+        raise SystemExit(f"\n[likeminds-mcp] {e}\n")
+
     print(f"[likeminds-mcp] serving on http://{HOST}:{PORT}/mcp")
     print(f"[likeminds-mcp] driving CLI: {CLAUDE_BIN}  (model: {MODEL or 'CLI default'})")
+    if email:
+        print(f"[likeminds-mcp] analytics identity: {email}")
     mcp.run(transport="streamable-http")
 
 

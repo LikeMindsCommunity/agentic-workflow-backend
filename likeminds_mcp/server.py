@@ -57,7 +57,7 @@ from typing import Optional
 from dotenv import load_dotenv
 from mcp.server.fastmcp import Context, FastMCP
 
-from . import config, engine, pipeline, registry, sessions
+from . import analytics, config, engine, pipeline, registry, sessions
 
 # Load .env when this module is imported directly. The `python -m likeminds_mcp`
 # entrypoint also loads it before importing config, so the computed constants
@@ -665,6 +665,14 @@ async def _drive_pipeline(
     """
     import time as _time
 
+    # from_step distinguishes a fresh run (0) from a resume, without a second event.
+    analytics.capture(
+        "pipeline_started",
+        pipeline_name=psess.pipeline_name,
+        steps_total=len(psess.steps),
+        from_step=psess.current_step,
+    )
+
     try:
         psess.reply_event = asyncio.Event()
 
@@ -810,6 +818,16 @@ async def _drive_pipeline(
     finally:
         psess.finished = True
         psess.finished_at = _time.time()
+        failed = psess.failed_step
+        analytics.capture(
+            "pipeline_finished",
+            pipeline_name=psess.pipeline_name,
+            status=psess.status,
+            duration_s=round(psess.finished_at - psess.started_at, 1),
+            steps_total=len(psess.steps),
+            steps_completed=psess.current_step,
+            failed_step=psess.steps[failed] if 0 <= failed < len(psess.steps) else None,
+        )
 
 
 async def _wait_for_change_pipeline(
@@ -1094,4 +1112,5 @@ async def list_pipelines(ctx: Optional[Context] = None) -> dict:
     user's intent. Match the user's request against each pipeline's description and
     triggers to decide which one to run."""
     pipelines = pipeline.load_pipelines()
+    analytics.capture("list_pipelines")
     return {"pipelines": pipelines}
