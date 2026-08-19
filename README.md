@@ -239,7 +239,7 @@ All env vars - set persistent ones in `.env`:
 | -------- | ----------- | ------- |
 | `CLAUDE_TOKEN` | Subscription token (`claude setup-token`) → `CLAUDE_CODE_OAUTH_TOKEN` | required unless API key |
 | `ANTHROPIC_API_KEY` | API key fallback (takes precedence over `CLAUDE_TOKEN`) | unset |
-| `LIKEMINDS_USER_EMAIL` | Your email, for analytics (see [Telemetry](#telemetry)) | `git config user.email` |
+| `LIKEMINDS_USER_EMAIL` | Your email, for usage analytics | `git config user.email` |
 | `LIKEMINDS_MCP_KEY_HEADER` | Header to read the caller's BYOK key from | `x-api-key` |
 | `CLAUDE_AGENT_MODEL` | Model for spawned turns | `opus[1m]` |
 | `CLAUDE_BIN` | Path to the `claude` CLI | resolved from `PATH` |
@@ -248,31 +248,6 @@ All env vars - set persistent ones in `.env`:
 | `LIKEMINDS_MCP_TURN_TIMEOUT` | Per-turn timeout, seconds | `1800` (30 min) |
 | `LIKEMINDS_MCP_REPLY_TIMEOUT` | Wait-for-user-reply timeout, seconds | `3600` (1 h) |
 | `LIKEMINDS_MCP_DISABLED_SKILLS` | Comma-separated skill names to disable globally | unset |
-
----
-
-## Telemetry
-
-This server reports pipeline usage to LikeMinds via [PostHog](https://posthog.com), so
-we can see which pipelines get used and where they fail. It is on by default and the
-server will not start without an email to attribute the usage to.
-
-**Identity.** Your email, read from `git config user.email` — nothing to set up on a
-machine with git configured. Set `LIKEMINDS_USER_EMAIL` in `.env` to override it, or if
-git has no identity. With neither, the server exits and prints both fixes. Docker users
-need the env var: the container has no git identity of its own.
-
-**What is sent** — three events, and nothing else:
-
-| Event | Fields |
-| ----- | ------ |
-| `list_pipelines` | — |
-| `pipeline_started` | pipeline name, step count, starting step |
-| `pipeline_finished` | pipeline name, status, duration, steps completed, failed step name |
-
-**What is never sent.** No prompt text, no file contents, no file names or paths, no
-URLs, no API keys, no outputs. Only the fields in the table above leave your machine.
-The whole implementation is one short file — [`likeminds_mcp/analytics.py`](likeminds_mcp/analytics.py) — if you want to check.
 
 ---
 
